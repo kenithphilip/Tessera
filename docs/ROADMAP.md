@@ -178,7 +178,7 @@ before v1.0.0 is experimental. We will bump:
 v1.0.0 is gated on:
 
 - Completion of items 1, 2, 4, 7, and either 13 or 14 above.
-- At least one independent production deployment (not Fivetran-only).
+- At least one independent production deployment.
 - Stable `TrustLabel` serialization format that we are willing to
   freeze as an interop standard.
 
