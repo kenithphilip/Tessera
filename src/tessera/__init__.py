@@ -21,6 +21,7 @@ from tessera.quarantine import (
     split_by_trust,
     strict_worker,
 )
+from tessera.redaction import Secret, SecretRegistry, redact_nested
 from tessera.registry import ToolRegistry
 from tessera.signing import (
     HMACSigner,
@@ -51,6 +52,8 @@ __all__ = [
     "Policy",
     "PolicyViolation",
     "QuarantinedExecutor",
+    "Secret",
+    "SecretRegistry",
     "SecurityEvent",
     "SigningNotAvailable",
     "ToolRegistry",
@@ -61,6 +64,7 @@ __all__ = [
     "WorkerSchemaViolation",
     "emit_event",
     "make_segment",
+    "redact_nested",
     "register_sink",
     "sign_label",
     "split_by_trust",

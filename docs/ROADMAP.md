@@ -61,11 +61,21 @@ Ordered by security payoff per engineering effort.
    reimplementation). That is still open and still the single most
    credibility-building thing we can do next.
 
-2. **Credential isolation at the proxy.** GitHub Agent Workflow Firewall
-   pattern: the proxy holds real API keys, the agent process receives
-   only placeholder tokens, the proxy substitutes on outbound calls.
-   Prevents credential exfiltration via prompt injection. Roughly 100
-   lines and one real attack class closed.
+2. **Credential isolation at the proxy.** A first cut has landed in
+   `tessera.redaction`. The proxy now accepts a `SecretRegistry` and
+   scrubs every occurrence of the registered values from outbound
+   chat-completion payloads and inbound responses, emitting a
+   `SECRET_REDACTED` security event on every hit. This closes the
+   "agent accidentally includes a real token in an LLM prompt" and
+   "LLM response echoes a known secret back to the agent" classes.
+
+   What is NOT yet built and is still the endgame here: full
+   substitute-on-egress for downstream tool calls. The production
+   pattern wants the agent process to hold only placeholder tokens and
+   have the proxy substitute real values as requests leave the trust
+   boundary toward downstream services. That requires the proxy to
+   mediate tool traffic (not just chat completions), which is a
+   larger architectural change tracked as a follow-up.
 
 3. **Token budget enforcement per principal per day.** Denial-of-wallet
    defense. One counter, one policy check, ~50 lines.

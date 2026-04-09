@@ -34,6 +34,7 @@ class EventKind(StrEnum):
     POLICY_DENY = "policy_deny"
     WORKER_SCHEMA_VIOLATION = "worker_schema_violation"
     LABEL_VERIFY_FAILURE = "label_verify_failure"
+    SECRET_REDACTED = "secret_redacted"
 
 
 @dataclass(frozen=True)
