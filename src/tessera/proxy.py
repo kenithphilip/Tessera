@@ -22,8 +22,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from tessera.context import Context, LabeledSegment
+from tessera.events import EventKind, SecurityEvent, emit as emit_event
 from tessera.labels import Origin, TrustLabel, TrustLevel
 from tessera.policy import Policy
+from tessera.redaction import SecretRegistry, redact_nested
 from tessera.telemetry import proxy_request_span, upstream_span
 
 UpstreamFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -69,10 +71,27 @@ def create_app(
     key: bytes,
     upstream: UpstreamFn,
     policy: Policy | None = None,
+    secrets: SecretRegistry | None = None,
 ) -> FastAPI:
-    """Build a FastAPI app wired to the given HMAC key, upstream, and policy."""
+    """Build a FastAPI app wired to the given HMAC key, upstream, and policy.
+
+    Args:
+        key: HMAC key used to verify every inbound label.
+        upstream: Async callable that takes an OpenAI-shaped payload and
+            returns the upstream response as a dict.
+        policy: Taint-tracking policy applied to proposed tool calls.
+            Defaults to an empty policy where every tool requires USER
+            trust unless overridden per request.
+        secrets: Optional credential registry. When provided, the proxy
+            scrubs every occurrence of the registered values from both
+            outbound messages (before upstream sees them) and inbound
+            responses (before the agent sees them), and emits a
+            ``SECRET_REDACTED`` event whenever a hit fires. Leave unset
+            on deployments that do not need credential isolation.
+    """
     app = FastAPI(title="Tessera Proxy", version="0.0.1")
     effective_policy = policy or Policy()
+    secret_registry = secrets or SecretRegistry()
 
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatRequest) -> dict[str, Any]:
@@ -95,15 +114,46 @@ def create_app(
         for tool in req.tools:
             effective_policy.require(tool.name, TrustLevel(tool.required_trust))
 
+        outbound_messages: list[dict[str, Any]] = []
+        egress_principal = context.principal
+        for m in req.messages:
+            rendered = _render_for_upstream(m, context)
+            if len(secret_registry) > 0:
+                rendered, hits = secret_registry.redact(rendered)
+                if hits:
+                    emit_event(
+                        SecurityEvent.now(
+                            kind=EventKind.SECRET_REDACTED,
+                            principal=egress_principal,
+                            detail={
+                                "direction": "egress",
+                                "role": m.role,
+                                "secrets": hits,
+                            },
+                        )
+                    )
+            outbound_messages.append({"role": m.role, "content": rendered})
+
         upstream_payload = {
             "model": req.model,
-            "messages": [
-                {"role": m.role, "content": _render_for_upstream(m, context)}
-                for m in req.messages
-            ],
+            "messages": outbound_messages,
         }
         with upstream_span(req.model):
             response = await upstream(upstream_payload)
+
+        if len(secret_registry) > 0:
+            _, ingress_hits = redact_nested(response, secret_registry)
+            if ingress_hits:
+                emit_event(
+                    SecurityEvent.now(
+                        kind=EventKind.SECRET_REDACTED,
+                        principal=egress_principal,
+                        detail={
+                            "direction": "ingress",
+                            "secrets": ingress_hits,
+                        },
+                    )
+                )
 
         proposed_calls = _extract_tool_calls(response)
         if not proposed_calls:

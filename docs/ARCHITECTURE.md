@@ -22,6 +22,7 @@ src/tessera/
 ├── events.py           SecurityEvent with pluggable sinks
 ├── telemetry.py        optional OpenTelemetry instrumentation
 ├── proxy.py            FastAPI sidecar reference
+├── redaction.py        SecretRegistry for credential isolation at the proxy
 └── cli.py              `tessera serve` entrypoint
 ```
 
@@ -155,9 +156,34 @@ to the configured upstream LLM, and gates any proposed tool calls
 through the policy engine. Denied calls are returned alongside the
 allowed ones in a `tessera` field on the response.
 
-This module is ~160 lines and is meant to be treated as a specification,
+The proxy also runs secret redaction on both directions when a
+`SecretRegistry` (see `redaction.py`) is configured: outbound messages
+are scrubbed before the upstream LLM sees them, and inbound responses
+are walked with `redact_nested` before being handed back to the caller.
+A `SECRET_REDACTED` security event fires whenever a hit occurs, so
+incident response sees the near-miss.
+
+This module is ~200 lines and is meant to be treated as a specification,
 not a production artifact. Production deployments should port the
 primitives into a Rust data-plane proxy such as agentgateway.
+
+### `redaction.py`
+
+Credential isolation at the proxy boundary. `SecretRegistry` holds a
+set of named secrets that must never cross the proxy boundary.
+`registry.redact(text)` replaces every registered value with a
+`<REDACTED:NAME>` marker. `redact_nested(obj, registry)` walks a JSON
+shaped payload and rewrites string leaves in place. The registry
+refuses to register secrets shorter than 8 characters to avoid
+false-positive matches on benign substrings.
+
+The pattern is the GitHub Agent Workflow Firewall approach: the proxy
+holds the real credentials, and any attempt to move them into an LLM
+prompt or back out through an LLM response is rewritten to the opaque
+marker. This is defense-in-depth for agents that still hold real
+credentials in process; the right long-term answer is to give the
+agent process placeholder tokens and substitute on egress to
+downstream services.
 
 ### `cli.py`
 
