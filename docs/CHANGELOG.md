@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything before v1.0.0 is experimental; API changes may occur in any
 minor release.
 
+## [Unreleased]
+
+### Added
+
+- `benchmarks/` microbenchmark suite (`python -m benchmarks`) covering
+  HMAC sign and verify, `make_segment`, `Context.min_trust` and
+  `Context.render`, `Policy.evaluate` allow and deny, `WorkerReport`
+  validation, and an end-to-end per-request path.
+- `docs/benchmarks.md` reference snapshot of benchmark results on an
+  Apple Silicon laptop running Python 3.12.
+- Paper Section 4.5 updated with the concrete numbers from the
+  benchmark suite: approximately 1 microsecond for Pydantic validation,
+  approximately 32 microseconds for the full per-request path, and
+  roughly 0.016 percent overhead against a 200-millisecond LLM round-trip.
+
+### Changed
+
+- Removed employer attribution from README, paper byline, and ROADMAP
+  v1.0.0 gate. Tessera is a personal project.
+
 ## [0.0.1] - 2026-04-10
 
 ### Initial public release
