@@ -50,12 +50,16 @@ Ordered by security payoff per engineering effort.
 
 ### High leverage, small effort
 
-1. **Benchmark against CaMeL's reported 6.6x latency cost.** Run the
-   same workload through a single-LLM baseline, the Tessera
-   `strict_worker` dual-LLM path, and (if feasible) a CaMeL interpreter
-   reimplementation. Publish numbers. This is the single most
-   credibility-building thing we can do for the paper, and the paper
-   explicitly flags it as missing.
+1. **Benchmark against CaMeL's reported 6.6x latency cost.** A
+   microbenchmark suite for the Tessera primitives in isolation has
+   landed under `benchmarks/` and pins the end-to-end per-request
+   overhead at roughly 32 microseconds, with Pydantic validation at
+   approximately 1 microsecond per call. Paper Section 4.5 has been
+   updated with the numbers. What remains is a like-for-like comparison
+   against CaMeL on the same workload (a single-LLM baseline, the
+   Tessera `strict_worker` dual-LLM path, and a CaMeL interpreter
+   reimplementation). That is still open and still the single most
+   credibility-building thing we can do next.
 
 2. **Credential isolation at the proxy.** GitHub Agent Workflow Firewall
    pattern: the proxy holds real API keys, the agent process receives

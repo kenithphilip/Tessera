@@ -512,18 +512,40 @@ close the control-flow path, even though neither closes it alone.
 ### 4.5 Latency
 
 The CaMeL paper reports a 6.6x latency cost for its custom interpreter
-approach. We do not have comparable benchmarks for the Pydantic-based
-approach, and we are explicit that we have not measured it. Informally,
-Pydantic validation on a structured dict is microseconds; the dominant
-latency contribution is the two LLM calls (Worker and Planner), which are
-also present in the CaMeL design. The 6.6x figure in CaMeL includes the
-interpreter's data-flow tracking overhead, which this approach does not
-perform. We expect, but have not verified, that the latency overhead of
-schema-enforced dual-LLM execution over single-LLM execution is
-dominated by the extra LLM call rather than by validation.
+approach. That figure includes the interpreter's data-flow tracking
+overhead, which this approach does not perform: we rely on Pydantic
+validation of a structured dict, and policy evaluation is a minimum
+over the context segments' trust levels.
 
-Future work should include a controlled benchmark comparing the Pydantic
-approach against the CaMeL interpreter on the same workload.
+The reference implementation ships a microbenchmark suite under
+`benchmarks/` that measures the Tessera primitives in isolation. On an
+Apple Silicon laptop running Python 3.12 with the suite's default
+settings, the headline numbers are:
+
+- `WorkerReport.model_validate` on a valid dict: approximately 1.0
+  microseconds per call.
+- `WorkerReport.model_validate_json` on a valid JSON string:
+  approximately 1.4 microseconds per call.
+- `Policy.evaluate` allow path: approximately 4 microseconds per call.
+- `Policy.evaluate` deny path, including `SecurityEvent` emission:
+  approximately 6 microseconds per call.
+- End-to-end per-request overhead (sign three segments, verify three
+  segments, evaluate one tool call): approximately 32 microseconds.
+
+Against a 200-millisecond LLM round-trip, the end-to-end overhead is
+roughly 0.016 percent. Against a 1-second round-trip it is
+approximately 0.003 percent. We do not present this as a head-to-head
+comparison with CaMeL: we did not run CaMeL, and the two systems are
+doing different work. The benchmark's purpose is to pin the absolute
+overhead of Tessera's primitives so readers can compute the ratio
+against whatever latency budget they care about, and so claims like
+"Pydantic validation is microseconds" are backed by reproducible
+numbers rather than intuition.
+
+A full head-to-head comparison against CaMeL on the same workload
+remains future work and is tracked in `docs/ROADMAP.md`. Reproducing
+the numbers above requires only `pip install -e '.[dev]'` and
+`python -m benchmarks`.
 
 ---
 
