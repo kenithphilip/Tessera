@@ -1,0 +1,43 @@
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.0
+    hostname: spire-server
+    volumes:
+      - ./server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-data:/run/spire/data
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.9.0
+    hostname: spire-agent
+    depends_on:
+      - spire-server
+    volumes:
+      - ./agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - /tmp/spire-agent-api:/tmp/spire-agent-api
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["-config", "/opt/spire/conf/agent/agent.conf"]
+    pid: "host"
+    restart: unless-stopped
+
+  # Example workload: a retrieval service that signs labeled segments
+  # with a JWT-SVID. Tessera's JWTSigner points at the workload API
+  # socket mounted at /tmp/spire-agent-api/api.sock.
+  retrieval:
+    image: python:3.12-slim
+    depends_on:
+      - spire-agent
+    volumes:
+      - /tmp/spire-agent-api:/tmp/spire-agent-api:ro
+      - ../../:/tessera:ro
+    environment:
+      SPIFFE_ENDPOINT_SOCKET: "unix:///tmp/spire-agent-api/api.sock"
+      TESSERA_ISSUER: "spiffe://example.org/retrieval"
+    working_dir: /tessera
+    command: ["sleep", "infinity"]
+
+volumes:
+  spire-server-data:

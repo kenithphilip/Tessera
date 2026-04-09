@@ -1,0 +1,133 @@
+# Changelog
+
+All notable changes to Tessera are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Everything before v1.0.0 is experimental; API changes may occur in any
+minor release.
+
+## [0.0.1] - 2026-04-10
+
+### Initial public release
+
+First public release of the two primitives described in
+[`../papers/two-primitives-for-agent-security-meshes.md`](../papers/two-primitives-for-agent-security-meshes.md):
+signed trust labels with taint tracking, and schema-enforced dual-LLM
+execution.
+
+### Added
+
+**Core primitives:**
+
+- `tessera.labels.TrustLabel` with HMAC-SHA256 signing bound to content
+- `tessera.signing.JWTSigner`, `JWTVerifier`, `JWKSVerifier` for
+  SPIFFE JWT-SVID signing with 30-second clock-skew leeway
+- `tessera.signing.HMACSigner`, `HMACVerifier` wrapper classes
+  satisfying the `LabelSigner` / `LabelVerifier` protocol
+- `tessera.context.make_segment` accepting either an HMAC key or any
+  `LabelSigner`, with exactly-one validation
+- `tessera.context.Context` with `min_trust`, `max_trust`, and
+  `principal` properties
+- Spotlighting delimiter rendering for untrusted segments
+- `tessera.policy.Policy` taint-tracking engine with deny-by-default
+  and per-tool trust requirements
+- `tessera.quarantine.QuarantinedExecutor` implementing the dual-LLM
+  pattern with `split_by_trust`
+- `tessera.quarantine.strict_worker` Pydantic-enforced worker wrapper
+- `tessera.quarantine.WorkerReport` safe-by-default schema with no
+  free-form string fields
+- `tessera.quarantine.WorkerSchemaViolation` terminal exception
+
+**Infrastructure:**
+
+- `tessera.mcp.MCPInterceptor` auto-labeling tool outputs via a
+  Protocol-based MCP client abstraction
+- `tessera.mcp._default_extract` with binary content marker-ification
+  preventing base64 smuggling
+- `tessera.registry.ToolRegistry` org-level external-tool classification
+  with registry-wins-on-inclusion semantics
+- `tessera.events.SecurityEvent` structured event type
+- `tessera.events.EventKind` with `POLICY_DENY`,
+  `WORKER_SCHEMA_VIOLATION`, `LABEL_VERIFY_FAILURE`
+- Built-in sinks: `stdout_sink`, `otel_log_sink`, `webhook_sink(url)`
+- `tessera.telemetry` OpenTelemetry spans for proxy, MCP, policy,
+  quarantine with no-op fallback
+- `tessera.proxy` FastAPI sidecar with OpenAI-compatible endpoint
+- `tessera.cli` with `tessera serve` entrypoint
+
+**Documentation:**
+
+- Position paper at `papers/two-primitives-for-agent-security-meshes.md`
+  with threat model, invariants, primitives, and standardization asks
+- `README.md` public entry point with usage examples
+- `CLAUDE.md` context file for AI assistants working in the repo
+- `SECURITY.md` with threat model and coordinated disclosure policy
+- `CONTRIBUTING.md` with contribution standards
+- `docs/ARCHITECTURE.md` module-level architecture overview
+- `docs/ROADMAP.md` forward-looking plan
+- `docs/CHANGELOG.md` this file
+
+**Examples:**
+
+- `examples/injection_blocked.py` minimal offline demo
+- `examples/quarantine_demo.py` dual-LLM demo with stub models
+- `examples/quarantine_openai.py` real OpenAI API demo with
+  `EarningsFacts` schema
+
+**Deployment reference:**
+
+- `deployment/spire/docker-compose.yml` with SPIRE server, agent, and
+  retrieval workload
+- `deployment/spire/server.conf` and `deployment/spire/agent.conf`
+- `deployment/spire/README.md` walkthrough
+
+### Security invariants pinned by tests
+
+The following invariants are enforced by the test suite. See Appendix A
+of the paper for the full list with test names.
+
+- Tool calls deny when any context segment is below the tool's required
+  trust level (`test_web_content_taints_context_and_blocks_sensitive_tool`)
+- Tampered label signatures are rejected at the proxy boundary
+  (`test_proxy_rejects_tampered_signature`)
+- Worker output that does not validate against the schema raises
+  `WorkerSchemaViolation` and emits a security event
+  (`test_free_form_text_fails_closed`, `test_worker_schema_violation_emits_event`)
+- Binary content from MCP tools is replaced with a marker rather than
+  passed through as base64
+  (`test_real_mcp_image_content_does_not_leak_base64`)
+- JWT label round-trip validates with default clock-skew leeway
+  (`test_jwt_round_trip`, `test_jwt_verifier_has_default_leeway`)
+
+### Known limitations
+
+- `deployment/spire/` has not been exercised end-to-end in CI. See
+  `deployment/spire/STATUS.md` for details.
+- `examples/quarantine_openai.py` requires an `OPENAI_API_KEY` and is
+  not covered by the automated test suite.
+- `Context.principal` returns the first USER segment's principal;
+  multi-principal contexts are not yet supported.
+- No benchmark against CaMeL's reported 6.6x latency cost. The paper
+  flags this explicitly in Section 4.5.
+- HMAC is the default signing mode and requires all workloads to share
+  a symmetric key. Multi-workload deployments should use JWT-SVIDs.
+- FastAPI proxy is a reference implementation, not a production
+  artifact. Production deployments should port the primitives into a
+  Rust data plane.
+
+### Test suite
+
+- 65 tests passing
+- ~1,200 lines of test code
+- Runtime: ~2 seconds
+- Coverage includes integration tests against the real `mcp` Python
+  package, JWT round-trip tests with in-test RSA keypair generation,
+  and security event emission tests
+
+---
+
+## Unreleased
+
+No unreleased changes. Next planned items are tracked in
+[`ROADMAP.md`](ROADMAP.md).
