@@ -2,7 +2,7 @@
 
 ## Trust-Labeled Context and Schema-Enforced Dual-LLM Execution
 
-**Author:** Kenith Philip, Fivetran Security Engineering
+**Author:** Kenith Philip
 
 **Status:** Draft for discussion with OWASP Agentic AI, IETF WIMSE, and agent
 mesh implementers.

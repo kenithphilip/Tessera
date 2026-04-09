@@ -328,7 +328,7 @@ Draft for discussion. https://github.com/kenithphilip/Tessera
 
 ## Author
 
-Kenith Philip, Fivetran Security Engineering.
+Kenith Philip.
 
 Questions, corrections, and implementation feedback are welcome via
 GitHub issues once the repository is published publicly.
