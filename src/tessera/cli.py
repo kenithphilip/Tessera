@@ -13,6 +13,8 @@ import uvicorn
 
 from tessera.control_plane import (
     ControlPlaneState,
+    HMACControlPlaneSigner,
+    JWTControlPlaneSigner,
     PolicyDistributionInput,
     RegistryDistributionInput,
     create_control_plane_app,
@@ -145,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
     control_plane.add_argument("--host", default="127.0.0.1")
     control_plane.add_argument("--port", type=int, default=8090)
     control_plane.add_argument(
+        "--storage-file",
+        default=os.environ.get("TESSERA_CONTROL_STORAGE_FILE"),
+        help="JSON snapshot file for persistent control-plane state",
+    )
+    control_plane.add_argument(
         "--auth-token",
         default=os.environ.get("TESSERA_CONTROL_AUTH_TOKEN"),
         help="bearer token required for control-plane API access",
@@ -170,6 +177,31 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("TESSERA_CONTROL_AGENT_TTL_SECONDS", "300")),
         help="heartbeat freshness window for status reporting",
     )
+    control_plane.add_argument(
+        "--signing-hmac-key",
+        default=os.environ.get("TESSERA_CONTROL_SIGNING_HMAC_KEY"),
+        help="HMAC key for signed control-plane distribution documents",
+    )
+    control_plane.add_argument(
+        "--signing-private-key-file",
+        default=os.environ.get("TESSERA_CONTROL_SIGNING_PRIVATE_KEY_FILE"),
+        help="PEM private key file for JWT-signed control-plane documents",
+    )
+    control_plane.add_argument(
+        "--signing-algorithm",
+        default=os.environ.get("TESSERA_CONTROL_SIGNING_ALGORITHM", "RS256"),
+        help="JWT signing algorithm for control-plane distribution, defaults to RS256",
+    )
+    control_plane.add_argument(
+        "--signing-issuer",
+        default=os.environ.get("TESSERA_CONTROL_SIGNING_ISSUER"),
+        help="issuer metadata for signed control-plane documents",
+    )
+    control_plane.add_argument(
+        "--signing-key-id",
+        default=os.environ.get("TESSERA_CONTROL_SIGNING_KEY_ID"),
+        help="key id metadata for signed control-plane documents",
+    )
 
     args = parser.parse_args(argv)
     if args.cmd == "control-plane":
@@ -179,7 +211,33 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        state = ControlPlaneState(agent_ttl=timedelta(seconds=args.agent_ttl_seconds))
+        if args.signing_hmac_key and args.signing_private_key_file:
+            print(
+                "choose either --signing-hmac-key or --signing-private-key-file, not both",
+                file=sys.stderr,
+            )
+            return 2
+
+        distribution_signer = None
+        if args.signing_private_key_file:
+            with open(args.signing_private_key_file, "rb") as handle:
+                distribution_signer = JWTControlPlaneSigner(
+                    private_key=handle.read(),
+                    algorithm=args.signing_algorithm,
+                    issuer=args.signing_issuer,
+                    key_id=args.signing_key_id,
+                )
+        elif args.signing_hmac_key:
+            distribution_signer = HMACControlPlaneSigner(
+                key=args.signing_hmac_key.encode("utf-8"),
+                issuer=args.signing_issuer,
+                key_id=args.signing_key_id,
+            )
+
+        state = ControlPlaneState(
+            storage_path=None if not args.storage_file else args.storage_file,
+            agent_ttl=timedelta(seconds=args.agent_ttl_seconds),
+        )
         if args.policy_file:
             with open(args.policy_file, "r", encoding="utf-8") as handle:
                 state.update_policy(PolicyDistributionInput.model_validate_json(handle.read()))
@@ -191,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                 state,
                 bearer_token=args.auth_token,
                 allow_unauthenticated=args.allow_unauthenticated,
+                distribution_signer=distribution_signer,
             ),
             host=args.host,
             port=args.port,

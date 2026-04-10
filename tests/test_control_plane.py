@@ -10,9 +10,19 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 import tessera.cli as cli
-from tessera.control_plane import AgentHeartbeat, ControlPlaneState, create_control_plane_app
+from tessera.control_plane import (
+    AgentHeartbeat,
+    ControlPlaneState,
+    HMACControlPlaneSigner,
+    HMACControlPlaneVerifier,
+    PolicyDistributionInput,
+    RegistryDistributionInput,
+    SignedControlPlaneDocument,
+    create_control_plane_app,
+)
 
 AUTH_HEADER = {"Authorization": "Bearer control-plane-token"}
+SIGNING_KEY = b"control-plane-signing-key"
 
 
 def test_control_plane_policy_distribution_sets_revision_and_etag():
@@ -39,6 +49,44 @@ def test_control_plane_policy_distribution_sets_revision_and_etag():
 
     cached = client.get(
         "/v1/control/policy",
+        headers={**AUTH_HEADER, "If-None-Match": response.headers["etag"]},
+    )
+    assert cached.status_code == 304
+
+
+def test_control_plane_signed_policy_distribution_round_trip():
+    signer = HMACControlPlaneSigner(
+        SIGNING_KEY,
+        issuer="spiffe://example.org/ns/control/sa/istiod",
+        key_id="control-1",
+    )
+    client = TestClient(
+        create_control_plane_app(
+            bearer_token="control-plane-token",
+            distribution_signer=signer,
+        )
+    )
+
+    updated = client.put(
+        "/v1/control/policy",
+        headers=AUTH_HEADER,
+        json={"tool_requirements": {"send_email": 100}},
+    )
+    revision = updated.json()["revision"]
+
+    response = client.get("/v1/control/policy/signed", headers=AUTH_HEADER)
+
+    assert response.status_code == 200
+    signed = SignedControlPlaneDocument.from_dict(response.json())
+    assert signed.document_type == "policy"
+    assert signed.document["revision"] == revision
+    assert signed.issuer == "spiffe://example.org/ns/control/sa/istiod"
+    assert signed.key_id == "control-1"
+    assert HMACControlPlaneVerifier(SIGNING_KEY).verify(signed)
+    assert response.headers["etag"] == f'"{revision}"'
+
+    cached = client.get(
+        "/v1/control/policy/signed",
         headers={**AUTH_HEADER, "If-None-Match": response.headers["etag"]},
     )
     assert cached.status_code == 304
@@ -114,6 +162,42 @@ def test_control_plane_rejects_missing_auth():
     assert response.headers["www-authenticate"] == "Bearer"
 
 
+def test_control_plane_persists_state_and_reloads(tmp_path: Path):
+    now = datetime(2026, 4, 10, tzinfo=UTC)
+    storage_file = tmp_path / "control-state.json"
+    state = ControlPlaneState(
+        storage_path=storage_file,
+        now_factory=lambda: now,
+    )
+    policy = state.update_policy(
+        PolicyDistributionInput(tool_requirements={"send_email": 100})
+    )
+    registry = state.update_registry(
+        RegistryDistributionInput(external_tools=["fetch_url"])
+    )
+    state.record_heartbeat(
+        AgentHeartbeat(
+            agent_id="spiffe://example.org/ns/agents/sa/gateway-1",
+            agent_name="gateway-1",
+            capabilities={"chat": True},
+            applied_policy_revision=policy["revision"],
+            applied_registry_revision=registry["revision"],
+        )
+    )
+
+    reloaded = ControlPlaneState(storage_path=storage_file, now_factory=lambda: now)
+    agents = reloaded.list_agents()
+    status = reloaded.status()
+
+    assert storage_file.exists()
+    assert reloaded.policy_document()["tool_requirements"] == {"send_email": 100}
+    assert reloaded.registry_document()["external_tools"] == ["fetch_url"]
+    assert agents["agent_count"] == 1
+    assert agents["agents"][0]["agent_id"] == "spiffe://example.org/ns/agents/sa/gateway-1"
+    assert status["persistence"]["enabled"] is True
+    assert status["persistence"]["loaded_from_disk"] is True
+
+
 def test_control_plane_app_requires_auth_by_default():
     try:
         create_control_plane_app()
@@ -130,6 +214,7 @@ def test_control_plane_cli_runs_with_seed_files(
     captured: dict[str, Any] = {}
     policy_file = tmp_path / "policy.json"
     registry_file = tmp_path / "registry.json"
+    storage_file = tmp_path / "control-state.json"
     policy_file.write_text(json.dumps({"tool_requirements": {"send_email": 100}}))
     registry_file.write_text(json.dumps({"external_tools": ["fetch_url"]}))
 
@@ -138,10 +223,12 @@ def test_control_plane_cli_runs_with_seed_files(
         *,
         bearer_token: str | None = None,
         allow_unauthenticated: bool = False,
+        distribution_signer: Any = None,
     ) -> str:
         captured["state"] = state
         captured["bearer_token"] = bearer_token
         captured["allow_unauthenticated"] = allow_unauthenticated
+        captured["distribution_signer"] = distribution_signer
         return "control-app"
 
     def fake_run(app: Any, *, host: str, port: int) -> None:
@@ -161,12 +248,20 @@ def test_control_plane_cli_runs_with_seed_files(
             "9090",
             "--auth-token",
             "control-plane-token",
+            "--storage-file",
+            str(storage_file),
             "--policy-file",
             str(policy_file),
             "--registry-file",
             str(registry_file),
             "--agent-ttl-seconds",
             "42",
+            "--signing-hmac-key",
+            "control-plane-hmac",
+            "--signing-issuer",
+            "spiffe://example.org/ns/control/sa/istiod",
+            "--signing-key-id",
+            "control-1",
         ]
     )
 
@@ -174,10 +269,14 @@ def test_control_plane_cli_runs_with_seed_files(
     assert captured["app"] == "control-app"
     assert captured["bearer_token"] == "control-plane-token"
     assert captured["allow_unauthenticated"] is False
+    assert isinstance(captured["distribution_signer"], HMACControlPlaneSigner)
+    assert captured["distribution_signer"].issuer == "spiffe://example.org/ns/control/sa/istiod"
+    assert captured["distribution_signer"].key_id == "control-1"
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9090
     assert captured["state"].policy_document()["tool_requirements"] == {"send_email": 100}
     assert captured["state"].registry_document()["external_tools"] == ["fetch_url"]
+    assert captured["state"].storage_path == storage_file
     assert captured["state"].agent_ttl == timedelta(seconds=42)
 
 
@@ -190,6 +289,30 @@ def test_control_plane_cli_requires_auth_token(monkeypatch) -> None:
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
 
     exit_code = cli.main(["control-plane"])
+
+    assert exit_code == 2
+    assert called["ran"] is False
+
+
+def test_control_plane_cli_rejects_conflicting_signing_options(monkeypatch) -> None:
+    called: dict[str, Any] = {"ran": False}
+
+    def fake_run(*args: Any, **kwargs: Any) -> None:
+        called["ran"] = True
+
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    exit_code = cli.main(
+        [
+            "control-plane",
+            "--auth-token",
+            "control-plane-token",
+            "--signing-hmac-key",
+            "one",
+            "--signing-private-key-file",
+            "/tmp/other.pem",
+        ]
+    )
 
     assert exit_code == 2
     assert called["ran"] is False
