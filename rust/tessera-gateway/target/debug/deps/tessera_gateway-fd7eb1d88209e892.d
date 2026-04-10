@@ -1,0 +1,7 @@
+/Users/kenith.philip/Tessera/rust/tessera-gateway/target/debug/deps/tessera_gateway-fd7eb1d88209e892.d: src/lib.rs
+
+/Users/kenith.philip/Tessera/rust/tessera-gateway/target/debug/deps/libtessera_gateway-fd7eb1d88209e892.rlib: src/lib.rs
+
+/Users/kenith.philip/Tessera/rust/tessera-gateway/target/debug/deps/libtessera_gateway-fd7eb1d88209e892.rmeta: src/lib.rs
+
+src/lib.rs:

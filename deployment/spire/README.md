@@ -1,10 +1,10 @@
 # SPIRE + Tessera reference deployment
 
 A minimal docker-compose that runs a SPIRE server, a SPIRE agent, and a
-placeholder `retrieval` workload container. The retrieval service uses
-`tessera.signing.JWTSigner` with a JWT-SVID minted by SPIRE; downstream
-workloads verify those labels using `JWKSVerifier` pointed at the
-trust domain's bundle endpoint.
+placeholder `retrieval` workload container. The retrieval service can
+fetch a live JWT-SVID from the local Workload API and present it as
+`ASM-Agent-Identity`; downstream workloads verify those identities from
+live JWT bundles exposed by the same trust domain.
 
 This is a reference. It is not hardened, not production-ready, and uses
 `join_token` node attestation for simplicity. Do not copy-paste into a
@@ -60,50 +60,37 @@ docker compose up -d retrieval
 
 ## Using it from Tessera
 
-Inside the retrieval container, fetch a JWT-SVID and hand it to
-`JWTSigner`. The simplest path uses the `py-spiffe` library:
+Inside the retrieval container, fetch a live JWT-SVID and attach it to
+outbound requests:
 
 ```python
-from pyspiffe.workloadapi import default_jwt_source
-from tessera.signing import JWTSigner
-from tessera.context import make_segment
-from tessera.labels import Origin
+from tessera.spire import SpireJWTSource
 
-with default_jwt_source() as jwt_source:
-    svid = jwt_source.get_jwt_svid(audiences=["tessera-proxy"])
-    signer = JWTSigner(
-        private_key=svid.private_key_pem(),
-        key_id=svid.key_id(),
-        issuer="spiffe://example.org/retrieval",
-    )
-    segment = make_segment(
-        content=scraped_page,
-        origin=Origin.WEB,
-        principal="spiffe://example.org/retrieval",
-        signer=signer,
-    )
+source = SpireJWTSource(socket_path="unix:///tmp/spire-agent-api/api.sock")
+headers = source.identity_headers(audience="spiffe://example.org/ns/proxy/i/abcd")
 ```
 
-On the proxy side, verify with a JWKS pulled from the trust bundle
-endpoint:
+On the proxy side, verify with live JWT bundles from the local Workload
+API:
 
 ```python
-import httpx
-from tessera.signing import JWKSVerifier
+from tessera.spire import create_spire_identity_verifier
 
-def fetch_jwks():
-    return httpx.get("http://spire-server:8081/bundle").json()
-
-verifier = JWKSVerifier(
-    fetch_jwks=fetch_jwks,
-    expected_issuer="spiffe://example.org/retrieval",
+verifier = create_spire_identity_verifier(
+    socket_path="unix:///tmp/spire-agent-api/api.sock",
+    expected_issuer="spiffe://example.org",
+    expected_trust_domain="example.org",
 )
-
-if segment.verify(verifier):
-    context.add(segment)
-else:
-    raise RuntimeError("label signature did not verify")
 ```
+
+Then hand `verifier` to `tessera.proxy.create_app(identity_verifier=...)`.
+
+Important boundary: a JWT-SVID is already a signed workload credential.
+It does not hand you a reusable private key for `JWTSigner`. If you want
+custom-signed label payloads, use Tessera's label signers directly with
+your own key material or a separate key-management path. SPIRE's live
+JWT-SVID path in this repository is for workload identity and trust
+bundle verification.
 
 ## Tear down
 
@@ -116,7 +103,8 @@ docker compose down -v
 Without SPIFFE, every Tessera-aware workload in a deployment has to
 share a symmetric HMAC key. Compromise of any one workload forges
 labels for all of them. With SPIRE + JWT-SVIDs, each workload gets a
-distinct signing identity, short-lived SVIDs rotate automatically,
-and the proxy accepts labels only from identities it has explicitly
-registered. That is the minimum bar for a multi-workload agent
-deployment that you can defend in an incident postmortem.
+distinct identity, short-lived SVIDs rotate automatically, and the
+proxy accepts inbound workload identities only when they validate
+against the local trust bundle. That is the minimum bar for a
+multi-workload agent deployment that you can defend in an incident
+postmortem.

@@ -21,11 +21,36 @@ minor release.
   benchmark suite: approximately 1 microsecond for Pydantic validation,
   approximately 32 microseconds for the full per-request path, and
   roughly 0.016 percent overhead against a 200-millisecond LLM round-trip.
+- `tessera.delegation` with signed delegation tokens and verification
+- `tessera.provenance` with signed context segment envelopes and prompt
+  provenance manifests
+- `tessera.a2a` with A2A security carriage helpers and fail-closed
+  verification
+- `tessera.identity` with workload identity tokens, proof-of-possession,
+  and replay protection
+- `tessera.mtls` with SPIFFE-aware transport identity extraction from
+  the ASGI TLS extension and trusted XFCC
+- `tessera.spire` with live SPIRE Workload API adapters for JWT-SVID
+  retrieval and trust-bundle-backed verifier configuration
+- A2A JSON-RPC `tasks.send` ingress on the FastAPI reference proxy
+- prompt provenance enforcement and delegation enforcement on the proxy
+- inbound `ASM-Agent-Identity` and `ASM-Agent-Proof` enforcement on the
+  proxy
+- inbound mTLS transport identity enforcement on the proxy, including
+  SPIFFE URI SAN extraction and explicit trusted-proxy XFCC support
+- delegate-to-agent identity binding on delegated requests
+- MCP security context carriage for delegation and provenance
+- delegated `requires_human_for` and domain allowlist checks in policy
 
 ### Changed
 
 - Removed employer attribution from README, paper byline, and ROADMAP
   v1.0.0 gate. Tessera is a personal project.
+- Test suite now stands at 153 passing tests
+- Repository assistant context and roadmap statistics updated to match
+  the current tree
+- SPIRE reference docs now describe live JWT-SVID identity retrieval and
+  trust-bundle verification instead of treating JWT-SVIDs as signing keys
 
 ## [0.0.1] - 2026-04-10
 
@@ -136,9 +161,9 @@ of the paper for the full list with test names.
   artifact. Production deployments should port the primitives into a
   Rust data plane.
 
-### Test suite
+### Test suite at initial release
 
-- 65 tests passing
+- 65 tests passing at initial publication
 - ~1,200 lines of test code
 - Runtime: ~2 seconds
 - Coverage includes integration tests against the real `mcp` Python

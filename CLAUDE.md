@@ -75,8 +75,8 @@ security primitive. Do not do that without explicit discussion.
 ## Project state as of the initial public release
 
 - **Version:** v0.0.1, published April 2026
-- **Source:** ~1,556 lines of Python across 12 modules in `src/tessera/`
-- **Tests:** 1,187 lines, 65 passing, runtime under 2 seconds
+- **Source:** ~3,237 lines of Python across 15 modules in `src/tessera/`
+- **Tests:** ~2,856 lines, 125 passing, runtime under 3 seconds
 - **Python:** 3.12+ only
 - **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, the `mcp`
   Python package, optional OpenTelemetry SDK
@@ -86,6 +86,8 @@ Stable APIs:
 - `tessera.labels.TrustLabel`
 - `tessera.context.make_segment`, `Context`
 - `tessera.policy.Policy`, `Decision`
+- `tessera.delegation.DelegationToken`, `sign_delegation`, `verify_delegation`
+- `tessera.provenance.ContextSegmentEnvelope`, `PromptProvenanceManifest`
 - `tessera.quarantine.QuarantinedExecutor`, `strict_worker`, `WorkerReport`
 - `tessera.signing.HMACSigner`, `HMACVerifier`, `JWTSigner`, `JWTVerifier`, `JWKSVerifier`
 - `tessera.events.SecurityEvent`, `register_sink`
@@ -94,6 +96,8 @@ Less stable, expected to change:
 
 - `tessera.proxy` (FastAPI reference, meant to be ported into a Rust data plane)
 - `tessera.mcp` interceptor interface (will change when MCP SEP-1913 lands)
+- `tessera.a2a` transport and verification helpers
+- `tessera.mcp.MCPSecurityContext`
 - Security event sink API (will grow as more SIEM integrations land)
 
 ## Development workflow

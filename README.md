@@ -1,9 +1,9 @@
 # Tessera
 
-**Signed provenance labels and schema-enforced dual-LLM execution for agent
-security meshes.**
+**Signed provenance, delegation-aware taint tracking, and schema-enforced
+dual-LLM execution for agent security meshes.**
 
-![tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-166%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -117,20 +117,30 @@ TrustLabel(
 | Module | Purpose |
 |---|---|
 | `tessera.labels` | Signed `TrustLabel`, HMAC-SHA256 primitives |
-| `tessera.signing` | `JWTSigner`, `JWKSVerifier` for SPIFFE JWT-SVIDs, with clock-skew leeway |
+| `tessera.signing` | HMAC and JWT-based label signing and verification, with clock-skew leeway |
 | `tessera.context` | `LabeledSegment`, `Context`, Spotlighting delimiters |
+| `tessera.delegation` | Signed delegation tokens for bounded user-to-agent authority |
+| `tessera.provenance` | Signed context segment envelopes and prompt provenance manifests |
+| `tessera.identity` | Inbound workload identity tokens, proof-of-possession, replay checks |
+| `tessera.mtls` | SPIFFE-aware transport identity extraction from ASGI TLS and trusted XFCC |
 | `tessera.policy` | Taint-tracking policy engine with per-tool trust requirements |
+| `tessera.policy_backends` | External deny-only policy backends, including OPA integration and audit metadata |
 | `tessera.quarantine` | `QuarantinedExecutor`, `strict_worker`, safe-by-default `WorkerReport` |
 | `tessera.mcp` | MCP interceptor that auto-labels tool outputs |
+| `tessera.a2a` | A2A security context carriage and verification helpers |
+| `tessera.spire` | Live SPIRE Workload API adapters for JWT-SVIDs and trust bundles |
 | `tessera.registry` | Org-level external-tool registry, registry-wins-on-inclusion |
 | `tessera.events` | Structured `SecurityEvent` with stdout, OTel, and webhook sinks |
+| `tessera.evidence` | Signed evidence bundles for audit export and offline verification |
 | `tessera.telemetry` | Optional OpenTelemetry spans across proxy, MCP, policy, quarantine |
-| `tessera.proxy` | FastAPI sidecar reference implementation |
+| `tessera.proxy` | FastAPI reference proxy with chat and A2A JSON-RPC mediation |
 
 Reference deployments:
 
 - [`deployment/spire/`](deployment/spire/): SPIRE docker-compose with
   workload registration walkthrough
+- [`rust/tessera-gateway/`](rust/tessera-gateway/): Rust data plane with native
+  TLS transport identity, chat mediation, and A2A enforcement
 - [`examples/injection_blocked.py`](examples/injection_blocked.py):
   minimal offline demo
 - [`examples/quarantine_demo.py`](examples/quarantine_demo.py):
@@ -179,23 +189,15 @@ print(decision.reason)
 # context contains a segment at trust_level=0, below required 100 for tool 'send_email'
 ```
 
-Labeling a segment with a SPIFFE JWT-SVID:
+Outbound workload identity with a SPIRE JWT-SVID:
 
 ```python
-from tessera import make_segment, Origin, JWTSigner
+from tessera import SpireJWTSource
 
-signer = JWTSigner(
-    private_key=svid_private_key_pem,
-    algorithm="RS256",
-    key_id=svid.key_id(),
-    issuer="spiffe://example.org/retrieval",
-)
-segment = make_segment(
-    content=scraped_page,
-    origin=Origin.WEB,
-    principal="spiffe://example.org/retrieval",
-    signer=signer,
-)
+source = SpireJWTSource(socket_path="unix:///tmp/spire-agent-api/api.sock")
+headers = source.identity_headers(audience="spiffe://example.org/ns/proxy/i/abcd")
+
+assert "ASM-Agent-Identity" in headers
 ```
 
 Dual-LLM execution with schema enforcement:
@@ -253,12 +255,18 @@ out-of-scope list.
 
 Tessera is designed to slot into any agent mesh, not to replace one:
 
-- **Identity:** JWT-SVIDs integrate with SPIRE via `JWTSigner` and
-  `JWKSVerifier`
+- **Identity:** custom label JWTs integrate via `JWTSigner` and
+  `JWKSVerifier`, while live SPIRE JWT-SVID retrieval and trust-bundle
+  verification integrate via `tessera.identity` and `tessera.spire`
+- **Transport identity:** the reference proxy can enforce SPIFFE caller
+  identity from the ASGI TLS extension, or from `X-Forwarded-Client-Cert`
+  when the immediate proxy host is explicitly trusted
 - **Policy:** the `Decision` object composes with Cedar or OPA for
   attribute-based rules (evaluate taint first, attributes second)
-- **Data plane:** the FastAPI reference proxy is ~160 lines and meant
-  to be ported into a Rust proxy like agentgateway for production
+- **Data plane:** the FastAPI reference proxy now covers chat mediation,
+  signed delegation, signed prompt provenance, discovery, and A2A
+  JSON-RPC ingress. It is still a reference surface meant to be ported
+  into a Rust proxy like agentgateway for production
 - **Observability:** OTel spans emit across `proxy.request`,
   `proxy.upstream`, `policy.evaluate`, `mcp.tool_call`, `quarantine.run`
 - **Sandbox:** orthogonal, Tessera operates at the application layer

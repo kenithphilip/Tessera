@@ -23,8 +23,14 @@ Core primitives:
 
 Infrastructure:
 
-- FastAPI sidecar proxy reference (~160 lines)
+- FastAPI sidecar proxy reference with chat, discovery, and A2A ingress
 - MCP interceptor with auto-labeling and org-level tool registry
+- Signed delegation tokens with delegate-to-agent binding in policy and proxy
+- Signed prompt provenance envelopes and manifests
+- Inbound workload identity verification with proof-of-possession binding
+- Live SPIRE Workload API adapters for JWT-SVID retrieval and JWT bundle verification
+- SPIFFE-aware mTLS transport identity enforcement from ASGI TLS and trusted XFCC
+- A2A security carriage helpers plus live A2A JSON-RPC mediation in the reference proxy
 - Binary content marker-ification preventing base64 smuggling
 - OpenTelemetry instrumentation across proxy, MCP, policy, quarantine
 - Structured `SecurityEvent` with stdout, OTel, and webhook sinks
@@ -38,9 +44,11 @@ Documentation:
 
 Test coverage:
 
-- 65 tests, ~1,200 lines, 2-second runtime
+- 153 tests, runtime under 4 seconds
 - Integration tests against the real `mcp` Python package
 - SPIFFE JWT-SVID round-trip tests with in-test RSA keypairs
+- SPIRE Workload API adapter tests against modern `spiffe` and legacy `pyspiffe` shapes
+- mTLS transport identity tests covering ASGI TLS and trusted XFCC
 - Security event emission tests
 - Binary content smuggling prevention test
 
@@ -77,44 +85,56 @@ Ordered by security payoff per engineering effort.
    mediate tool traffic (not just chat completions), which is a
    larger architectural change tracked as a follow-up.
 
-3. **Token budget enforcement per principal per day.** Denial-of-wallet
-   defense. One counter, one policy check, ~50 lines.
+2. **Token budget enforcement per principal per day.** Denial-of-wallet
+   defense. We now gate delegated `max_cost_usd` per action, but we still
+   lack cumulative principal or session budget accounting.
 
-4. **GenAI OTel semantic convention attributes on existing spans.**
-   Standardize on `gen_ai.system`, `gen_ai.request.model`,
-   `gen_ai.usage.input_tokens`, etc. Interop with the broader
-   observability ecosystem for free. ~30 lines.
+3. **Real SPIRE stand-up in CI.** The `deployment/spire/` reference now
+   has live runtime adapters in code, but we still do not prove them
+   against a real SPIRE server in CI. Stand up the stack, issue a
+   JWT-SVID to a workload, present it as `ASM-Agent-Identity`, and
+   verify it from live trust bundles.
 
-5. **Convert `otel_log_sink` to real OTel Log Records.** Currently uses
-   `span.add_event`, which is not a first-class log. Moving to the OTel
-   Logs API lets Datadog Logs, Loki, and other log backends receive
-   security events as proper logs.
+### Next tier
 
-6. **Async `webhook_sink` with a bounded queue.** Current implementation
-   uses synchronous `httpx.Client`. Fine for low event rates, but under
-   high deny volume a slow SIEM can stall the agent loop. Add a
-   background worker with a bounded queue.
+4. **Cedar or OPA integration.** `Policy` is now strong, but still
+   local. If Tessera is going to smell like enterprise infrastructure,
+   it needs a portable policy surface and a real backend for
+   attribute-based decisions, policy packaging, and evaluation beyond one
+   process.
 
-### Medium leverage, medium effort
+5. **Performance program.** Build a benchmark harness for proxy latency,
+   policy throughput, A2A and MCP hot paths, and attack-effectiveness
+   evaluations. Right now we have correctness and security properties,
+   but not an infrastructure performance story.
 
-7. **DPoP token binding (RFC 9449) for agent-to-tool calls.** Each agent
+6. **Observability hardening.** Finish the OTel story with GenAI
+   semantic convention attributes, convert the sync webhook sink to a
+   bounded async path, and add evidence-oriented exports instead of
+   relying only on raw event sinks.
+
+### Bigger bets
+
+7. **Rust data plane.** The FastAPI reference is still a specification,
+   not a production artifact. The proxy primitives belong in a real
+   high-throughput data plane. That is still the right long-term move.
+
+8. **Production policy distribution and control-plane story.** Not
+   necessarily a Tessera-branded control plane, but something real for
+   hot policy distribution, registry and discovery, fleet governance,
+   and multi-tenant management.
+
+### Still valuable, but not first
+
+9. **DPoP token binding (RFC 9449) for agent-to-tool calls.** Each agent
    instance holds a non-extractable private key; tool calls carry
    DPoP-bound tokens that cannot be replayed by other agents.
    Eliminates the confused-deputy class of attacks. Standard OAuth
    infrastructure, not AI-specific.
 
-8. **MCP SEP-1913 interop.** Once the SEP lands, the MCP interceptor
-   should ingest `trust_level` annotations from tool outputs directly,
-   rather than relying on per-deployment external-tool registries.
-
-9. **Cedar or OPA policy backend integration.** The `Decision` object
-   is designed to compose with attribute-based engines. A reference
-   integration would let users evaluate taint first (Tessera) and
-   attributes second (Cedar/OPA) in a single pipeline.
-
-10. **Agent Card `.well-known/agent.json` served by the proxy.** A2A
-    discovery protocol primitive. Lets other mesh components find and
-    authenticate to a Tessera-protected agent.
+10. **MCP SEP-1913 interop.** Once the SEP lands, the MCP interceptor
+    should ingest `trust_level` annotations from tool outputs directly,
+    rather than relying on per-deployment external-tool registries.
 
 11. **Multi-principal `Context`.** Current `Context.principal` returns
     the first USER segment's principal. Real shared agents carry
@@ -122,28 +142,13 @@ Ordered by security payoff per engineering effort.
     all of them, not just one. Adds a `principals()` iterator and a
     richer `POLICY_DENY` event carrying the full set.
 
-12. **Real SPIRE stand-up in CI.** The `deployment/spire/` compose file
-    is correct by inspection but has not been exercised end-to-end.
-    GitHub Actions workflow that brings up the stack, issues a JWT-SVID
-    to a test workload, signs a labeled segment, and verifies it from
-    a second workload. Turns "reference" into "continuously verified."
-
-### High leverage, larger effort
-
-13. **Rust port of the proxy primitives.** The FastAPI reference is a
-    specification, not a production artifact. The primitives belong in
-    a data-plane proxy that can handle 10k+ QPS. Obvious targets:
-    agentgateway (Linux Foundation), kgateway (CNCF), a standalone Rust
-    sidecar. Must pin the same invariants the Python reference pins,
-    enforced by the same test names listed in Appendix A of the paper.
-
-14. **IETF draft for content-bound provenance labels.** Submit a short
+12. **IETF draft for content-bound provenance labels.** Submit a short
     draft to the WIMSE working group specifying the TrustLabel
     structure, its canonical serialization, and its HMAC and JWT-SVID
     signing modes. Gives the agent mesh ecosystem a shared interop
     format instead of each project inventing its own.
 
-15. **OWASP Agentic AI Top 10 entry for "unconstrained worker output in
+13. **OWASP Agentic AI Top 10 entry for "unconstrained worker output in
     dual-model architectures."** Submit as a named weakness category.
     Provisional name: ASI-DUAL-LLM-BYPASS.
 
@@ -191,8 +196,8 @@ before v1.0.0 is experimental. We will bump:
 
 v1.0.0 is gated on:
 
-- Completion of items 1, 2, 4, 7, and either 13 or 14 above.
-- At least one independent production deployment.
+- Completion of items 1, 2, 4, 5, and either 7 or 12 above.
+- At least one independent production deployment (not Fivetran-only).
 - Stable `TrustLabel` serialization format that we are willing to
   freeze as an interop standard.
 

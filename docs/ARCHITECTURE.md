@@ -12,9 +12,12 @@ This document explains the code, not the security claims.
 ```
 src/tessera/
 ├── __init__.py         public API surface
+├── a2a.py              A2A security carriage and verification helpers
 ├── labels.py           TrustLabel + HMAC-SHA256 primitives
 ├── signing.py          LabelSigner protocol, JWT-SVID and HMAC implementations
 ├── context.py          LabeledSegment, Context, Spotlighting renderer
+├── delegation.py       signed user-to-agent delegation tokens
+├── provenance.py       signed prompt provenance envelopes and manifests
 ├── policy.py           taint-tracking policy engine
 ├── quarantine.py       QuarantinedExecutor, strict_worker, WorkerReport
 ├── mcp.py              MCPInterceptor auto-labeling tool outputs
@@ -68,6 +71,29 @@ segments). The `Context` class exposes:
 with exactly-one validation. This is the unified API that lets HMAC and
 JWT signing flow through the same happy path.
 
+### `delegation.py`
+
+Defines `DelegationToken` plus symmetric signing and verification for
+bounded user-to-agent authority. The token binds subject, delegate,
+audience, authorized actions, constraints, session identifier, and
+expiry to a deterministic canonical serialization.
+
+This is intentionally a small primitive. It gives the policy and proxy
+surfaces something portable and fail-closed to consume before a richer
+OAuth or proof-of-possession profile lands.
+
+### `provenance.py`
+
+Defines `ContextSegmentEnvelope` and `PromptProvenanceManifest`, the
+content-bound provenance structures used to carry signed prompt
+lineage. Envelopes bind one content segment to origin, issuer, trust
+level, and optional lineage metadata. Manifests bind ordered prompt
+assembly across multiple envelopes.
+
+These are stronger than simple spotlighting markers because signatures
+cover both metadata and the exact content digests the proxy and A2A
+surfaces rely on.
+
 ### `policy.py`
 
 The taint-tracking engine. Per-tool trust requirements are declared
@@ -81,6 +107,12 @@ allow iff required_trust(tool) <= ctx.min_trust
 Denies emit a `SecurityEvent` through the event sink system before
 returning. Allows do not. The `emit_decision` call also fires an OTel
 span with the decision attributes when telemetry is enabled.
+
+Delegation constraints are enforced here too. The policy layer now
+consumes bounded delegated authority, including per-tool authorization,
+delegate binding, per-action cost caps, delegated human-approval
+requirements, and delegated domain allowlists for common network
+destination arguments.
 
 ### `quarantine.py`
 
@@ -97,6 +129,18 @@ the docstring on `WorkerReport` for the rationale.
 `strict_worker(schema, inner)` wraps a raw callable with Pydantic
 validation. Invalid outputs raise `WorkerSchemaViolation` and emit a
 security event. The Planner is never invoked if validation fails.
+
+### `a2a.py`
+
+Defines `A2APromptSegment`, `A2ASecurityContext`, and `A2ATaskRequest`
+for carrying Tessera delegation and provenance metadata across
+agent-to-agent task payloads. The helpers parse and verify signed
+delegation and prompt provenance fail-closed before a task is treated
+as trusted input.
+
+This is not a full A2A transport implementation. It is the security
+carriage layer that the proxy and any future data-plane component can
+reuse.
 
 ### `mcp.py`
 
@@ -150,22 +194,30 @@ Child spans nest automatically via OTel's context propagation.
 
 ### `proxy.py`
 
-FastAPI sidecar that exposes an OpenAI-compatible `/v1/chat/completions`
-endpoint. Verifies every incoming label, builds a `Context`, forwards
-to the configured upstream LLM, and gates any proposed tool calls
-through the policy engine. Denied calls are returned alongside the
-allowed ones in a `tessera` field on the response.
+FastAPI reference proxy that exposes:
 
-The proxy also runs secret redaction on both directions when a
-`SecretRegistry` (see `redaction.py`) is configured: outbound messages
+- OpenAI-compatible `/v1/chat/completions`
+- discovery at `/.well-known/agent.json`
+- A2A JSON-RPC ingress at `/a2a/jsonrpc` when an A2A handler is wired
+
+The proxy verifies every incoming label, prompt provenance header, and
+delegation header, binds delegated authority to the local `agent_id`,
+builds a `Context`, forwards to the configured upstream LLM, and gates
+proposed tool calls through the policy engine. For A2A ingress, it
+requires verified `tessera_security_context` metadata, rebuilds a policy
+context from the verified envelopes, and evaluates the task intent
+before calling the handler.
+
+When a `SecretRegistry` (see `redaction.py`) is configured, the proxy
+also redacts registered secrets on both directions: outbound messages
 are scrubbed before the upstream LLM sees them, and inbound responses
 are walked with `redact_nested` before being handed back to the caller.
 A `SECRET_REDACTED` security event fires whenever a hit occurs, so
 incident response sees the near-miss.
 
-This module is ~200 lines and is meant to be treated as a specification,
-not a production artifact. Production deployments should port the
-primitives into a Rust data-plane proxy such as agentgateway.
+This module is still meant to be treated as a specification, not a
+production artifact. Production deployments should port the primitives
+into a Rust data-plane proxy such as agentgateway.
 
 ### `redaction.py`
 
@@ -191,7 +243,7 @@ Minimal `tessera serve` command that wires the proxy to an OpenAI
 upstream using environment variables. Not load-bearing, mostly for
 demo convenience.
 
-## Data flow: one proxy request
+## Data flow: one chat proxy request
 
 ```
 HTTP POST /v1/chat/completions
@@ -232,6 +284,43 @@ HTTP POST /v1/chat/completions
 | with tessera field |
 | listing allow/deny |
 +--------------------+
+```
+
+## Data flow: A2A ingress
+
+```text
+HTTP POST /a2a/jsonrpc (tasks.send)
+         |
+         v
++----------------------------+
+| validate JSON-RPC envelope |
++-------------+--------------+
+              |
+              v
++----------------------------+
+| extract and verify         |
+| tessera_security_context   |
+| - delegation               |
+| - prompt provenance        |
++-------------+--------------+
+              |
+              v
++----------------------------+
+| rebuild Context from       |
+| verified prompt segments   |
++-------------+--------------+
+              |
+              v
++----------------------------+
+| policy.evaluate(intent)    |
+| against verified context   |
++------+------+--------------+
+       |      |
+    deny      allow
+       |      |
+       v      v
+  JSON-RPC  call configured
+   error    A2A handler
 ```
 
 ## Data flow: dual-LLM quarantine
@@ -366,7 +455,7 @@ Every security-relevant change must come with a test that pins the
 specific invariant the change affects. The test should fail on the old
 behavior and pass on the new. This is enforced informally in code review.
 
-The test suite is fast (~2 seconds for 65 tests) and should stay fast.
+The test suite is fast (~2.5 seconds for 125 tests) and should stay fast.
 Slow tests get less love and are more likely to be skipped under time
 pressure. If a test is slow because it is doing too much, split it.
 

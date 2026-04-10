@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tessera"
 version = "0.0.1"
 description = "Signed provenance labels and taint-tracking policy for LLM context windows."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 dependencies = [
@@ -30,6 +30,7 @@ otel = [
 ]
 spiffe = [
     "pyjwt[crypto]>=2.8",
+    "spiffe>=0.2.5",
 ]
 mcp = [
     "mcp>=1.0",

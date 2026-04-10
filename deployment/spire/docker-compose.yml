@@ -23,9 +23,9 @@ services:
     pid: "host"
     restart: unless-stopped
 
-  # Example workload: a retrieval service that signs labeled segments
-  # with a JWT-SVID. Tessera's JWTSigner points at the workload API
-  # socket mounted at /tmp/spire-agent-api/api.sock.
+  # Example workload: a retrieval service that fetches a live JWT-SVID
+  # from the Workload API socket mounted at /tmp/spire-agent-api/api.sock
+  # and presents it as ASM-Agent-Identity on outbound requests.
   retrieval:
     image: python:3.12-slim
     depends_on:

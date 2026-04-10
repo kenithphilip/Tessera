@@ -25,6 +25,7 @@ from tessera.labels import Origin, TrustLevel  # noqa: E402
 from tessera.mcp import MCPInterceptor  # noqa: E402
 from tessera.policy import Policy  # noqa: E402
 from tessera.quarantine import QuarantinedExecutor, WorkerReport  # noqa: E402
+from tessera.telemetry import proxy_request_span  # noqa: E402
 
 KEY = b"test-hmac-key-do-not-use-in-prod"
 
@@ -80,6 +81,49 @@ async def test_mcp_call_emits_tool_call_span(exporter):
     assert attrs["tessera.tool"] == "query_database"
     assert attrs["tessera.origin"] == "tool"
     assert attrs["tessera.principal"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_emits_genai_attrs_when_opted_in(exporter, monkeypatch):
+    monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
+
+    class Stub:
+        async def call_tool(self, name, arguments=None):
+            del name, arguments
+            return "ok"
+
+    mcp = MCPInterceptor(client=Stub(), key=b"k", principal="alice")
+    await mcp.call("query_database")
+
+    tool_spans = [
+        s for s in exporter.get_finished_spans() if s.name == "tessera.mcp.tool_call"
+    ]
+    attrs = tool_spans[0].attributes
+    assert attrs["gen_ai.operation.name"] == "execute_tool"
+    assert attrs["gen_ai.provider.name"] == "tessera"
+    assert attrs["gen_ai.tool.name"] == "query_database"
+    assert attrs["gen_ai.tool.type"] == "extension"
+
+
+def test_proxy_request_span_emits_genai_agent_attrs_when_opted_in(exporter, monkeypatch):
+    monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
+
+    with proxy_request_span(
+        model="gpt-test",
+        message_count=2,
+        operation_name="invoke_agent",
+        agent_name="Tessera Proxy",
+        agent_id="spiffe://example.org/ns/agents/sa/proxy",
+    ):
+        pass
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "tessera.proxy.request"]
+    attrs = spans[0].attributes
+    assert attrs["gen_ai.operation.name"] == "invoke_agent"
+    assert attrs["gen_ai.provider.name"] == "tessera"
+    assert attrs["gen_ai.request.model"] == "gpt-test"
+    assert attrs["gen_ai.agent.name"] == "Tessera Proxy"
+    assert attrs["gen_ai.agent.id"] == "spiffe://example.org/ns/agents/sa/proxy"
 
 
 @pytest.mark.asyncio

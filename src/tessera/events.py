@@ -21,10 +21,13 @@ the security path must not fail closed because of an observability bug.
 from __future__ import annotations
 
 import json
+from collections import Counter, deque
+from queue import Empty, Full, Queue
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+from threading import Event, Lock, Thread
 from typing import Any, Callable
 
 
@@ -35,6 +38,10 @@ class EventKind(StrEnum):
     WORKER_SCHEMA_VIOLATION = "worker_schema_violation"
     LABEL_VERIFY_FAILURE = "label_verify_failure"
     SECRET_REDACTED = "secret_redacted"
+    IDENTITY_VERIFY_FAILURE = "identity_verify_failure"
+    PROOF_VERIFY_FAILURE = "proof_verify_failure"
+    PROVENANCE_VERIFY_FAILURE = "provenance_verify_failure"
+    DELEGATION_VERIFY_FAILURE = "delegation_verify_failure"
 
 
 @dataclass(frozen=True)
@@ -72,24 +79,28 @@ class SecurityEvent:
 EventSink = Callable[[SecurityEvent], None]
 
 _sinks: list[EventSink] = []
+_sinks_lock = Lock()
 
 
 def register_sink(sink: EventSink) -> None:
     """Add a sink to the global emission list."""
-    _sinks.append(sink)
+    with _sinks_lock:
+        _sinks.append(sink)
 
 
 def unregister_sink(sink: EventSink) -> None:
     """Remove a sink. Silently ignores sinks that were never registered."""
-    try:
-        _sinks.remove(sink)
-    except ValueError:
-        pass
+    with _sinks_lock:
+        try:
+            _sinks.remove(sink)
+        except ValueError:
+            pass
 
 
 def clear_sinks() -> None:
     """Remove all sinks. Intended for tests."""
-    _sinks.clear()
+    with _sinks_lock:
+        _sinks.clear()
 
 
 def emit(event: SecurityEvent) -> None:
@@ -99,7 +110,9 @@ def emit(event: SecurityEvent) -> None:
     take down the security path. Buggy sinks surface via their own
     logging, not by breaking the caller.
     """
-    for sink in _sinks:
+    with _sinks_lock:
+        sinks = tuple(_sinks)
+    for sink in sinks:
         try:
             sink(event)
         except Exception:  # noqa: BLE001 - intentional swallow
@@ -108,7 +121,7 @@ def emit(event: SecurityEvent) -> None:
 
 def stdout_sink(event: SecurityEvent) -> None:
     """Write the event as a JSON line to stdout."""
-    sys.stdout.write(json.dumps(event.to_dict()) + "\n")
+    sys.stdout.write(json.dumps(event.to_dict(), default=str) + "\n")
     sys.stdout.flush()
 
 
@@ -125,7 +138,7 @@ def otel_log_sink(event: SecurityEvent) -> None:
         name=f"tessera.security.{event.kind}",
         attributes={
             "tessera.principal": event.principal,
-            "tessera.detail": json.dumps(event.detail),
+            "tessera.detail": json.dumps(event.detail, default=str),
             "tessera.timestamp": event.timestamp,
         },
     )
@@ -145,3 +158,142 @@ def webhook_sink(url: str, timeout: float = 5.0) -> EventSink:
             client.post(url, json=event.to_dict())
 
     return sink
+
+
+class AsyncWebhookSink:
+    """Bounded asynchronous webhook sink.
+
+    Events are queued and sent from a background worker thread so slow SIEM
+    receivers do not block the security path.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout: float = 5.0,
+        max_queue: int = 1024,
+        poll_interval: float = 0.05,
+        client_factory: Any = None,
+    ) -> None:
+        self.url = url
+        self.timeout = timeout
+        self._queue: Queue[dict[str, Any]] = Queue(maxsize=max_queue)
+        self._poll_interval = poll_interval
+        self._client_factory = client_factory
+        self._closed = Event()
+        self._lock = Lock()
+        self._dropped_events = 0
+        self._thread = Thread(target=self._run, name="tessera-webhook-sink", daemon=True)
+        self._thread.start()
+
+    @property
+    def dropped_events(self) -> int:
+        with self._lock:
+            return self._dropped_events
+
+    def __call__(self, event: SecurityEvent) -> None:
+        payload = event.to_dict()
+        try:
+            self._queue.put_nowait(payload)
+        except Full:
+            with self._lock:
+                self._dropped_events += 1
+
+    def close(self, *, drain: bool = True, timeout: float | None = None) -> None:
+        self._closed.set()
+        if drain:
+            self._queue.join()
+        self._thread.join(timeout)
+
+    def stats(self) -> dict[str, int]:
+        return {
+            "queued_events": self._queue.qsize(),
+            "dropped_events": self.dropped_events,
+        }
+
+    def _run(self) -> None:
+        import httpx
+
+        factory = self._client_factory or httpx.Client
+        with factory(timeout=self.timeout) as client:
+            while True:
+                try:
+                    payload = self._queue.get(timeout=self._poll_interval)
+                except Empty:
+                    if self._closed.is_set():
+                        return
+                    continue
+                try:
+                    client.post(self.url, json=payload).raise_for_status()
+                except Exception:  # noqa: BLE001 - best-effort delivery
+                    pass
+                finally:
+                    self._queue.task_done()
+                if self._closed.is_set() and self._queue.empty():
+                    return
+
+
+def async_webhook_sink(
+    url: str,
+    *,
+    timeout: float = 5.0,
+    max_queue: int = 1024,
+    poll_interval: float = 0.05,
+    client_factory: Any = None,
+) -> AsyncWebhookSink:
+    """Factory returning a bounded async webhook sink."""
+
+    return AsyncWebhookSink(
+        url,
+        timeout=timeout,
+        max_queue=max_queue,
+        poll_interval=poll_interval,
+        client_factory=client_factory,
+    )
+
+
+class EvidenceBuffer:
+    """Bounded in-memory evidence recorder for security events."""
+
+    def __init__(self, max_events: int = 1024) -> None:
+        self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
+        self._lock = Lock()
+        self._dropped_events = 0
+
+    @property
+    def dropped_events(self) -> int:
+        with self._lock:
+            return self._dropped_events
+
+    def __call__(self, event: SecurityEvent) -> None:
+        with self._lock:
+            if len(self._events) == self._events.maxlen:
+                self._dropped_events += 1
+            self._events.append(event.to_dict())
+
+    def export(self) -> dict[str, Any]:
+        with self._lock:
+            events = list(self._events)
+            dropped = self._dropped_events
+        return {
+            "schema_version": "tessera.evidence.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "event_count": len(events),
+            "dropped_events": dropped,
+            "counts_by_kind": dict(Counter(event["kind"] for event in events)),
+            "events": events,
+        }
+
+    def bundle(self) -> Any:
+        from tessera.evidence import EvidenceBundle
+
+        return EvidenceBundle.from_dict(self.export())
+
+    def sign(self, signer: Any) -> Any:
+        return signer.sign(self.bundle())
+
+    def clear(self) -> None:
+        with self._lock:
+            self._events.clear()
+            self._dropped_events = 0

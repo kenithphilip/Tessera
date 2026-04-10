@@ -17,6 +17,7 @@ call an agent emits.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
@@ -32,7 +33,19 @@ except ImportError:  # pragma: no cover
     _OTEL = False
 
 
-def emit_decision(decision: "Decision") -> None:
+def _gen_ai_semconv_enabled() -> bool:
+    opt_in = os.environ.get("OTEL_SEMCONV_STABILITY_OPT_IN", "")
+    values = {value.strip() for value in opt_in.split(",") if value.strip()}
+    return "gen_ai_latest_experimental" in values
+
+
+def _set_attribute(span: Any, key: str, value: Any) -> None:
+    if value is None:
+        return
+    span.set_attribute(key, value)
+
+
+def emit_decision(decision: "Decision", *, backend: str | None = None) -> None:
     """Emit a span for a single policy decision."""
     if not _OTEL or _tracer is None:
         return
@@ -42,6 +55,7 @@ def emit_decision(decision: "Decision") -> None:
         span.set_attribute("tessera.observed_trust", int(decision.observed_trust))
         span.set_attribute("tessera.decision", str(decision.kind))
         span.set_attribute("tessera.reason", decision.reason)
+        _set_attribute(span, "tessera.policy.backend", backend)
 
 
 def emit_tool_call(tool: str, origin: str, principal: str) -> None:
@@ -52,10 +66,23 @@ def emit_tool_call(tool: str, origin: str, principal: str) -> None:
         span.set_attribute("tessera.tool", tool)
         span.set_attribute("tessera.origin", origin)
         span.set_attribute("tessera.principal", principal)
+        if _gen_ai_semconv_enabled():
+            span.set_attribute("gen_ai.operation.name", "execute_tool")
+            span.set_attribute("gen_ai.provider.name", "tessera")
+            span.set_attribute("gen_ai.tool.name", tool)
+            span.set_attribute("gen_ai.tool.type", "extension")
+            span.set_attribute("gen_ai.agent.name", "tessera.mcp")
 
 
 @contextmanager
-def proxy_request_span(model: str, message_count: int) -> Iterator[None]:
+def proxy_request_span(
+    model: str,
+    message_count: int,
+    *,
+    operation_name: str = "chat",
+    agent_name: str | None = None,
+    agent_id: str | None = None,
+) -> Iterator[None]:
     """Context manager wrapping a single proxy request.
 
     Tool-call and policy spans emitted inside this block become children
@@ -67,6 +94,12 @@ def proxy_request_span(model: str, message_count: int) -> Iterator[None]:
     with _tracer.start_as_current_span("tessera.proxy.request") as span:
         span.set_attribute("tessera.model", model)
         span.set_attribute("tessera.message_count", message_count)
+        if _gen_ai_semconv_enabled():
+            span.set_attribute("gen_ai.operation.name", operation_name)
+            span.set_attribute("gen_ai.provider.name", "tessera")
+            span.set_attribute("gen_ai.request.model", model)
+            _set_attribute(span, "gen_ai.agent.name", agent_name)
+            _set_attribute(span, "gen_ai.agent.id", agent_id)
         yield
 
 
@@ -82,6 +115,10 @@ def upstream_span(model: str) -> Iterator[None]:
         return
     with _tracer.start_as_current_span("tessera.proxy.upstream") as span:
         span.set_attribute("tessera.model", model)
+        if _gen_ai_semconv_enabled():
+            span.set_attribute("gen_ai.operation.name", "chat")
+            span.set_attribute("gen_ai.provider.name", "tessera")
+            span.set_attribute("gen_ai.request.model", model)
         yield
 
 
@@ -94,6 +131,10 @@ def quarantine_span(trusted_count: int, untrusted_count: int) -> Iterator[None]:
     with _tracer.start_as_current_span("tessera.quarantine.run") as span:
         span.set_attribute("tessera.trusted_segments", trusted_count)
         span.set_attribute("tessera.untrusted_segments", untrusted_count)
+        if _gen_ai_semconv_enabled():
+            span.set_attribute("gen_ai.operation.name", "invoke_agent")
+            span.set_attribute("gen_ai.provider.name", "tessera")
+            span.set_attribute("gen_ai.agent.name", "tessera.quarantine")
         yield
 
 

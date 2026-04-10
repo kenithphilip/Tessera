@@ -13,11 +13,14 @@ a stub for tests, or a future reimplementation. No hard dependency on the
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from tessera.context import LabeledSegment, make_segment
+from tessera.delegation import DelegationToken
 from tessera.labels import Origin, TrustLevel
+from tessera.provenance import ContextSegmentEnvelope, PromptProvenanceManifest
 from tessera.registry import ToolRegistry
 from tessera.telemetry import emit_tool_call
 
@@ -36,6 +39,33 @@ class MCPClient(Protocol):
 # Signature of a result extractor. MCP results come in a few shapes depending
 # on the client version; extractors normalize to plain text.
 ResultExtractor = Callable[[Any], str]
+
+
+@dataclass(frozen=True)
+class MCPSecurityContext:
+    """Optional provenance and delegation metadata for one MCP call.
+
+    This is the carriage object Tessera uses when an MCP client supports
+    metadata-aware or security-context-aware tool invocation. Legacy MCP
+    clients can ignore it and still work through the fallback path.
+    """
+
+    delegation: DelegationToken | None = None
+    provenance_manifest: PromptProvenanceManifest | None = None
+    segment_envelopes: tuple[ContextSegmentEnvelope, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "delegation": None if self.delegation is None else _delegation_dict(self.delegation),
+            "provenance_manifest": (
+                None
+                if self.provenance_manifest is None
+                else self.provenance_manifest.to_dict()
+            ),
+            "segment_envelopes": [
+                envelope.to_dict() for envelope in self.segment_envelopes
+            ],
+        }
 
 
 def _default_extract(result: Any) -> str:
@@ -106,9 +136,15 @@ class MCPInterceptor:
         name: str,
         arguments: dict[str, Any] | None = None,
         origin_override: Origin | None = None,
+        security_context: MCPSecurityContext | None = None,
     ) -> LabeledSegment:
         """Invoke an MCP tool and return a signed, labeled segment."""
-        raw = await self.client.call_tool(name, arguments)
+        raw = await _call_tool_with_security_context(
+            self.client,
+            name,
+            arguments,
+            security_context,
+        )
         content = self.extract(raw)
         origin = origin_override or self._origin_for(name)
         trust = (
@@ -134,5 +170,59 @@ class MCPInterceptor:
         return Origin.WEB if tool_name in effective else Origin.TOOL
 
 
+def _delegation_dict(token: DelegationToken) -> dict[str, object]:
+    return {
+        "subject": token.subject,
+        "delegate": token.delegate,
+        "audience": token.audience,
+        "authorized_actions": list(token.authorized_actions),
+        "constraints": token.constraints,
+        "session_id": token.session_id,
+        "expires_at": token.expires_at.isoformat(),
+        "signature": token.signature,
+    }
+
+
+async def _call_tool_with_security_context(
+    client: MCPClient,
+    name: str,
+    arguments: dict[str, Any] | None,
+    security_context: MCPSecurityContext | None,
+) -> Any:
+    """Call the MCP client with the richest supported security carriage.
+
+    Preference order:
+    1. explicit `security_context=...`
+    2. generic `metadata={"tessera_security_context": ...}`
+    3. legacy `(name, arguments)` only
+    """
+    if security_context is None:
+        return await client.call_tool(name, arguments)
+
+    call_tool = client.call_tool
+    signature = inspect.signature(call_tool)
+    parameters = signature.parameters
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if "security_context" in parameters or accepts_kwargs:
+        return await call_tool(
+            name,
+            arguments,
+            security_context=security_context.to_dict(),
+        )
+    if "metadata" in parameters or accepts_kwargs:
+        return await call_tool(
+            name,
+            arguments,
+            metadata={"tessera_security_context": security_context.to_dict()},
+        )
+    return await call_tool(name, arguments)
+
+
 # Convenience async type so callers can annotate their own wrappers cleanly.
-CallTool = Callable[[str, dict[str, Any] | None], Awaitable[LabeledSegment]]
+CallTool = Callable[
+    [str, dict[str, Any] | None, Origin | None, MCPSecurityContext | None],
+    Awaitable[LabeledSegment],
+]

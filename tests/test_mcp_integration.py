@@ -8,6 +8,8 @@ is not installed.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 pytest.importorskip("mcp")
@@ -18,8 +20,13 @@ from mcp.shared.memory import (  # noqa: E402
     create_connected_server_and_client_session,
 )
 
+from tessera.delegation import DelegationToken, sign_delegation  # noqa: E402
 from tessera.labels import Origin, TrustLevel  # noqa: E402
-from tessera.mcp import MCPInterceptor  # noqa: E402
+from tessera.mcp import MCPInterceptor, MCPSecurityContext  # noqa: E402
+from tessera.provenance import (  # noqa: E402
+    ContextSegmentEnvelope,
+    PromptProvenanceManifest,
+)
 from tessera.registry import ToolRegistry  # noqa: E402
 
 KEY = b"test-hmac-key-do-not-use-in-prod"
@@ -99,3 +106,50 @@ async def test_real_mcp_external_tool_labeled_untrusted_via_registry():
     assert segment.label.trust_level == TrustLevel.UNTRUSTED
     assert "scraped from https://example.com" in segment.content
     assert segment.verify(KEY)
+
+
+@pytest.mark.asyncio
+async def test_real_mcp_session_still_works_when_security_context_is_supplied():
+    server = _build_server()
+    delegation = sign_delegation(
+        DelegationToken(
+            subject="user:alice@example.com",
+            delegate="spiffe://example.org/ns/assistants/agent/researcher/i/1234",
+            audience="proxy://tessera",
+            authorized_actions=("query_database",),
+            constraints={},
+            session_id="ses_123",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        ),
+        KEY,
+    )
+    envelope = ContextSegmentEnvelope.create(
+        content="select 1",
+        origin=Origin.USER,
+        issuer="spiffe://example.org/ns/proxy/i/abcd",
+        principal="alice",
+        trust_level=TrustLevel.USER,
+        key=KEY,
+    )
+    manifest = PromptProvenanceManifest.assemble(
+        [envelope],
+        assembled_by="spiffe://example.org/ns/proxy/i/abcd",
+        key=KEY,
+        session_id="ses_123",
+    )
+    security_context = MCPSecurityContext(
+        delegation=delegation,
+        provenance_manifest=manifest,
+        segment_envelopes=(envelope,),
+    )
+
+    async with create_connected_server_and_client_session(server) as session:
+        mcp = MCPInterceptor(client=session, key=KEY, principal="alice")
+        segment = await mcp.call(
+            "query_database",
+            {"sql": "select 1"},
+            security_context=security_context,
+        )
+
+    assert segment.label.origin == Origin.TOOL
+    assert "rows for: select 1" in segment.content
