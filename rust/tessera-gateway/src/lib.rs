@@ -1556,14 +1556,15 @@ async fn chat_completions(
             "Rust gateway scaffold exists, chat mediation is not implemented yet",
         );
     }
-    let label_key = match state.config.label_hmac_key.as_deref() {
-        Some(key) => key,
+    let label_secret = match state.config.label_hmac_secret() {
+        Some(secret) => secret,
         None => {
             return not_implemented(
                 "Rust gateway scaffold exists, chat mediation is not implemented yet",
             )
         }
     };
+    let label_key = label_secret.expose_secret().as_slice();
 
     if let Err(response) = verify_labels(&req.messages, label_key) {
         return response;
@@ -2685,7 +2686,8 @@ pub(crate) fn verify_identity_headers(
 }
 
 fn verify_identity_token(token: &str, config: &GatewayConfig) -> Option<VerifiedIdentity> {
-    let key = config.identity_hs256_key.as_deref()?;
+    let secret = config.identity_hs256_secret()?;
+    let key = secret.expose_secret().as_slice();
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
     validation.validate_aud = false;

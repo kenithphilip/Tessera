@@ -1,7 +1,5 @@
 syntax = "proto3";
-package tessera.xds.v1;
-
-import "proto/tessera/xds/v1/resources.proto";
+package tessera_proto.xds.v1;
 
 message DiscoveryRequest {
     string node_id = 1;
