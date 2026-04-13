@@ -757,12 +757,15 @@ def _jsonrpc_error(
 
 def _policy_for_request(base_policy: Policy, tools: list[ToolModel]) -> Policy:
     """Copy the base policy, then apply the caller's declared tool surface."""
+    base_reqs_by_name = {
+        req.name: req for req in base_policy.requirements.values()
+    }
     request_policy = Policy(
         requirements=deepcopy(base_policy.requirements),
         default_required_trust=base_policy.default_required_trust,
         backend=base_policy.backend,
         fail_closed_backend_errors=base_policy.fail_closed_backend_errors,
-        base_requirements=deepcopy(base_policy.requirements),
+        base_requirements=base_reqs_by_name,
         _human_approval_tools=set(base_policy._human_approval_tools),
     )
     for tool in tools:

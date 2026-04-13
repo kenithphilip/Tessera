@@ -1,0 +1,33 @@
+syntax = "proto3";
+package tessera.xds.v1;
+
+message PolicyBundle {
+    string version = 1;
+    string revision = 2;
+    repeated ToolRequirement requirements = 3;
+    int32 default_trust_level = 4;
+    repeated string human_approval_tools = 5;
+}
+
+message ToolRequirement {
+    string name = 1;
+    string resource_type = 2;
+    int32 required_trust = 3;
+}
+
+message ToolRegistryEntry {
+    string name = 1;
+    bool is_external = 2;
+}
+
+message ToolRegistry {
+    string version = 1;
+    string revision = 2;
+    repeated ToolRegistryEntry tools = 3;
+}
+
+message TrustConfig {
+    string version = 1;
+    string revision = 2;
+    map<string, int32> trust_levels = 3;
+}
