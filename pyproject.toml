@@ -35,6 +35,9 @@ spiffe = [
 mcp = [
     "mcp>=1.0",
 ]
+agentmesh = [
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 tessera = "tessera.cli:main"
@@ -45,3 +48,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]
