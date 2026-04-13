@@ -44,6 +44,7 @@ class EventKind(StrEnum):
     DELEGATION_VERIFY_FAILURE = "delegation_verify_failure"
     HUMAN_APPROVAL_REQUIRED = "human_approval_required"
     HUMAN_APPROVAL_RESOLVED = "human_approval_resolved"
+    SESSION_EXPIRED = "session_expired"
 
 
 @dataclass(frozen=True)
