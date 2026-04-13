@@ -16,6 +16,7 @@ rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+spiffe = { version = "0.12", default-features = false, features = ["workload-api-jwt"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 tokio-rustls = "0.26"
 tower = { version = "0.5", features = ["util"] }

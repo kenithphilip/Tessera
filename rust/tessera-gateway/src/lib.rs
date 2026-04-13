@@ -1,8 +1,10 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
+    future::Future,
     io,
     net::SocketAddr,
     panic::{catch_unwind, AssertUnwindSafe},
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, OnceLock,
@@ -24,7 +26,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{
-    decode, decode_header, jwk::AlgorithmParameters, jwk::Jwk, Algorithm, DecodingKey, Validation,
+    decode, decode_header, encode, jwk::AlgorithmParameters, jwk::Jwk, Algorithm, DecodingKey,
+    EncodingKey, Header, Validation,
 };
 use reqwest::Client;
 use rustls::{
@@ -35,7 +38,9 @@ use rustls::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use spiffe::{SpiffeId, WorkloadApiClient};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 use tokio_rustls::{server::TlsStream as ServerTlsStream, TlsAcceptor};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -519,6 +524,22 @@ pub struct GatewayConfig {
     pub policy_opa_token: Option<String>,
     pub policy_fail_closed_backend_errors: bool,
     pub policy_include_provenance: bool,
+    pub control_plane_url: Option<String>,
+    pub control_plane_token: Option<String>,
+    #[serde(skip)]
+    pub control_plane_poll_interval: Duration,
+    #[serde(skip)]
+    pub control_plane_hmac_key: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub control_plane_heartbeat_identity_hs256_key: Option<Vec<u8>>,
+    pub control_plane_heartbeat_use_spire: bool,
+    pub control_plane_heartbeat_spire_socket: Option<String>,
+    pub control_plane_heartbeat_spiffe_id: Option<String>,
+    pub control_plane_heartbeat_identity_issuer: Option<String>,
+    pub control_plane_heartbeat_identity_audience: Option<String>,
+    #[serde(skip)]
+    pub control_plane_heartbeat_proof_private_key_pem: Option<Vec<u8>>,
+    pub control_plane_heartbeat_proof_public_jwk: Option<Value>,
     #[serde(skip)]
     pub identity_hs256_key: Option<Vec<u8>>,
     pub identity_issuer: Option<String>,
@@ -552,6 +573,18 @@ impl Default for GatewayConfig {
             policy_opa_token: None,
             policy_fail_closed_backend_errors: true,
             policy_include_provenance: true,
+            control_plane_url: None,
+            control_plane_token: None,
+            control_plane_poll_interval: Duration::from_secs(30),
+            control_plane_hmac_key: None,
+            control_plane_heartbeat_identity_hs256_key: None,
+            control_plane_heartbeat_use_spire: false,
+            control_plane_heartbeat_spire_socket: None,
+            control_plane_heartbeat_spiffe_id: None,
+            control_plane_heartbeat_identity_issuer: None,
+            control_plane_heartbeat_identity_audience: None,
+            control_plane_heartbeat_proof_private_key_pem: None,
+            control_plane_heartbeat_proof_public_jwk: None,
             identity_hs256_key: None,
             identity_issuer: None,
             identity_audience: None,
@@ -597,6 +630,25 @@ impl GatewayConfig {
 
     fn external_policy_enabled(&self) -> bool {
         self.policy_opa_url.is_some()
+    }
+
+    fn control_plane_enabled(&self) -> bool {
+        self.control_plane_url.is_some()
+    }
+
+    fn control_plane_heartbeat_uses_spire(&self) -> bool {
+        self.control_plane_heartbeat_use_spire
+    }
+
+    fn control_plane_heartbeat_identity_enabled(&self) -> bool {
+        self.control_plane_heartbeat_identity_hs256_key.is_some()
+            || self.control_plane_heartbeat_uses_spire()
+    }
+
+    fn control_plane_heartbeat_audience(&self) -> String {
+        self.control_plane_heartbeat_identity_audience
+            .clone()
+            .unwrap_or_else(|| "tessera://control-plane/heartbeat".to_string())
     }
 
     fn provenance_enabled(&self) -> bool {
@@ -650,10 +702,90 @@ impl GatewayConfig {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     config: GatewayConfig,
     client: Option<Client>,
     proof_replay_cache: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
+    runtime_control: Arc<RwLock<RuntimeControlState>>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct RuntimeControlState {
+    configured: bool,
+    ready: bool,
+    policy: ManagedPolicyState,
+    registry: ManagedRegistryState,
+    last_refresh_at: Option<String>,
+    last_refresh_error: Option<String>,
+    last_heartbeat_at: Option<String>,
+    last_heartbeat_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct ManagedPolicyState {
+    revision: Option<String>,
+    previous_revision: Option<String>,
+    default_required_trust: i64,
+    tool_requirements: HashMap<String, i64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct ManagedRegistryState {
+    revision: Option<String>,
+    previous_revision: Option<String>,
+    external_tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SignedControlPlaneDocumentModel {
+    document_type: String,
+    document: Value,
+    algorithm: String,
+    signature: String,
+    issued_at: String,
+    issuer: Option<String>,
+    key_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ControlPlanePolicyDocument {
+    revision: String,
+    previous_revision: String,
+    #[serde(rename = "updated_at")]
+    _updated_at: String,
+    #[serde(default = "default_required_trust")]
+    default_required_trust: i64,
+    #[serde(default)]
+    tool_requirements: HashMap<String, i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ControlPlaneRegistryDocument {
+    revision: String,
+    previous_revision: String,
+    #[serde(rename = "updated_at")]
+    _updated_at: String,
+    #[serde(default)]
+    external_tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ControlPlaneHeartbeatPayload {
+    agent_id: String,
+    agent_name: String,
+    capabilities: Value,
+    status: String,
+    applied_policy_revision: Option<String>,
+    applied_registry_revision: Option<String>,
+    metadata: Value,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedRequiredTrust {
+    effective: i64,
+    default_required: i64,
+    base_required: i64,
+    request_required: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1177,7 +1309,7 @@ fn read_der_tlv(input: &[u8], offset: usize) -> Result<(u8, usize, usize), Strin
     Ok((tag, value_start, value_end))
 }
 
-pub fn build_app(config: GatewayConfig) -> Router {
+pub fn build_state(config: GatewayConfig) -> AppState {
     if config.trust_xfcc && config.trusted_proxy_hosts.is_empty() {
         panic!("trusted_proxy_hosts is required when trust_xfcc is enabled");
     }
@@ -1194,20 +1326,61 @@ pub fn build_app(config: GatewayConfig) -> Router {
     if config.external_policy_enabled() && config.policy_opa_path.trim().is_empty() {
         panic!("policy_opa_path must not be empty when external policy is enabled");
     }
-    let state = AppState {
+    if config.control_plane_enabled() && config.control_plane_hmac_key.is_none() {
+        panic!("control_plane_hmac_key is required when control-plane sync is enabled");
+    }
+    if config.control_plane_enabled() && config.agent_id.is_none() {
+        panic!("agent_id is required when control-plane sync is enabled");
+    }
+    if config.control_plane_heartbeat_uses_spire()
+        && config.control_plane_heartbeat_identity_hs256_key.is_some()
+    {
+        panic!("control-plane heartbeat identity must use either HS256 or SPIRE, not both");
+    }
+    if config.control_plane_heartbeat_proof_private_key_pem.is_some()
+        != config.control_plane_heartbeat_proof_public_jwk.is_some()
+    {
+        panic!(
+            "control-plane heartbeat proof configuration requires both private key and public JWK"
+        );
+    }
+    if config.control_plane_heartbeat_uses_spire()
+        && config.control_plane_heartbeat_proof_private_key_pem.is_some()
+    {
+        panic!("control-plane heartbeat proof is not supported with SPIRE identity");
+    }
+    if config.control_plane_heartbeat_proof_private_key_pem.is_some()
+        && !config.control_plane_heartbeat_identity_enabled()
+    {
+        panic!("control-plane heartbeat proof requires heartbeat identity signing");
+    }
+    AppState {
         client: (config.upstream_url.is_some()
             || config.a2a_upstream_url.is_some()
-            || config.external_policy_enabled())
-        .then(|| {
-            Client::builder()
-                .build()
-                .expect("reqwest client should build")
-        }),
+            || config.external_policy_enabled()
+            || config.control_plane_enabled())
+            .then(|| {
+                Client::builder()
+                    .build()
+                    .expect("reqwest client should build")
+            }),
+        runtime_control: Arc::new(RwLock::new(RuntimeControlState {
+            configured: config.control_plane_enabled(),
+            ..RuntimeControlState::default()
+        })),
         config,
         proof_replay_cache: Arc::new(Mutex::new(HashMap::new())),
-    };
+    }
+}
+
+pub fn build_app(config: GatewayConfig) -> Router {
+    build_app_with_state(build_state(config))
+}
+
+pub fn build_app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/.well-known/agent.json", get(agent_card))
+        .route("/v1/tessera/status", get(local_status))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/a2a/jsonrpc", post(a2a_jsonrpc))
         .layer(from_fn(inject_transport_context))
@@ -1260,6 +1433,25 @@ async fn inject_transport_context(mut request: Request, next: Next) -> Response 
 
 async fn agent_card(State(state): State<AppState>) -> Json<Value> {
     Json(discovery_document(&state.config))
+}
+
+async fn local_status(State(state): State<AppState>) -> Json<Value> {
+    let runtime = state.runtime_control.read().await.clone();
+    Json(json!({
+        "agent_id": state.config.agent_id,
+        "agent_name": state.config.agent_name,
+        "control_plane": {
+            "configured": runtime.configured,
+            "ready": runtime.ready,
+            "url": state.config.control_plane_url,
+            "policy_revision": runtime.policy.revision,
+            "registry_revision": runtime.registry.revision,
+            "last_refresh_at": runtime.last_refresh_at,
+            "last_refresh_error": runtime.last_refresh_error,
+            "last_heartbeat_at": runtime.last_heartbeat_at,
+            "last_heartbeat_error": runtime.last_heartbeat_error,
+        }
+    }))
 }
 
 async fn chat_completions(
@@ -1339,6 +1531,7 @@ async fn chat_completions(
     ) {
         return response;
     }
+    let runtime = state.runtime_control.read().await.clone();
 
     let rendered_messages: Vec<Value> = req
         .messages
@@ -1388,8 +1581,15 @@ async fn chat_completions(
     let mut allowed = Vec::new();
     let mut denied = Vec::new();
     for call in &proposed_calls {
-        let outcome =
-            evaluate_call_outcome(&state, &req, call, observed_trust, delegation.as_ref()).await;
+        let outcome = evaluate_call_outcome(
+            &state,
+            &req,
+            call,
+            observed_trust,
+            delegation.as_ref(),
+            &runtime,
+        )
+        .await;
         match outcome.decision {
             Decision::Allow => {
                 allowed.push(json!({
@@ -1589,6 +1789,7 @@ fn discovery_document(config: &GatewayConfig) -> Value {
         "description": config.agent_description,
         "url": config.agent_url,
         "version": "0.1.0",
+        "status_path": "/v1/tessera/status",
         "identity": {
             "configured": configured,
             "scheme": if configured { Some("spiffe") } else { None },
@@ -1668,9 +1869,272 @@ fn discovery_document(config: &GatewayConfig) -> Value {
                 },
                 "fail_closed_backend_errors": config.policy_fail_closed_backend_errors,
             },
+            "control_plane": {
+                "enabled": config.control_plane_enabled(),
+                "status_path": if config.control_plane_enabled() {
+                    Some("/v1/tessera/status")
+                } else {
+                    None::<&str>
+                },
+                "distribution_verification": if config.control_plane_hmac_key.is_some() {
+                    Some("hmac")
+                } else {
+                    None::<&str>
+                },
+            },
             "quarantined_execution": false,
         },
     })
+}
+
+fn control_plane_signed_payload(document: &SignedControlPlaneDocumentModel) -> Value {
+    json!({
+        "document_type": document.document_type,
+        "document": document.document,
+        "issued_at": document.issued_at,
+        "issuer": document.issuer,
+        "key_id": document.key_id,
+    })
+}
+
+fn verify_control_plane_document(
+    document: &SignedControlPlaneDocumentModel,
+    expected_type: &str,
+    key: &[u8],
+) -> Result<(), String> {
+    if document.document_type != expected_type {
+        return Err(format!(
+            "control-plane document type mismatch: expected {expected_type:?}, got {:?}",
+            document.document_type
+        ));
+    }
+    if document.algorithm != "HMAC-SHA256" {
+        return Err(format!(
+            "unsupported control-plane signing algorithm {:?}",
+            document.algorithm
+        ));
+    }
+    let payload = control_plane_signed_payload(document);
+    let mut canonical = Vec::new();
+    write_canonical_json(&payload, &mut canonical);
+    let expected = sign_hex(&canonical, key);
+    if !subtle_constant_time_eq(expected.as_bytes(), document.signature.as_bytes()) {
+        return Err(format!(
+            "invalid signature on control-plane {} document",
+            expected_type
+        ));
+    }
+    Ok(())
+}
+
+async fn fetch_signed_control_plane_document(
+    client: &Client,
+    config: &GatewayConfig,
+    document_type: &str,
+    current_revision: Option<&str>,
+) -> Result<Option<SignedControlPlaneDocumentModel>, String> {
+    let base_url = config
+        .control_plane_url
+        .as_ref()
+        .ok_or_else(|| "control-plane URL is not configured".to_string())?;
+    let mut request = client.get(format!(
+        "{}/v1/control/{document_type}/signed",
+        base_url.trim_end_matches('/')
+    ));
+    if let Some(token) = config.control_plane_token.as_ref() {
+        request = request.bearer_auth(token);
+    }
+    if let Some(revision) = current_revision {
+        request = request.header("If-None-Match", format!("\"{revision}\""));
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("control-plane {document_type} fetch failed: {error}"))?;
+    if response.status() == StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    let response = response
+        .error_for_status()
+        .map_err(|error| format!("control-plane {document_type} fetch failed: {error}"))?;
+    response
+        .json::<SignedControlPlaneDocumentModel>()
+        .await
+        .map(Some)
+        .map_err(|error| format!("control-plane {document_type} fetch failed: {error}"))
+}
+
+async fn post_control_plane_heartbeat(
+    client: &Client,
+    config: &GatewayConfig,
+    runtime: &RuntimeControlState,
+) -> Result<(), String> {
+    let base_url = config
+        .control_plane_url
+        .as_ref()
+        .ok_or_else(|| "control-plane URL is not configured".to_string())?;
+    let agent_id = config
+        .agent_id
+        .clone()
+        .ok_or_else(|| "agent_id is required for control-plane heartbeats".to_string())?;
+    let payload = ControlPlaneHeartbeatPayload {
+        agent_id,
+        agent_name: config.agent_name.clone(),
+        capabilities: json!({
+            "chat": config.chat_enforcement_enabled(),
+            "chat_proxy": config.chat_forwarding_enabled(),
+            "a2a": config.a2a_forwarding_enabled(),
+            "mtls": config.mtls_enabled(),
+            "external_policy": config.external_policy_enabled(),
+        }),
+        status: if runtime.ready {
+            "ready".to_string()
+        } else {
+            "degraded".to_string()
+        },
+        applied_policy_revision: runtime.policy.revision.clone(),
+        applied_registry_revision: runtime.registry.revision.clone(),
+        metadata: json!({
+            "status_path": "/v1/tessera/status",
+            "last_refresh_at": runtime.last_refresh_at,
+            "last_refresh_error": runtime.last_refresh_error,
+        }),
+    };
+    let heartbeat_url = format!(
+        "{}/v1/control/agents/heartbeat",
+        base_url.trim_end_matches('/')
+    );
+    let mut request = client.post(&heartbeat_url);
+    if let Some(token) = config.control_plane_token.as_ref() {
+        request = request.bearer_auth(token);
+    }
+    for (name, value) in control_plane_heartbeat_headers(config, &heartbeat_url)
+        .await
+        .map_err(|error| format!("control-plane heartbeat auth failed: {error}"))?
+    {
+        request = request.header(name, value);
+    }
+    request
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("control-plane heartbeat failed: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("control-plane heartbeat failed: {error}"))?;
+    Ok(())
+}
+
+pub async fn sync_control_plane_once(state: &AppState) -> Result<(), String> {
+    if !state.config.control_plane_enabled() {
+        return Ok(());
+    }
+    let key = state
+        .config
+        .control_plane_hmac_key
+        .as_deref()
+        .ok_or_else(|| "control-plane verification key is not configured".to_string())?;
+    let client = state
+        .client
+        .as_ref()
+        .ok_or_else(|| "control-plane HTTP client is not available".to_string())?;
+    let current = state.runtime_control.read().await.clone();
+    let policy_doc = fetch_signed_control_plane_document(
+        client,
+        &state.config,
+        "policy",
+        current.policy.revision.as_deref(),
+    )
+    .await?;
+    let registry_doc = fetch_signed_control_plane_document(
+        client,
+        &state.config,
+        "registry",
+        current.registry.revision.as_deref(),
+    )
+    .await?;
+
+    let mut next = current.clone();
+    if let Some(document) = policy_doc {
+        verify_control_plane_document(&document, "policy", key)?;
+        let parsed: ControlPlanePolicyDocument = serde_json::from_value(document.document)
+            .map_err(|error| format!("invalid control-plane policy document: {error}"))?;
+        if !is_valid_trust_level(parsed.default_required_trust) {
+            return Err("control-plane policy default_required_trust is invalid".to_string());
+        }
+        if parsed
+            .tool_requirements
+            .values()
+            .any(|level| !is_valid_trust_level(*level))
+        {
+            return Err("control-plane policy contains an invalid trust level".to_string());
+        }
+        next.policy = ManagedPolicyState {
+            revision: Some(parsed.revision),
+            previous_revision: Some(parsed.previous_revision),
+            default_required_trust: parsed.default_required_trust,
+            tool_requirements: parsed.tool_requirements,
+        };
+    }
+    if let Some(document) = registry_doc {
+        verify_control_plane_document(&document, "registry", key)?;
+        let parsed: ControlPlaneRegistryDocument = serde_json::from_value(document.document)
+            .map_err(|error| format!("invalid control-plane registry document: {error}"))?;
+        next.registry = ManagedRegistryState {
+            revision: Some(parsed.revision),
+            previous_revision: Some(parsed.previous_revision),
+            external_tools: parsed.external_tools,
+        };
+    }
+    next.ready = next.policy.revision.is_some() && next.registry.revision.is_some();
+    next.last_refresh_at = Some(Utc::now().to_rfc3339());
+    next.last_refresh_error = None;
+    {
+        let mut runtime = state.runtime_control.write().await;
+        *runtime = next.clone();
+    }
+    match post_control_plane_heartbeat(client, &state.config, &next).await {
+        Ok(()) => {
+            let mut runtime = state.runtime_control.write().await;
+            runtime.last_heartbeat_at = Some(Utc::now().to_rfc3339());
+            runtime.last_heartbeat_error = None;
+        }
+        Err(error) => {
+            let mut runtime = state.runtime_control.write().await;
+            runtime.last_heartbeat_error = Some(error.clone());
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+pub async fn bootstrap_control_plane(state: &AppState) -> Result<(), String> {
+    if !state.config.control_plane_enabled() {
+        return Ok(());
+    }
+    sync_control_plane_once(state).await?;
+    let runtime = state.runtime_control.read().await.clone();
+    if runtime.ready {
+        Ok(())
+    } else {
+        Err("control-plane bootstrap did not produce a ready snapshot".to_string())
+    }
+}
+
+pub fn spawn_control_plane_sync_loop(state: AppState) {
+    if !state.config.control_plane_enabled() {
+        return;
+    }
+    let poll_interval = state.config.control_plane_poll_interval;
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(poll_interval).await;
+            if let Err(error) = sync_control_plane_once(&state).await {
+                let mut runtime = state.runtime_control.write().await;
+                runtime.last_refresh_error = Some(error);
+                runtime.last_refresh_at = Some(Utc::now().to_rfc3339());
+            }
+        }
+    });
 }
 
 fn verify_labels(messages: &[MessageModel], key: &[u8]) -> Result<(), Response> {
@@ -2449,8 +2913,8 @@ fn build_chat_policy_input(
     observed_trust: i64,
     delegation: Option<&DelegationHeaderModel>,
     config: &GatewayConfig,
+    resolved: &ResolvedRequiredTrust,
 ) -> PolicyInput {
-    let required_trust = required_trust_for_tool(&req.tools, &call.name);
     let request_required_trust = req
         .tools
         .iter()
@@ -2478,12 +2942,12 @@ fn build_chat_policy_input(
                 .iter()
                 .map(|segment| segment.principal.as_str()),
         ),
-        required_trust,
+        required_trust: resolved.effective,
         observed_trust,
-        min_trust_passed: observed_trust >= required_trust,
-        default_required_trust: USER_TRUST,
-        base_required_trust: USER_TRUST,
-        request_required_trust,
+        min_trust_passed: observed_trust >= resolved.effective,
+        default_required_trust: resolved.default_required,
+        base_required_trust: resolved.base_required,
+        request_required_trust: request_required_trust.or(resolved.request_required),
         expected_delegate: config.agent_id.clone(),
         origin_counts: origin_counts(&segment_summary),
         segment_summary,
@@ -2545,6 +3009,43 @@ fn common_principal<'a>(principals: impl Iterator<Item = &'a str>) -> Option<Str
     } else {
         None
     }
+}
+
+fn resolve_required_trust_for_tool(
+    tools: &[ToolModel],
+    tool_name: &str,
+    runtime: &RuntimeControlState,
+) -> Result<ResolvedRequiredTrust, String> {
+    let request_required = tools
+        .iter()
+        .find(|tool| tool.name == tool_name)
+        .map(|tool| tool.required_trust);
+    if runtime.configured {
+        if !runtime.ready {
+            return Err("control-plane policy is not ready".to_string());
+        }
+        let Some(base_required) = runtime.policy.tool_requirements.get(tool_name).copied() else {
+            return Err(format!(
+                "tool {:?} is not present in the applied control-plane policy",
+                tool_name
+            ));
+        };
+        let Some(request_required) = request_required else {
+            return Err(format!("tool {:?} was not declared by the caller", tool_name));
+        };
+        return Ok(ResolvedRequiredTrust {
+            effective: base_required.max(request_required),
+            default_required: runtime.policy.default_required_trust,
+            base_required,
+            request_required: Some(request_required),
+        });
+    }
+    Ok(ResolvedRequiredTrust {
+        effective: request_required.unwrap_or(USER_TRUST),
+        default_required: USER_TRUST,
+        base_required: USER_TRUST,
+        request_required,
+    })
 }
 
 fn origin_counts(segment_summary: &[PolicySegmentSummary]) -> HashMap<String, usize> {
@@ -2784,21 +3285,13 @@ fn min_envelope_trust(envelopes: &[EnvelopeModel]) -> i64 {
         .unwrap_or(SYSTEM_TRUST)
 }
 
-fn required_trust_for_tool(tools: &[ToolModel], tool_name: &str) -> i64 {
-    tools
-        .iter()
-        .find(|tool| tool.name == tool_name)
-        .map(|tool| tool.required_trust)
-        .unwrap_or(USER_TRUST)
-}
-
 fn decision_for_call(
-    tools: &[ToolModel],
     observed_trust: i64,
     call: &ProposedCall,
     delegation: Option<&DelegationHeaderModel>,
+    resolved: &ResolvedRequiredTrust,
 ) -> Decision {
-    let required_trust = required_trust_for_tool(tools, &call.name);
+    let required_trust = resolved.effective;
     if observed_trust < required_trust {
         return Decision::Deny {
             reason: format!(
@@ -2852,10 +3345,39 @@ async fn evaluate_call_outcome(
     call: &ProposedCall,
     observed_trust: i64,
     delegation: Option<&DelegationHeaderModel>,
+    runtime: &RuntimeControlState,
 ) -> DecisionOutcome {
+    let resolved = match resolve_required_trust_for_tool(&req.tools, &call.name, runtime) {
+        Ok(resolved) => resolved,
+        Err(reason) => {
+            let outcome = DecisionOutcome {
+                decision: Decision::Deny {
+                    reason,
+                    required_trust: runtime.policy.default_required_trust.max(USER_TRUST),
+                    observed_trust,
+                },
+                backend: None,
+                backend_metadata: json!({}),
+            };
+            let fallback = ResolvedRequiredTrust {
+                effective: runtime.policy.default_required_trust.max(USER_TRUST),
+                default_required: runtime.policy.default_required_trust.max(USER_TRUST),
+                base_required: runtime.policy.default_required_trust.max(USER_TRUST),
+                request_required: req
+                    .tools
+                    .iter()
+                    .find(|tool| tool.name == call.name)
+                    .map(|tool| tool.required_trust),
+            };
+            let policy_input =
+                build_chat_policy_input(req, call, observed_trust, delegation, &state.config, &fallback);
+            emit_policy_deny_event(&policy_input, &outcome);
+            return outcome;
+        }
+    };
     let policy_input =
-        build_chat_policy_input(req, call, observed_trust, delegation, &state.config);
-    let local_decision = decision_for_call(&req.tools, observed_trust, call, delegation);
+        build_chat_policy_input(req, call, observed_trust, delegation, &state.config, &resolved);
+    let local_decision = decision_for_call(observed_trust, call, delegation, &resolved);
     if !matches!(local_decision, Decision::Allow) {
         let outcome = DecisionOutcome {
             decision: local_decision,
@@ -2876,7 +3398,7 @@ async fn evaluate_call_outcome(
         let outcome = backend_error_outcome(
             &state.config,
             call.name.clone(),
-            required_trust_for_tool(&req.tools, &call.name),
+            resolved.effective,
             observed_trust,
             "OPA query failed: no HTTP client is available".to_string(),
         );
@@ -2887,13 +3409,13 @@ async fn evaluate_call_outcome(
         Ok(backend_decision) => backend_decision_to_outcome(
             backend_decision,
             call.name.clone(),
-            required_trust_for_tool(&req.tools, &call.name),
+            resolved.effective,
             observed_trust,
         ),
         Err(error) => backend_error_outcome(
             &state.config,
             call.name.clone(),
-            required_trust_for_tool(&req.tools, &call.name),
+            resolved.effective,
             observed_trust,
             error,
         ),
@@ -3565,6 +4087,150 @@ fn request_url(headers: &HeaderMap, uri: &Uri) -> String {
     format!("{scheme}://{host}{path_and_query}")
 }
 
+fn sign_control_plane_identity(config: &GatewayConfig) -> Result<String, String> {
+    let key = config
+        .control_plane_heartbeat_identity_hs256_key
+        .as_deref()
+        .ok_or_else(|| "control-plane heartbeat identity key is not configured".to_string())?;
+    let agent_id = config
+        .agent_id
+        .as_ref()
+        .ok_or_else(|| "agent_id is required for heartbeat identity".to_string())?;
+    let now = Utc::now();
+    let confirmation_jkt = match &config.control_plane_heartbeat_proof_public_jwk {
+        Some(jwk) => jwk_thumbprint_value(jwk)
+            .ok_or_else(|| "control-plane heartbeat proof public JWK is invalid".to_string())?,
+        None => return Ok(encode(
+            &Header::new(Algorithm::HS256),
+            &IdentityClaims {
+                sub: agent_id.clone(),
+                aud: AudienceClaim::One(config.control_plane_heartbeat_audience()),
+                exp: (now + chrono::Duration::minutes(5)).timestamp() as usize,
+                iss: config.control_plane_heartbeat_identity_issuer.clone(),
+                nbf: Some((now - chrono::Duration::seconds(5)).timestamp() as usize),
+                iat: Some((now - chrono::Duration::seconds(5)).timestamp() as usize),
+                cnf: None,
+            },
+            &EncodingKey::from_secret(key),
+        ).map_err(|error| error.to_string())?),
+    };
+    encode(
+        &Header::new(Algorithm::HS256),
+        &IdentityClaims {
+            sub: agent_id.clone(),
+            aud: AudienceClaim::One(config.control_plane_heartbeat_audience()),
+            exp: (now + chrono::Duration::minutes(5)).timestamp() as usize,
+            iss: config.control_plane_heartbeat_identity_issuer.clone(),
+            nbf: Some((now - chrono::Duration::seconds(5)).timestamp() as usize),
+            iat: Some((now - chrono::Duration::seconds(5)).timestamp() as usize),
+            cnf: Some(ConfirmationClaim {
+                jkt: Some(confirmation_jkt),
+                jwk: None,
+            }),
+        },
+        &EncodingKey::from_secret(key),
+    )
+    .map_err(|error| error.to_string())
+}
+
+async fn fetch_spire_control_plane_identity(config: &GatewayConfig) -> Result<String, String> {
+    let audience = config.control_plane_heartbeat_audience();
+    let spiffe_id = match config.control_plane_heartbeat_spiffe_id.as_deref() {
+        Some(value) => Some(
+            value
+                .parse::<SpiffeId>()
+                .map_err(|error| format!("invalid control-plane heartbeat SPIFFE ID: {error}"))?,
+        ),
+        None => None,
+    };
+    let client = match config.control_plane_heartbeat_spire_socket.as_deref() {
+        Some(socket) => WorkloadApiClient::connect_to(socket)
+            .await
+            .map_err(|error| format!("SPIRE Workload API connect failed: {error}"))?,
+        None => WorkloadApiClient::connect_env()
+            .await
+            .map_err(|error| format!("SPIRE Workload API connect failed: {error}"))?,
+    };
+    client
+        .fetch_jwt_token([audience], spiffe_id.as_ref())
+        .await
+        .map_err(|error| format!("SPIRE JWT-SVID fetch failed: {error}"))
+}
+
+async fn control_plane_heartbeat_headers_with<F>(
+    config: &GatewayConfig,
+    heartbeat_url: &str,
+    spire_fetcher: F,
+) -> Result<Vec<(&'static str, String)>, String>
+where
+    F: for<'a> Fn(&'a GatewayConfig) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>,
+{
+    if !config.control_plane_heartbeat_identity_enabled() {
+        return Ok(Vec::new());
+    }
+    let identity = if config.control_plane_heartbeat_uses_spire() {
+        spire_fetcher(config).await?
+    } else {
+        sign_control_plane_identity(config)?
+    };
+    let mut headers = vec![("ASM-Agent-Identity", identity.clone())];
+    if let Some(proof) = sign_control_plane_proof(config, &identity, heartbeat_url)? {
+        headers.push(("ASM-Agent-Proof", proof));
+    }
+    Ok(headers)
+}
+
+async fn control_plane_heartbeat_headers(
+    config: &GatewayConfig,
+    heartbeat_url: &str,
+) -> Result<Vec<(&'static str, String)>, String> {
+    control_plane_heartbeat_headers_with(config, heartbeat_url, |current| {
+        Box::pin(fetch_spire_control_plane_identity(current))
+    })
+    .await
+}
+
+fn sign_control_plane_proof(
+    config: &GatewayConfig,
+    identity_token: &str,
+    heartbeat_url: &str,
+) -> Result<Option<String>, String> {
+    let Some(private_key) = config.control_plane_heartbeat_proof_private_key_pem.as_deref() else {
+        if config.control_plane_heartbeat_proof_public_jwk.is_some() {
+            return Err(
+                "control-plane heartbeat proof public JWK is configured without a private key"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    };
+    let public_jwk_value = config
+        .control_plane_heartbeat_proof_public_jwk
+        .as_ref()
+        .ok_or_else(|| {
+            "control-plane heartbeat proof private key is configured without a public JWK"
+                .to_string()
+        })?;
+    let public_jwk: Jwk = serde_json::from_value(public_jwk_value.clone())
+        .map_err(|error| format!("invalid control-plane heartbeat proof public JWK: {error}"))?;
+    let mut header = Header::new(Algorithm::RS256);
+    header.typ = Some("dpop+jwt".to_string());
+    header.jwk = Some(public_jwk);
+    encode(
+        &header,
+        &ProofClaims {
+            htm: "POST".to_string(),
+            htu: heartbeat_url.to_string(),
+            iat: Utc::now().timestamp() as usize,
+            jti: Uuid::new_v4().simple().to_string(),
+            ath: token_hash(identity_token),
+        },
+        &EncodingKey::from_rsa_pem(private_key).map_err(|error| error.to_string())?,
+    )
+    .map(Some)
+    .map_err(|error| error.to_string())
+}
+
 fn extract_spiffe_id_from_xfcc(header: &str) -> Option<String> {
     header.split([';', ',']).find_map(|part| {
         let trimmed = part.trim();
@@ -3972,6 +4638,18 @@ hADvwH1m3FRUySyFRbtdBA==
             policy_opa_token: None,
             policy_fail_closed_backend_errors: true,
             policy_include_provenance: true,
+            control_plane_url: None,
+            control_plane_token: None,
+            control_plane_poll_interval: Duration::from_millis(50),
+            control_plane_hmac_key: None,
+            control_plane_heartbeat_identity_hs256_key: None,
+            control_plane_heartbeat_use_spire: false,
+            control_plane_heartbeat_spire_socket: None,
+            control_plane_heartbeat_spiffe_id: None,
+            control_plane_heartbeat_identity_issuer: None,
+            control_plane_heartbeat_identity_audience: None,
+            control_plane_heartbeat_proof_private_key_pem: None,
+            control_plane_heartbeat_proof_public_jwk: None,
             identity_hs256_key: None,
             identity_issuer: None,
             identity_audience: None,
@@ -4052,6 +4730,154 @@ hADvwH1m3FRUySyFRbtdBA==
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{addr}"), handle)
+    }
+
+    #[derive(Clone)]
+    struct ControlPlaneStubState {
+        policy: Arc<Mutex<Value>>,
+        registry: Arc<Mutex<Value>>,
+        heartbeats: Arc<Mutex<Vec<Value>>>,
+    }
+
+    fn signed_control_plane_document(document_type: &str, document: &Value) -> Value {
+        let issued_at = "2026-04-11T00:00:00+00:00";
+        let payload = json!({
+            "document_type": document_type,
+            "document": document,
+            "issued_at": issued_at,
+            "issuer": "spiffe://example.org/ns/control/sa/istiod",
+            "key_id": "control-1",
+        });
+        let mut canonical = Vec::new();
+        write_canonical_json(&payload, &mut canonical);
+        json!({
+            "document_type": document_type,
+            "document": document,
+            "algorithm": "HMAC-SHA256",
+            "signature": sign_hex(&canonical, KEY),
+            "issued_at": issued_at,
+            "issuer": "spiffe://example.org/ns/control/sa/istiod",
+            "key_id": "control-1",
+        })
+    }
+
+    async fn spawn_control_plane(
+        policy: Value,
+        registry: Value,
+        heartbeats: Arc<Mutex<Vec<Value>>>,
+    ) -> (String, Arc<Mutex<Value>>, Arc<Mutex<Value>>, JoinHandle<()>) {
+        let policy_state = Arc::new(Mutex::new(policy));
+        let registry_state = Arc::new(Mutex::new(registry));
+        let state = ControlPlaneStubState {
+            policy: policy_state.clone(),
+            registry: registry_state.clone(),
+            heartbeats: heartbeats.clone(),
+        };
+        let app = Router::new()
+            .route(
+                "/v1/control/policy/signed",
+                get({
+                    let state = state.clone();
+                    move |headers: HeaderMap| {
+                        let state = state.clone();
+                        async move {
+                            let document = state.policy.lock().unwrap().clone();
+                            let revision =
+                                document["revision"].as_str().unwrap().to_string();
+                            if headers
+                                .get("if-none-match")
+                                .and_then(|value| value.to_str().ok())
+                                == Some(&format!("\"{revision}\""))
+                            {
+                                return Response::builder()
+                                    .status(StatusCode::NOT_MODIFIED)
+                                    .header("etag", format!("\"{revision}\""))
+                                    .body(Body::empty())
+                                    .unwrap();
+                            }
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("etag", format!("\"{revision}\""))
+                                .header("content-type", "application/json")
+                                .body(Body::from(
+                                    signed_control_plane_document("policy", &document).to_string(),
+                                ))
+                                .unwrap()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/control/registry/signed",
+                get({
+                    let state = state.clone();
+                    move |headers: HeaderMap| {
+                        let state = state.clone();
+                        async move {
+                            let document = state.registry.lock().unwrap().clone();
+                            let revision =
+                                document["revision"].as_str().unwrap().to_string();
+                            if headers
+                                .get("if-none-match")
+                                .and_then(|value| value.to_str().ok())
+                                == Some(&format!("\"{revision}\""))
+                            {
+                                return Response::builder()
+                                    .status(StatusCode::NOT_MODIFIED)
+                                    .header("etag", format!("\"{revision}\""))
+                                    .body(Body::empty())
+                                    .unwrap();
+                            }
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("etag", format!("\"{revision}\""))
+                                .header("content-type", "application/json")
+                                .body(Body::from(
+                                    signed_control_plane_document("registry", &document)
+                                        .to_string(),
+                                ))
+                                .unwrap()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/control/agents/heartbeat",
+                post({
+                    let state = state.clone();
+                    move |headers: HeaderMap, Json(payload): Json<Value>| {
+                        let state = state.clone();
+                        async move {
+                            state.heartbeats.lock().unwrap().push(json!({
+                                "headers": {
+                                    "authorization": headers
+                                        .get("authorization")
+                                        .and_then(|value| value.to_str().ok()),
+                                    "asm_agent_identity": headers
+                                        .get("ASM-Agent-Identity")
+                                        .and_then(|value| value.to_str().ok()),
+                                    "asm_agent_proof": headers
+                                        .get("ASM-Agent-Proof")
+                                        .and_then(|value| value.to_str().ok()),
+                                },
+                                "body": payload,
+                            }));
+                            StatusCode::OK
+                        }
+                    }
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (
+            format!("http://{addr}"),
+            policy_state,
+            registry_state,
+            handle,
+        )
     }
 
     async fn spawn_webhook_collector(
@@ -4483,6 +5309,309 @@ hADvwH1m3FRUySyFRbtdBA==
         );
         assert_eq!(payload["body"]["security"]["label_verification"], "hmac");
         assert_eq!(payload["body"]["security"]["prompt_provenance"], true);
+    }
+
+    #[tokio::test]
+    async fn control_plane_bootstrap_updates_local_status_and_sends_heartbeat() {
+        let heartbeats = Arc::new(Mutex::new(Vec::new()));
+        let (control_plane_url, _policy_state, _registry_state, control_plane_handle) =
+            spawn_control_plane(
+                json!({
+                    "revision": "rev-policy-1",
+                    "previous_revision": "rev-policy-0",
+                    "updated_at": "2026-04-11T00:00:00+00:00",
+                    "default_required_trust": USER_TRUST,
+                    "tool_requirements": {"send_email": USER_TRUST},
+                }),
+                json!({
+                    "revision": "rev-registry-1",
+                    "previous_revision": "rev-registry-0",
+                    "updated_at": "2026-04-11T00:00:00+00:00",
+                    "external_tools": ["fetch_url"],
+                }),
+                heartbeats.clone(),
+            )
+            .await;
+        let mut config = test_config();
+        config.control_plane_url = Some(control_plane_url);
+        config.control_plane_token = Some("control-plane-token".to_string());
+        config.control_plane_hmac_key = Some(KEY.to_vec());
+        let state = build_state(config);
+        bootstrap_control_plane(&state).await.unwrap();
+        let app = build_app_with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tessera/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        control_plane_handle.abort();
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(
+            payload["body"]["control_plane"]["policy_revision"],
+            "rev-policy-1"
+        );
+        assert_eq!(
+            payload["body"]["control_plane"]["registry_revision"],
+            "rev-registry-1"
+        );
+        assert_eq!(payload["body"]["control_plane"]["ready"], true);
+        let recorded = heartbeats.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0]["body"]["applied_policy_revision"], "rev-policy-1");
+        assert_eq!(recorded[0]["body"]["applied_registry_revision"], "rev-registry-1");
+        assert_eq!(recorded[0]["body"]["metadata"]["status_path"], "/v1/tessera/status");
+    }
+
+    #[tokio::test]
+    async fn control_plane_sync_hot_reloads_tool_policy_into_chat_enforcement() {
+        let heartbeats = Arc::new(Mutex::new(Vec::new()));
+        let (control_plane_url, policy_state, _registry_state, control_plane_handle) =
+            spawn_control_plane(
+                json!({
+                    "revision": "rev-policy-1",
+                    "previous_revision": "rev-policy-0",
+                    "updated_at": "2026-04-11T00:00:00+00:00",
+                    "default_required_trust": USER_TRUST,
+                    "tool_requirements": {"send_email": USER_TRUST},
+                }),
+                json!({
+                    "revision": "rev-registry-1",
+                    "previous_revision": "rev-registry-0",
+                    "updated_at": "2026-04-11T00:00:00+00:00",
+                    "external_tools": ["fetch_url"],
+                }),
+                heartbeats,
+            )
+            .await;
+        let (upstream_url, upstream_handle) = spawn_upstream(json!({
+            "id": "cmpl-control-1",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call-control-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "send_email",
+                                    "arguments": "{\"to\":\"bob@example.com\"}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ]
+        }))
+        .await;
+        let mut config = test_config();
+        config.upstream_url = Some(upstream_url);
+        config.control_plane_url = Some(control_plane_url);
+        config.control_plane_hmac_key = Some(KEY.to_vec());
+        let state = build_state(config);
+        bootstrap_control_plane(&state).await.unwrap();
+        let app = build_app_with_state(state.clone());
+        let message = valid_message("send Bob a reminder", "user", USER_TRUST);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "model": "stub",
+                            "messages": [message.clone()],
+                            "tools": [
+                                {
+                                    "name": "send_email",
+                                    "required_trust": USER_TRUST,
+                                }
+                            ],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_payload = response_json(first).await;
+        assert_eq!(first_payload["body"]["tessera"]["allowed"][0]["name"], "send_email");
+
+        *policy_state.lock().unwrap() = json!({
+            "revision": "rev-policy-2",
+            "previous_revision": "rev-policy-1",
+            "updated_at": "2026-04-11T00:01:00+00:00",
+            "default_required_trust": USER_TRUST,
+            "tool_requirements": {"send_email": SYSTEM_TRUST},
+        });
+        sync_control_plane_once(&state).await.unwrap();
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "model": "stub",
+                            "messages": [message],
+                            "tools": [
+                                {
+                                    "name": "send_email",
+                                    "required_trust": USER_TRUST,
+                                }
+                            ],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        upstream_handle.abort();
+        control_plane_handle.abort();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_payload = response_json(second).await;
+        assert_eq!(
+            second_payload["body"]["tessera"]["denied"][0]["required_trust"],
+            SYSTEM_TRUST
+        );
+        assert_eq!(
+            second_payload["body"]["tessera"]["denied"][0]["observed_trust"],
+            USER_TRUST
+        );
+    }
+
+    #[tokio::test]
+    async fn control_plane_heartbeat_can_carry_workload_identity_and_proof() {
+        let heartbeats = Arc::new(Mutex::new(Vec::new()));
+        let (control_plane_url, _policy_state, _registry_state, control_plane_handle) =
+            spawn_control_plane(
+                json!({
+                    "revision": "rev-policy-1",
+                    "previous_revision": "rev-policy-0",
+                    "updated_at": "2026-04-11T00:00:00+00:00",
+                    "default_required_trust": USER_TRUST,
+                    "tool_requirements": {"send_email": USER_TRUST},
+                }),
+                json!({
+                    "revision": "rev-registry-1",
+                    "previous_revision": "rev-registry-0",
+                    "updated_at": "2026-04-11T00:00:00+00:00",
+                    "external_tools": ["fetch_url"],
+                }),
+                heartbeats.clone(),
+            )
+            .await;
+        let mut config = test_config();
+        config.control_plane_url = Some(control_plane_url.clone());
+        config.control_plane_hmac_key = Some(KEY.to_vec());
+        config.control_plane_heartbeat_identity_hs256_key = Some(IDENTITY_KEY.to_vec());
+        config.control_plane_heartbeat_identity_issuer =
+            Some("spiffe://example.org".to_string());
+        config.control_plane_heartbeat_identity_audience =
+            Some("tessera://control-plane/heartbeat".to_string());
+        config.control_plane_heartbeat_proof_private_key_pem =
+            Some(PROOF_PRIVATE_KEY_PEM.as_bytes().to_vec());
+        config.control_plane_heartbeat_proof_public_jwk =
+            Some(serde_json::from_str(PROOF_PUBLIC_JWK_JSON).unwrap());
+        let state = build_state(config.clone());
+
+        bootstrap_control_plane(&state).await.unwrap();
+
+        control_plane_handle.abort();
+        let recorded = heartbeats.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        let identity = recorded[0]["headers"]["asm_agent_identity"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let proof = recorded[0]["headers"]["asm_agent_proof"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut identity_config = test_config();
+        identity_config.identity_hs256_key = Some(IDENTITY_KEY.to_vec());
+        identity_config.identity_issuer = Some("spiffe://example.org".to_string());
+        identity_config.identity_audience = Some("tessera://control-plane/heartbeat".to_string());
+        let verified_identity = verify_identity_token(&identity, &identity_config).unwrap();
+        assert_eq!(
+            verified_identity.agent_id,
+            "spiffe://example.org/ns/proxy/i/rust"
+        );
+        assert!(verify_agent_proof(
+            &proof,
+            &identity,
+            &Method::POST,
+            &format!("{control_plane_url}/v1/control/agents/heartbeat"),
+            verified_identity.key_binding.as_deref().unwrap(),
+            &Arc::new(Mutex::new(HashMap::new())),
+        ));
+    }
+
+    #[tokio::test]
+    async fn control_plane_heartbeat_spire_identity_uses_fetcher_token() {
+        let mut config = test_config();
+        config.control_plane_heartbeat_use_spire = true;
+        config.control_plane_heartbeat_spire_socket =
+            Some("unix:///tmp/spire-agent.sock".to_string());
+        config.control_plane_heartbeat_spiffe_id =
+            Some("spiffe://example.org/ns/proxy/i/rust".to_string());
+
+        let headers = control_plane_heartbeat_headers_with(
+            &config,
+            "https://control.example.org/v1/control/agents/heartbeat",
+            |current| {
+                let socket = current.control_plane_heartbeat_spire_socket.clone();
+                let spiffe_id = current.control_plane_heartbeat_spiffe_id.clone();
+                Box::pin(async move {
+                    assert_eq!(socket.as_deref(), Some("unix:///tmp/spire-agent.sock"));
+                    assert_eq!(
+                        spiffe_id.as_deref(),
+                        Some("spiffe://example.org/ns/proxy/i/rust")
+                    );
+                    Ok("spire.jwt.svid".to_string())
+                })
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            headers,
+            vec![("ASM-Agent-Identity", "spire.jwt.svid".to_string())]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "control-plane heartbeat proof is not supported with SPIRE identity")]
+    fn build_state_rejects_spire_heartbeat_proof_configuration() {
+        let mut config = test_config();
+        config.control_plane_heartbeat_use_spire = true;
+        config.control_plane_heartbeat_proof_private_key_pem =
+            Some(PROOF_PRIVATE_KEY_PEM.as_bytes().to_vec());
+        config.control_plane_heartbeat_proof_public_jwk =
+            Some(serde_json::from_str(PROOF_PUBLIC_JWK_JSON).unwrap());
+
+        let _state = build_state(config);
     }
 
     #[tokio::test]

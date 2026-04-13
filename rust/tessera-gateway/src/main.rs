@@ -1,10 +1,11 @@
-use std::{env, fs, net::SocketAddr};
+use std::{env, fs, net::SocketAddr, time::Duration};
 
 use serde_json::Value;
 use tokio::net::TcpListener;
 
 use tessera_gateway::{
-    build_app, build_native_tls_server_config, GatewayConfig, GatewayConnectInfo, NativeTlsListener,
+    bootstrap_control_plane, build_app_with_state, build_native_tls_server_config, build_state,
+    spawn_control_plane_sync_loop, GatewayConfig, GatewayConnectInfo, NativeTlsListener,
 };
 
 fn env_bool(name: &str) -> bool {
@@ -76,6 +77,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref(),
         Some("0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF")
     );
+    let control_plane_url = env::var("TESSERA_CONTROL_PLANE_URL").ok();
+    let control_plane_token = env::var("TESSERA_CONTROL_PLANE_TOKEN").ok();
+    let control_plane_poll_interval = Duration::from_secs(
+        env::var("TESSERA_CONTROL_PLANE_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(30),
+    );
+    let control_plane_hmac_key = env::var("TESSERA_CONTROL_PLANE_HMAC_KEY")
+        .ok()
+        .map(|value| value.into_bytes());
+    let control_plane_heartbeat_identity_hs256_key =
+        env::var("TESSERA_CONTROL_PLANE_HEARTBEAT_IDENTITY_HS256_KEY")
+            .ok()
+            .map(|value| value.into_bytes());
+    let control_plane_heartbeat_use_spire =
+        env_bool("TESSERA_CONTROL_PLANE_HEARTBEAT_SPIRE");
+    let control_plane_heartbeat_spire_socket =
+        env::var("TESSERA_CONTROL_PLANE_HEARTBEAT_SPIFFE_ENDPOINT_SOCKET").ok();
+    let control_plane_heartbeat_spiffe_id =
+        env::var("TESSERA_CONTROL_PLANE_HEARTBEAT_SPIFFE_ID").ok();
+    let control_plane_heartbeat_identity_issuer =
+        env::var("TESSERA_CONTROL_PLANE_HEARTBEAT_IDENTITY_ISSUER").ok();
+    let control_plane_heartbeat_identity_audience =
+        env::var("TESSERA_CONTROL_PLANE_HEARTBEAT_IDENTITY_AUDIENCE").ok();
+    let control_plane_heartbeat_proof_private_key_pem =
+        env::var("TESSERA_CONTROL_PLANE_HEARTBEAT_PROOF_PRIVATE_KEY_PEM")
+            .ok()
+            .map(|value| value.into_bytes());
+    let control_plane_heartbeat_proof_public_jwk = env::var(
+        "TESSERA_CONTROL_PLANE_HEARTBEAT_PROOF_PUBLIC_JWK_JSON",
+    )
+    .ok()
+    .map(|value| {
+        serde_json::from_str::<Value>(&value)
+            .expect("control-plane heartbeat proof public JWK must be valid JSON")
+    });
     let identity_hs256_key = env::var("TESSERA_IDENTITY_HS256_KEY")
         .ok()
         .map(|value| value.into_bytes());
@@ -104,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| value.into_bytes());
     let delegation_audience = env::var("TESSERA_DELEGATION_AUDIENCE").ok();
 
-    let app = build_app(GatewayConfig {
+    let state = build_state(GatewayConfig {
         agent_id,
         agent_name,
         agent_description,
@@ -118,6 +156,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         policy_opa_token,
         policy_fail_closed_backend_errors,
         policy_include_provenance,
+        control_plane_url,
+        control_plane_token,
+        control_plane_poll_interval,
+        control_plane_hmac_key,
+        control_plane_heartbeat_identity_hs256_key,
+        control_plane_heartbeat_use_spire,
+        control_plane_heartbeat_spire_socket,
+        control_plane_heartbeat_spiffe_id,
+        control_plane_heartbeat_identity_issuer,
+        control_plane_heartbeat_identity_audience,
+        control_plane_heartbeat_proof_private_key_pem,
+        control_plane_heartbeat_proof_public_jwk,
         identity_hs256_key,
         identity_issuer,
         identity_audience,
@@ -130,6 +180,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         delegation_key,
         delegation_audience,
     });
+    bootstrap_control_plane(&state)
+        .await
+        .map_err(std::io::Error::other)?;
+    spawn_control_plane_sync_loop(state.clone());
+    let app = build_app_with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = TcpListener::bind(addr).await?;
