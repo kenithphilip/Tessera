@@ -38,14 +38,15 @@ from tessera.events import EventKind, SecurityEvent, emit as emit_event
 from tessera.identity import AgentIdentity, AgentProofReplayCache, AgentProofVerifier
 from tessera.labels import Origin, TrustLabel, TrustLevel
 from tessera.mtls import MTLSPeerIdentity, MTLSPeerVerificationError, extract_peer_identity
-from tessera.policy import Policy, ToolRequirement
+from tessera.approval import AsyncApprovalGate
+from tessera.policy import DecisionKind, Policy, ToolRequirement
 from tessera.provenance import (
     ContextSegmentEnvelope,
     ManifestSegmentRef,
     PromptProvenanceManifest,
 )
 from tessera.redaction import SecretRegistry, redact_nested
-from tessera.telemetry import proxy_request_span, upstream_span
+from tessera.telemetry import proxy_request_span, record_upstream_usage, upstream_span
 
 if TYPE_CHECKING:
     from tessera.identity import AgentIdentityVerifier
@@ -153,6 +154,7 @@ def create_app(
     policy: Policy | None = None,
     secrets: SecretRegistry | None = None,
     a2a_handler: A2AHandlerFn | None = None,
+    approval_gate: AsyncApprovalGate | None = None,
 ) -> FastAPI:
     """Build a FastAPI app wired to a label verifier, upstream, and policy."""
     app = FastAPI(title="Tessera Proxy", version="0.0.1")
@@ -447,6 +449,15 @@ def create_app(
         with upstream_span(req.model):
             response = await upstream(upstream_payload)
 
+        usage = response.get("usage") or {}
+        choices = response.get("choices") or []
+        record_upstream_usage(
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+            finish_reason=choices[0].get("finish_reason") if choices else None,
+            response_model=response.get("model"),
+        )
+
         if len(secret_registry) > 0:
             _, ingress_hits = redact_nested(response, secret_registry)
             if ingress_hits:
@@ -467,6 +478,7 @@ def create_app(
 
         refusals: list[dict[str, Any]] = []
         allowed: list[dict[str, Any]] = []
+        pending_approval: list[dict[str, Any]] = []
         for call in proposed_calls:
             decision = request_policy.evaluate(
                 context,
@@ -475,7 +487,45 @@ def create_app(
                 delegation=delegation,
                 expected_delegate=discovery.agent_id,
             )
-            if decision.allowed:
+            if decision.requires_approval:
+                if approval_gate is not None:
+                    resolved = await approval_gate.request_approval(
+                        decision,
+                        principal=context.principal or "unknown",
+                        context_summary=f"{len(context.segments)} segments, min_trust={int(context.min_trust)}",
+                    )
+                    if resolved.allowed:
+                        allowed.append(call)
+                    else:
+                        refusals.append(
+                            {
+                                "tool": call["name"],
+                                "denied": True,
+                                "reason": resolved.reason,
+                                "required_trust": int(resolved.required_trust),
+                                "observed_trust": int(resolved.observed_trust),
+                            }
+                        )
+                else:
+                    # No approval gate configured: fail closed.
+                    refusals.append(
+                        {
+                            "tool": call["name"],
+                            "denied": True,
+                            "reason": "requires human approval but no approval gate configured",
+                            "required_trust": int(decision.required_trust),
+                            "observed_trust": int(decision.observed_trust),
+                        }
+                    )
+                pending_approval.append(
+                    {
+                        "tool": call["name"],
+                        "reason": decision.reason,
+                        "required_trust": int(decision.required_trust),
+                        "observed_trust": int(decision.observed_trust),
+                    }
+                )
+            elif decision.allowed:
                 allowed.append(call)
             else:
                 refusals.append(
@@ -488,7 +538,11 @@ def create_app(
                     }
                 )
 
-        response["tessera"] = {"allowed": allowed, "denied": refusals}
+        response["tessera"] = {
+            "allowed": allowed,
+            "denied": refusals,
+            "pending_approval": pending_approval,
+        }
         return response
 
     return app
@@ -709,6 +763,7 @@ def _policy_for_request(base_policy: Policy, tools: list[ToolModel]) -> Policy:
         backend=base_policy.backend,
         fail_closed_backend_errors=base_policy.fail_closed_backend_errors,
         base_requirements=deepcopy(base_policy.requirements),
+        _human_approval_tools=set(base_policy._human_approval_tools),
     )
     for tool in tools:
         request_policy.require(tool.name, tool.required_trust)

@@ -1,5 +1,6 @@
 """Tessera: signed provenance labels and taint-tracking policy for LLM context."""
 
+from tessera.approval import ApprovalGate, ApprovalRequest, ApprovalResponse, AsyncApprovalGate
 from tessera.a2a import (
     A2APromptSegment,
     A2ASecurityContext,
@@ -60,7 +61,7 @@ from tessera.identity import (
 from tessera.labels import Origin, TrustLabel, TrustLevel, sign_label, verify_label
 from tessera.mcp import MCPInterceptor, MCPSecurityContext
 from tessera.mtls import MTLSPeerIdentity, MTLSPeerVerificationError, extract_peer_identity
-from tessera.policy import Decision, Policy, PolicyViolation, ToolRequirement
+from tessera.policy import Decision, DecisionKind, Policy, PolicyViolation, ToolRequirement
 from tessera.policy_backends import (
     OPAPolicyBackend,
     OPAStatus,
@@ -105,6 +106,10 @@ from tessera.spire import (
 
 __all__ = [
     "A2APromptSegment",
+    "ApprovalGate",
+    "ApprovalRequest",
+    "ApprovalResponse",
+    "AsyncApprovalGate",
     "A2ASecurityContext",
     "A2ATaskRequest",
     "A2AVerificationError",
@@ -120,6 +125,7 @@ __all__ = [
     "ControlPlaneSigningNotAvailable",
     "ContextSegmentEnvelope",
     "Decision",
+    "DecisionKind",
     "DelegationToken",
     "EvidenceBundle",
     "EvidenceBuffer",
