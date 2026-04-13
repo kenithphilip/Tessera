@@ -15,3 +15,5 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+.claude/
+rust/tessera-gateway/target/
