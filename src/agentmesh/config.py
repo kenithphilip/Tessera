@@ -62,12 +62,13 @@ class AgentMeshConfig:
     def from_dict(cls, data: dict[str, Any]) -> AgentMeshConfig:
         """Build config from a plain dict (e.g. parsed YAML or inline)."""
         key = _resolve_key(data)
+        raw_policies = data.get("tool_policies") or []
         policies = tuple(
             ToolPolicy(
                 name=tp["name"],
                 required_trust=_parse_trust(tp["required_trust"]),
             )
-            for tp in data.get("tool_policies", [])
+            for tp in raw_policies
         )
         default_trust = _parse_trust(data.get("default_required_trust", "user"))
         return cls(
