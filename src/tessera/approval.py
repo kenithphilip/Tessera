@@ -9,6 +9,7 @@ and waits for an allow/deny response.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -123,6 +124,11 @@ class ApprovalGate:
     Sends an ApprovalRequest to the configured URL and interprets the
     JSON response as an ApprovalResponse. Returns a final ALLOW or DENY
     Decision based on the human's response.
+
+    When a session_store is provided, pending approvals are persisted
+    before the webhook call and the session_id is included in the
+    webhook payload. The webhook response is validated against the
+    stored session before resolving.
     """
 
     def __init__(
@@ -130,10 +136,12 @@ class ApprovalGate:
         webhook_url: str,
         timeout: float = 300.0,
         transport: Any = None,
+        session_store: Any = None,
     ) -> None:
         self._url = webhook_url
         self._timeout = timeout
         self._transport = transport
+        self._session_store = session_store
 
     def request_approval(
         self, decision: Decision, principal: str, context_summary: str,
@@ -141,7 +149,9 @@ class ApprovalGate:
         """Send the approval request and return the resolved decision.
 
         Emits HUMAN_APPROVAL_REQUIRED before the webhook call and
-        HUMAN_APPROVAL_RESOLVED after.
+        HUMAN_APPROVAL_RESOLVED after. When a session store is
+        configured, stores the pending approval and includes the
+        session_id in the webhook payload.
         """
         req = ApprovalRequest(
             tool=decision.tool,
@@ -152,17 +162,43 @@ class ApprovalGate:
 
         _emit_required(decision, principal, self._url)
 
+        payload = req.to_dict()
+        if self._session_store is not None:
+            from tessera.sessions import PendingApproval, make_session_id
+
+            now = datetime.now(timezone.utc)
+            pending = PendingApproval(
+                session_id=make_session_id(),
+                tool=decision.tool,
+                principal=principal,
+                decision=decision,
+                context_summary=context_summary,
+                created_at=now,
+                expires_at=now + self._session_store._ttl,
+            )
+            self._session_store.store(pending)
+            payload["session_id"] = pending.session_id
+
         client_kwargs: dict[str, Any] = {"timeout": self._timeout}
         if self._transport is not None:
             client_kwargs["transport"] = self._transport
 
         try:
             with httpx.Client(**client_kwargs) as client:
-                resp = client.post(self._url, json=req.to_dict())
+                resp = client.post(self._url, json=payload)
                 resp.raise_for_status()
                 body = resp.json()
         except Exception as exc:
             return _fail_closed(decision, principal, exc)
+
+        if self._session_store is not None:
+            session_id = payload["session_id"]
+            stored = self._session_store.retrieve(session_id)
+            if stored is None:
+                return _fail_closed(
+                    decision, principal,
+                    RuntimeError("session expired or not found"),
+                )
 
         return _resolve(decision, body, principal)
 
@@ -175,10 +211,12 @@ class AsyncApprovalGate:
         webhook_url: str,
         timeout: float = 300.0,
         transport: Any = None,
+        session_store: Any = None,
     ) -> None:
         self._url = webhook_url
         self._timeout = timeout
         self._transport = transport
+        self._session_store = session_store
 
     async def request_approval(
         self, decision: Decision, principal: str, context_summary: str,
@@ -193,16 +231,42 @@ class AsyncApprovalGate:
 
         _emit_required(decision, principal, self._url)
 
+        payload = req.to_dict()
+        if self._session_store is not None:
+            from tessera.sessions import PendingApproval, make_session_id
+
+            now = datetime.now(timezone.utc)
+            pending = PendingApproval(
+                session_id=make_session_id(),
+                tool=decision.tool,
+                principal=principal,
+                decision=decision,
+                context_summary=context_summary,
+                created_at=now,
+                expires_at=now + self._session_store._ttl,
+            )
+            self._session_store.store(pending)
+            payload["session_id"] = pending.session_id
+
         client_kwargs: dict[str, Any] = {"timeout": self._timeout}
         if self._transport is not None:
             client_kwargs["transport"] = self._transport
 
         try:
             async with httpx.AsyncClient(**client_kwargs) as client:
-                resp = await client.post(self._url, json=req.to_dict())
+                resp = await client.post(self._url, json=payload)
                 resp.raise_for_status()
                 body = resp.json()
         except Exception as exc:
             return _fail_closed(decision, principal, exc)
+
+        if self._session_store is not None:
+            session_id = payload["session_id"]
+            stored = self._session_store.retrieve(session_id)
+            if stored is None:
+                return _fail_closed(
+                    decision, principal,
+                    RuntimeError("session expired or not found"),
+                )
 
         return _resolve(decision, body, principal)

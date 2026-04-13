@@ -13,6 +13,8 @@ use std::{
     time::Duration,
 };
 
+pub mod filters;
+
 use axum::{
     extract::connect_info::Connected,
     extract::{connect_info::ConnectInfo, Extension, OriginalUri, Request, State},
@@ -30,6 +32,7 @@ use jsonwebtoken::{
     EncodingKey, Header, Validation,
 };
 use reqwest::Client;
+use secrecy::{ExposeSecret, Secret};
 use rustls::{
     pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
     server::WebPkiClientVerifier,
@@ -699,6 +702,90 @@ impl GatewayConfig {
             .map(|(trust_domain, _)| vec![trust_domain])
             .unwrap_or_default()
     }
+
+    /// Returns the label HMAC key wrapped in a Secret to prevent
+    /// accidental logging or serialization.
+    pub fn label_hmac_secret(&self) -> Option<Secret<Vec<u8>>> {
+        self.label_hmac_key.as_ref().map(|k| Secret::new(k.clone()))
+    }
+
+    /// Returns the identity HS256 key wrapped in a Secret.
+    pub fn identity_hs256_secret(&self) -> Option<Secret<Vec<u8>>> {
+        self.identity_hs256_key
+            .as_ref()
+            .map(|k| Secret::new(k.clone()))
+    }
+
+    /// Returns the delegation key wrapped in a Secret, falling back
+    /// to the label HMAC key.
+    pub fn delegation_secret(&self) -> Option<Secret<Vec<u8>>> {
+        self.delegation_key
+            .as_ref()
+            .or(self.label_hmac_key.as_ref())
+            .map(|k| Secret::new(k.clone()))
+    }
+
+    /// Returns the control-plane HMAC key wrapped in a Secret.
+    pub fn control_plane_hmac_secret(&self) -> Option<Secret<Vec<u8>>> {
+        self.control_plane_hmac_key
+            .as_ref()
+            .map(|k| Secret::new(k.clone()))
+    }
+}
+
+/// Watches a file path and reloads the secret when it changes.
+/// Designed for credential rotation without gateway restarts.
+pub struct SecretWatcher {
+    path: std::path::PathBuf,
+    last_modified: std::sync::Mutex<Option<std::time::SystemTime>>,
+    current: std::sync::RwLock<Secret<Vec<u8>>>,
+}
+
+impl SecretWatcher {
+    pub fn new(path: impl Into<std::path::PathBuf>, initial: Vec<u8>) -> Self {
+        let path = path.into();
+        let mtime = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok();
+        Self {
+            path,
+            last_modified: std::sync::Mutex::new(mtime),
+            current: std::sync::RwLock::new(Secret::new(initial)),
+        }
+    }
+
+    /// Checks whether the watched file has been modified since the
+    /// last load. If so, reads the new contents and returns true.
+    pub fn check_reload(&self) -> bool {
+        let mtime = match std::fs::metadata(&self.path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let mut last = match self.last_modified.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        if *last == Some(mtime) {
+            return false;
+        }
+        let bytes = match std::fs::read(&self.path) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        if let Ok(mut w) = self.current.write() {
+            *w = Secret::new(bytes);
+        }
+        *last = Some(mtime);
+        true
+    }
+
+    /// Returns a clone of the current secret value.
+    pub fn current(&self) -> Secret<Vec<u8>> {
+        self.current
+            .read()
+            .map(|guard| Secret::new(guard.expose_secret().clone()))
+            .unwrap_or_else(|_| Secret::new(Vec::new()))
+    }
 }
 
 #[derive(Clone)]
@@ -710,7 +797,7 @@ pub struct AppState {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
-struct RuntimeControlState {
+pub(crate) struct RuntimeControlState {
     configured: bool,
     ready: bool,
     policy: ManagedPolicyState,
@@ -810,11 +897,11 @@ pub struct GatewayConnectInfo {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<MessageModel>,
+pub(crate) struct ChatRequest {
+    pub(crate) model: String,
+    pub(crate) messages: Vec<MessageModel>,
     #[serde(default)]
-    tools: Vec<ToolModel>,
+    pub(crate) tools: Vec<ToolModel>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -844,32 +931,32 @@ struct A2AInputSegmentModel {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct MessageModel {
-    role: String,
-    content: String,
-    label: LabelModel,
+pub(crate) struct MessageModel {
+    pub(crate) role: String,
+    pub(crate) content: String,
+    pub(crate) label: LabelModel,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct LabelModel {
-    origin: String,
-    principal: String,
-    trust_level: i64,
-    nonce: String,
-    signature: String,
+pub(crate) struct LabelModel {
+    pub(crate) origin: String,
+    pub(crate) principal: String,
+    pub(crate) trust_level: i64,
+    pub(crate) nonce: String,
+    pub(crate) signature: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ToolModel {
-    name: String,
+pub(crate) struct ToolModel {
+    pub(crate) name: String,
     #[serde(default = "default_required_trust")]
-    required_trust: i64,
+    pub(crate) required_trust: i64,
 }
 
 #[derive(Clone, Debug)]
-struct ProposedCall {
-    name: String,
-    arguments: Option<Value>,
+pub(crate) struct ProposedCall {
+    pub(crate) name: String,
+    pub(crate) arguments: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -926,9 +1013,9 @@ struct VerifiedA2ASecurityContext {
 }
 
 #[derive(Clone, Debug)]
-struct UpstreamResponse {
-    status: StatusCode,
-    body: Value,
+pub(crate) struct UpstreamResponse {
+    pub(crate) status: StatusCode,
+    pub(crate) body: Value,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -978,7 +1065,7 @@ struct PolicyBackendDecision {
 }
 
 #[derive(Clone, Debug)]
-enum Decision {
+pub(crate) enum Decision {
     Allow,
     Deny {
         reason: String,
@@ -988,10 +1075,10 @@ enum Decision {
 }
 
 #[derive(Clone, Debug)]
-struct DecisionOutcome {
-    decision: Decision,
-    backend: Option<String>,
-    backend_metadata: Value,
+pub(crate) struct DecisionOutcome {
+    pub(crate) decision: Decision,
+    pub(crate) backend: Option<String>,
+    pub(crate) backend_metadata: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1025,24 +1112,24 @@ struct ConfirmationClaim {
 }
 
 #[derive(Clone, Debug)]
-struct VerifiedIdentity {
-    agent_id: String,
-    key_binding: Option<String>,
+pub(crate) struct VerifiedIdentity {
+    pub(crate) agent_id: String,
+    pub(crate) key_binding: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct DelegationHeaderModel {
-    subject: String,
-    delegate: String,
-    audience: String,
+pub(crate) struct DelegationHeaderModel {
+    pub(crate) subject: String,
+    pub(crate) delegate: String,
+    pub(crate) audience: String,
     #[serde(default)]
-    authorized_actions: Vec<String>,
+    pub(crate) authorized_actions: Vec<String>,
     #[serde(default = "default_object")]
-    constraints: Value,
+    pub(crate) constraints: Value,
     #[serde(default)]
-    session_id: String,
-    expires_at: String,
-    signature: String,
+    pub(crate) session_id: String,
+    pub(crate) expires_at: String,
+    pub(crate) signature: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2137,7 +2224,7 @@ pub fn spawn_control_plane_sync_loop(state: AppState) {
     });
 }
 
-fn verify_labels(messages: &[MessageModel], key: &[u8]) -> Result<(), Response> {
+pub(crate) fn verify_labels(messages: &[MessageModel], key: &[u8]) -> Result<(), Response> {
     for message in messages {
         if !is_valid_origin(&message.label.origin)
             || !is_valid_trust_level(message.label.trust_level)
@@ -2166,7 +2253,7 @@ fn verify_labels(messages: &[MessageModel], key: &[u8]) -> Result<(), Response> 
     Ok(())
 }
 
-fn validate_declared_tools(tools: &[ToolModel]) -> Result<(), Response> {
+pub(crate) fn validate_declared_tools(tools: &[ToolModel]) -> Result<(), Response> {
     for tool in tools {
         if tool.name.trim().is_empty() || !is_valid_trust_level(tool.required_trust) {
             return Err(error_response(
@@ -2483,7 +2570,7 @@ fn ordered_a2a_envelopes(
     Ok(ordered)
 }
 
-fn verify_identity_headers(
+pub(crate) fn verify_identity_headers(
     identity_header: Option<&str>,
     proof_header: Option<&str>,
     config: &GatewayConfig,

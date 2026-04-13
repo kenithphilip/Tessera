@@ -1,0 +1,29 @@
+syntax = "proto3";
+package tessera.xds.v1;
+
+import "proto/tessera/xds/v1/resources.proto";
+
+message DiscoveryRequest {
+    string node_id = 1;
+    string resource_type = 2;
+    string version_info = 3;
+    repeated string resource_names = 4;
+}
+
+message DiscoveryResponse {
+    string version_info = 1;
+    string type_url = 2;
+    repeated ResourceWrapper resources = 3;
+    string nonce = 4;
+}
+
+message ResourceWrapper {
+    string name = 1;
+    string version = 2;
+    bytes resource = 3;  // serialized PolicyBundle, ToolRegistry, or TrustConfig
+}
+
+service AggregatedDiscoveryService {
+    rpc StreamResources(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+    rpc FetchResources(DiscoveryRequest) returns (DiscoveryResponse);
+}

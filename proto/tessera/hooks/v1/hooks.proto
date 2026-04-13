@@ -1,0 +1,39 @@
+syntax = "proto3";
+package tessera.hooks.v1;
+
+message PostPolicyEvaluateRequest {
+    string tool = 1;
+    string principal = 2;
+    string decision_kind = 3;
+    string reason = 4;
+    int32 required_trust = 5;
+    int32 observed_trust = 6;
+}
+
+message PostPolicyEvaluateResponse {
+    string decision_kind = 1;  // can only change ALLOW to DENY
+    string reason = 2;
+}
+
+message PostToolCallGateRequest {
+    string tool = 1;
+    string arguments_json = 2;
+    string principal = 3;
+}
+
+message PostToolCallGateResponse {
+    bool allow = 1;
+    string reason = 2;
+}
+
+message PostDelegationVerifyRequest {
+    string subject = 1;
+    string delegate = 2;
+    string audience = 3;
+    repeated string authorized_actions = 4;
+}
+
+message PostDelegationVerifyResponse {
+    bool valid = 1;
+    string reason = 2;
+}

@@ -47,6 +47,12 @@ from tessera.events import (
     unregister_sink,
     webhook_sink,
 )
+from tessera.ir import (
+    CELRuleIR,
+    PolicyIR,
+    ResourceRequirementIR,
+    compile_policy,
+)
 from tessera.identity import (
     AgentIdentity,
     AgentIdentityVerifier,
@@ -59,9 +65,19 @@ from tessera.identity import (
     jwk_thumbprint,
 )
 from tessera.labels import Origin, TrustLabel, TrustLevel, sign_label, verify_label
+from tessera.cel_engine import CELContext, CELDecision, CELNotAvailable, CELPolicyEngine, CELRule
 from tessera.mcp import MCPInterceptor, MCPSecurityContext
 from tessera.mtls import MTLSPeerIdentity, MTLSPeerVerificationError, extract_peer_identity
-from tessera.policy import Decision, DecisionKind, Policy, PolicyViolation, ToolRequirement
+from tessera.policy import (
+    Decision,
+    DecisionKind,
+    Policy,
+    PolicyScope,
+    PolicyViolation,
+    ResourceRequirement,
+    ResourceType,
+    ToolRequirement,
+)
 from tessera.policy_backends import (
     OPAPolicyBackend,
     OPAStatus,
@@ -84,8 +100,13 @@ from tessera.quarantine import (
     split_by_trust,
     strict_worker,
 )
+from tessera.hooks.client import RemoteHookClient
+from tessera.hooks.dispatcher import HookDispatcher
 from tessera.redaction import Secret, SecretRegistry, redact_nested
 from tessera.registry import ToolRegistry
+from tessera.xds.client import XDSClient
+from tessera.xds.server import XDSServer
+from tessera.sessions import PendingApproval, SessionStore
 from tessera.signing import (
     HMACSigner,
     HMACVerifier,
@@ -113,6 +134,12 @@ __all__ = [
     "A2ASecurityContext",
     "A2ATaskRequest",
     "A2AVerificationError",
+    "CELContext",
+    "CELDecision",
+    "CELNotAvailable",
+    "CELPolicyEngine",
+    "CELRule",
+    "CELRuleIR",
     "AgentIdentity",
     "AgentIdentityVerifier",
     "AgentHeartbeat",
@@ -138,6 +165,7 @@ __all__ = [
     "HMACControlPlaneSigner",
     "HMACControlPlaneVerifier",
     "HMACVerifier",
+    "HookDispatcher",
     "JWKSAgentIdentityVerifier",
     "JWKSVerifier",
     "JWTControlPlaneSigner",
@@ -160,6 +188,7 @@ __all__ = [
     "OPAControlConfig",
     "Origin",
     "OPAPolicyBackend",
+    "PolicyIR",
     "Policy",
     "PolicyBackend",
     "PolicyBackendDecision",
@@ -167,6 +196,7 @@ __all__ = [
     "PolicyDistributionInput",
     "PolicyDelegationSummary",
     "PolicyInput",
+    "PolicyScope",
     "PolicyViolation",
     "PolicySegmentSummary",
     "PromptProvenanceManifest",
@@ -181,14 +211,23 @@ __all__ = [
     "SpireNotAvailable",
     "SpireProtocolError",
     "SignedEvidenceBundle",
+    "ResourceRequirement",
+    "ResourceRequirementIR",
+    "ResourceType",
+    "RemoteHookClient",
     "RegistryDistributionInput",
+    "PendingApproval",
+    "SessionStore",
     "ToolRegistry",
     "ToolRequirement",
     "TrustLabel",
     "TrustLevel",
     "WorkerReport",
     "WorkerSchemaViolation",
+    "XDSClient",
+    "XDSServer",
     "attach_security_context",
+    "compile_policy",
     "async_webhook_sink",
     "create_control_plane_app",
     "emit_event",
