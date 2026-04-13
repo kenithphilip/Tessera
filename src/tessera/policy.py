@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from tessera.context import Context
@@ -22,6 +22,9 @@ from tessera.events import EventKind, SecurityEvent, emit as emit_event
 from tessera.labels import TrustLevel
 from tessera.policy_backends import PolicyBackend, PolicyInput
 from tessera.telemetry import emit_decision
+
+if TYPE_CHECKING:
+    from tessera.cel_engine import CELPolicyEngine
 
 
 class PolicyViolation(Exception):
@@ -32,6 +35,33 @@ class DecisionKind(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     REQUIRE_APPROVAL = "require_approval"
+
+
+class ResourceType(StrEnum):
+    """MCP resource types subject to policy."""
+
+    TOOL = "tool"
+    PROMPT = "prompt"
+    RESOURCE = "resource"
+
+
+class PolicyScope(StrEnum):
+    """Hierarchy level for policy targeting.
+
+    Scope priority: MESH > TEAM > AGENT. Higher scopes set trust
+    floors that lower scopes can tighten but not loosen.
+    """
+
+    MESH = "mesh"
+    TEAM = "team"
+    AGENT = "agent"
+
+
+_SCOPE_PRIORITY: dict[PolicyScope, int] = {
+    PolicyScope.MESH: 0,
+    PolicyScope.TEAM: 1,
+    PolicyScope.AGENT: 2,
+}
 
 
 @dataclass(frozen=True)
@@ -52,8 +82,8 @@ class Decision:
 
 
 @dataclass(frozen=True)
-class ToolRequirement:
-    """Minimum trust level a tool requires to fire.
+class ResourceRequirement:
+    """Minimum trust level a resource requires to be accessed.
 
     Sensitive tools that mutate external state or exfiltrate data should
     require TrustLevel.USER. Read-only tools can run at TrustLevel.TOOL.
@@ -61,23 +91,41 @@ class ToolRequirement:
     """
 
     name: str
-    required_trust: TrustLevel
+    resource_type: ResourceType = ResourceType.TOOL
+    required_trust: TrustLevel = TrustLevel.USER
+
+
+# Backward-compatible alias.
+ToolRequirement = ResourceRequirement
 
 
 @dataclass
 class Policy:
     """Per-tool trust requirements with deny-by-default semantics."""
 
-    requirements: dict[str, ToolRequirement] = field(default_factory=dict)
+    requirements: dict[tuple[str, ResourceType], ResourceRequirement] = field(
+        default_factory=dict,
+    )
     default_required_trust: TrustLevel = TrustLevel.USER
     backend: PolicyBackend | None = None
     fail_closed_backend_errors: bool = True
     base_requirements: dict[str, ToolRequirement] | None = None
     request_requirements: dict[str, ToolRequirement] = field(default_factory=dict)
     _human_approval_tools: set[str] = field(default_factory=set)
+    scope: PolicyScope = PolicyScope.AGENT
+    cel_engine: CELPolicyEngine | None = None
 
-    def require(self, name: str, level: TrustLevel) -> None:
-        self.requirements[name] = ToolRequirement(name=name, required_trust=level)
+    def require(
+        self,
+        name: str,
+        level: TrustLevel,
+        resource_type: ResourceType = ResourceType.TOOL,
+    ) -> None:
+        self.requirements[(name, resource_type)] = ResourceRequirement(
+            name=name,
+            resource_type=resource_type,
+            required_trust=level,
+        )
 
     def requires_human_approval(self, tool: str) -> None:
         """Mark a tool as requiring human approval regardless of trust level."""
@@ -90,6 +138,7 @@ class Policy:
         args: dict[str, Any] | None = None,
         delegation: DelegationToken | None = None,
         expected_delegate: str | None = None,
+        resource_type: ResourceType = ResourceType.TOOL,
     ) -> Decision:
         """Return an allow or deny decision for a proposed tool call.
 
@@ -100,9 +149,10 @@ class Policy:
         Delegation adds extra deny conditions. It never widens access
         beyond what the trust floor allows.
         """
+        key = (tool_name, resource_type)
         required = (
-            self.requirements[tool_name].required_trust
-            if tool_name in self.requirements
+            self.requirements[key].required_trust
+            if key in self.requirements
             else self.default_required_trust
         )
         if self.base_requirements is None:
@@ -191,6 +241,42 @@ class Policy:
             )
             backend_name = None
             metadata = {}
+        # CEL deny rules: evaluated after taint floor passes. A CEL rule
+        # can block or require approval but cannot allow a taint-denied call.
+        if decision.allowed and self.cel_engine is not None:
+            from tessera.cel_engine import CELContext as _CELCtx
+
+            cel_ctx = _CELCtx(
+                tool=tool_name,
+                args=args or {},
+                min_trust=int(observed),
+                principal=context.principal or "",
+                segment_count=len(context.segments),
+                delegation_subject=(
+                    delegation.subject if delegation else None
+                ),
+                delegation_actions=(
+                    tuple(delegation.authorized_actions) if delegation else ()
+                ),
+            )
+            cel_result = self.cel_engine.evaluate(cel_ctx)
+            if cel_result is not None:
+                if cel_result.action == "deny":
+                    decision = Decision(
+                        kind=DecisionKind.DENY,
+                        reason=f"CEL rule {cel_result.rule_name!r}: {cel_result.message}",
+                        tool=tool_name,
+                        required_trust=required,
+                        observed_trust=observed,
+                    )
+                elif cel_result.action == "require_approval":
+                    decision = Decision(
+                        kind=DecisionKind.REQUIRE_APPROVAL,
+                        reason=f"CEL rule {cel_result.rule_name!r}: {cel_result.message}",
+                        tool=tool_name,
+                        required_trust=required,
+                        observed_trust=observed,
+                    )
         # Human approval gate: only triggers when taint floor allows the call.
         # DENY always takes precedence.
         if decision.allowed and tool_name in self._human_approval_tools:
@@ -251,6 +337,64 @@ class Policy:
         if not decision.allowed:
             raise PolicyViolation(decision.reason)
         return decision
+
+    @classmethod
+    def merge(cls, *policies: Policy) -> Policy:
+        """Merge policies from multiple scopes into one.
+
+        Scope priority: MESH > TEAM > AGENT. Higher scopes set trust
+        floors that lower scopes can tighten (raise) but not loosen
+        (lower). This prevents an agent from relaxing org-wide policy.
+
+        Human-approval-required tools from any scope are unioned.
+        CEL engines from all scopes contribute rules evaluated in
+        scope-priority order.
+        """
+        if not policies:
+            return cls()
+
+        sorted_policies = sorted(
+            policies,
+            key=lambda p: _SCOPE_PRIORITY.get(p.scope, 2),
+        )
+
+        # Use default_required_trust from the highest-priority scope.
+        merged_default = sorted_policies[0].default_required_trust
+
+        # For each requirement key, take the highest required_trust
+        # across all scopes (lower scopes can tighten, not loosen).
+        merged_reqs: dict[tuple[str, ResourceType], ResourceRequirement] = {}
+        for policy in sorted_policies:
+            for key, req in policy.requirements.items():
+                if key not in merged_reqs:
+                    merged_reqs[key] = req
+                elif req.required_trust > merged_reqs[key].required_trust:
+                    merged_reqs[key] = req
+
+        # Union all human-approval tools.
+        merged_approval: set[str] = set()
+        for policy in sorted_policies:
+            merged_approval |= policy._human_approval_tools
+
+        # Concatenate CEL rules from all scopes in priority order.
+        merged_cel: CELPolicyEngine | None = None
+        all_cel_rules: list[Any] = []
+        for policy in sorted_policies:
+            if policy.cel_engine is not None:
+                all_cel_rules.extend(policy.cel_engine._rules)
+        if all_cel_rules:
+            from tessera.cel_engine import CELPolicyEngine
+
+            merged_cel = CELPolicyEngine(all_cel_rules)
+
+        result = cls(
+            requirements=merged_reqs,
+            default_required_trust=merged_default,
+            _human_approval_tools=merged_approval,
+            scope=sorted_policies[0].scope,
+            cel_engine=merged_cel,
+        )
+        return result
 
 
 def _delegation_deny_reason(

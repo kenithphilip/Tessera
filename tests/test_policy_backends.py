@@ -10,7 +10,7 @@ import pytest
 from tessera.context import Context, make_segment
 from tessera.events import EventKind, SecurityEvent, clear_sinks, register_sink
 from tessera.labels import Origin, TrustLevel
-from tessera.policy import Policy, ToolRequirement
+from tessera.policy import Policy, ResourceType, ToolRequirement
 from tessera.policy_backends import (
     OPAPolicyBackend,
     PolicyBackendDecision,
@@ -144,19 +144,22 @@ def test_external_policy_input_preserves_base_and_request_required_trust():
             captured["input"] = policy_input.to_dict()
             return PolicyBackendDecision(allow=True)
 
-    base_requirements = {
-        "send_email": ToolRequirement("send_email", TrustLevel.USER),
+    base_requirements_by_name = {
+        "send_email": ToolRequirement("send_email", required_trust=TrustLevel.USER),
+    }
+    base_requirements_keyed = {
+        ("send_email", ResourceType.TOOL): ToolRequirement("send_email", required_trust=TrustLevel.USER),
     }
     policy = Policy(
-        requirements=dict(base_requirements),
+        requirements=dict(base_requirements_keyed),
         default_required_trust=TrustLevel.USER,
         backend=CaptureBackend(),
-        base_requirements=dict(base_requirements),
+        base_requirements=dict(base_requirements_by_name),
     )
     policy.require("send_email", TrustLevel.UNTRUSTED)
     policy.request_requirements["send_email"] = ToolRequirement(
-        "send_email",
-        TrustLevel.UNTRUSTED,
+        name="send_email",
+        required_trust=TrustLevel.UNTRUSTED,
     )
     ctx = _ctx_with(make_segment("email bob", Origin.USER, "alice", KEY))
 

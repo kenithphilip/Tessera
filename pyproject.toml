@@ -35,8 +35,15 @@ spiffe = [
 mcp = [
     "mcp>=1.0",
 ]
+cel = [
+    "cel-python>=0.1",
+]
 agentmesh = [
     "pyyaml>=6.0",
+]
+xds = [
+    "grpcio>=1.60",
+    "protobuf>=4.25",
 ]
 
 [project.scripts]
