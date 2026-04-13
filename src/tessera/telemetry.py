@@ -17,7 +17,6 @@ call an agent emits.
 from __future__ import annotations
 
 from contextlib import contextmanager
-import os
 from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
@@ -31,12 +30,6 @@ try:  # pragma: no cover - exercised implicitly when otel is installed
 except ImportError:  # pragma: no cover
     _tracer = None
     _OTEL = False
-
-
-def _gen_ai_semconv_enabled() -> bool:
-    opt_in = os.environ.get("OTEL_SEMCONV_STABILITY_OPT_IN", "")
-    values = {value.strip() for value in opt_in.split(",") if value.strip()}
-    return "gen_ai_latest_experimental" in values
 
 
 def _set_attribute(span: Any, key: str, value: Any) -> None:
@@ -56,6 +49,7 @@ def emit_decision(decision: "Decision", *, backend: str | None = None) -> None:
         span.set_attribute("tessera.decision", str(decision.kind))
         span.set_attribute("tessera.reason", decision.reason)
         _set_attribute(span, "tessera.policy.backend", backend)
+        span.set_attribute("gen_ai.tool.name", decision.tool)
 
 
 def emit_tool_call(tool: str, origin: str, principal: str) -> None:
@@ -66,12 +60,11 @@ def emit_tool_call(tool: str, origin: str, principal: str) -> None:
         span.set_attribute("tessera.tool", tool)
         span.set_attribute("tessera.origin", origin)
         span.set_attribute("tessera.principal", principal)
-        if _gen_ai_semconv_enabled():
-            span.set_attribute("gen_ai.operation.name", "execute_tool")
-            span.set_attribute("gen_ai.provider.name", "tessera")
-            span.set_attribute("gen_ai.tool.name", tool)
-            span.set_attribute("gen_ai.tool.type", "extension")
-            span.set_attribute("gen_ai.agent.name", "tessera.mcp")
+        span.set_attribute("gen_ai.operation.name", "execute_tool")
+        span.set_attribute("gen_ai.provider.name", "tessera")
+        span.set_attribute("gen_ai.tool.name", tool)
+        span.set_attribute("gen_ai.tool.type", "extension")
+        span.set_attribute("gen_ai.agent.name", "tessera.mcp")
 
 
 @contextmanager
@@ -82,6 +75,11 @@ def proxy_request_span(
     operation_name: str = "chat",
     agent_name: str | None = None,
     agent_id: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    finish_reason: str | None = None,
+    system: str | None = None,
+    response_model: str | None = None,
 ) -> Iterator[None]:
     """Context manager wrapping a single proxy request.
 
@@ -94,17 +92,21 @@ def proxy_request_span(
     with _tracer.start_as_current_span("tessera.proxy.request") as span:
         span.set_attribute("tessera.model", model)
         span.set_attribute("tessera.message_count", message_count)
-        if _gen_ai_semconv_enabled():
-            span.set_attribute("gen_ai.operation.name", operation_name)
-            span.set_attribute("gen_ai.provider.name", "tessera")
-            span.set_attribute("gen_ai.request.model", model)
-            _set_attribute(span, "gen_ai.agent.name", agent_name)
-            _set_attribute(span, "gen_ai.agent.id", agent_id)
+        span.set_attribute("gen_ai.operation.name", operation_name)
+        span.set_attribute("gen_ai.provider.name", "tessera")
+        span.set_attribute("gen_ai.request.model", model)
+        _set_attribute(span, "gen_ai.agent.name", agent_name)
+        _set_attribute(span, "gen_ai.agent.id", agent_id)
+        _set_attribute(span, "gen_ai.system", system)
+        _set_attribute(span, "gen_ai.usage.input_tokens", input_tokens)
+        _set_attribute(span, "gen_ai.usage.output_tokens", output_tokens)
+        _set_attribute(span, "gen_ai.response.finish_reason", finish_reason)
+        _set_attribute(span, "gen_ai.response.model", response_model)
         yield
 
 
 @contextmanager
-def upstream_span(model: str) -> Iterator[None]:
+def upstream_span(model: str, *, system: str | None = None) -> Iterator[None]:
     """Context manager around the upstream LLM API call.
 
     Emits `tessera.proxy.upstream` so incident responders see the full
@@ -115,15 +117,22 @@ def upstream_span(model: str) -> Iterator[None]:
         return
     with _tracer.start_as_current_span("tessera.proxy.upstream") as span:
         span.set_attribute("tessera.model", model)
-        if _gen_ai_semconv_enabled():
-            span.set_attribute("gen_ai.operation.name", "chat")
-            span.set_attribute("gen_ai.provider.name", "tessera")
-            span.set_attribute("gen_ai.request.model", model)
+        span.set_attribute("gen_ai.operation.name", "chat")
+        span.set_attribute("gen_ai.provider.name", "tessera")
+        span.set_attribute("gen_ai.request.model", model)
+        _set_attribute(span, "gen_ai.system", system)
         yield
 
 
 @contextmanager
-def quarantine_span(trusted_count: int, untrusted_count: int) -> Iterator[None]:
+def quarantine_span(
+    trusted_count: int,
+    untrusted_count: int,
+    *,
+    system: str | None = None,
+    worker_model: str | None = None,
+    planner_model: str | None = None,
+) -> Iterator[None]:
     """Parent span for one dual-LLM quarantine run."""
     if not _OTEL or _tracer is None:
         yield
@@ -131,31 +140,61 @@ def quarantine_span(trusted_count: int, untrusted_count: int) -> Iterator[None]:
     with _tracer.start_as_current_span("tessera.quarantine.run") as span:
         span.set_attribute("tessera.trusted_segments", trusted_count)
         span.set_attribute("tessera.untrusted_segments", untrusted_count)
-        if _gen_ai_semconv_enabled():
-            span.set_attribute("gen_ai.operation.name", "invoke_agent")
-            span.set_attribute("gen_ai.provider.name", "tessera")
-            span.set_attribute("gen_ai.agent.name", "tessera.quarantine")
+        span.set_attribute("gen_ai.operation.name", "invoke_agent")
+        span.set_attribute("gen_ai.provider.name", "tessera")
+        span.set_attribute("gen_ai.agent.name", "tessera.quarantine")
+        _set_attribute(span, "gen_ai.system", system)
+        _set_attribute(span, "tessera.worker_model", worker_model)
+        _set_attribute(span, "tessera.planner_model", planner_model)
         yield
 
 
 @contextmanager
-def quarantine_worker_span() -> Iterator[None]:
+def quarantine_worker_span(*, model: str | None = None) -> Iterator[None]:
     """Child span wrapping the worker LLM call."""
     if not _OTEL or _tracer is None:
         yield
         return
-    with _tracer.start_as_current_span("tessera.quarantine.worker"):
+    with _tracer.start_as_current_span("tessera.quarantine.worker") as span:
+        _set_attribute(span, "gen_ai.request.model", model)
         yield
 
 
 @contextmanager
-def quarantine_planner_span() -> Iterator[None]:
+def quarantine_planner_span(*, model: str | None = None) -> Iterator[None]:
     """Child span wrapping the planner LLM call."""
     if not _OTEL or _tracer is None:
         yield
         return
-    with _tracer.start_as_current_span("tessera.quarantine.planner"):
+    with _tracer.start_as_current_span("tessera.quarantine.planner") as span:
+        _set_attribute(span, "gen_ai.request.model", model)
         yield
+
+
+def record_upstream_usage(
+    *,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    finish_reason: str | None = None,
+    response_model: str | None = None,
+    system: str | None = None,
+) -> None:
+    """Set GenAI usage attributes on the current span.
+
+    Call this after the upstream LLM response is available to attach
+    token counts, finish reason, and model information to the
+    enclosing proxy request span.
+    """
+    if not _OTEL:
+        return
+    span = trace.get_current_span()
+    if span is None or not span.is_recording():
+        return
+    _set_attribute(span, "gen_ai.usage.input_tokens", input_tokens)
+    _set_attribute(span, "gen_ai.usage.output_tokens", output_tokens)
+    _set_attribute(span, "gen_ai.response.finish_reason", finish_reason)
+    _set_attribute(span, "gen_ai.response.model", response_model)
+    _set_attribute(span, "gen_ai.system", system)
 
 
 def is_enabled() -> bool:
