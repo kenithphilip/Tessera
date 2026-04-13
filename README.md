@@ -5,7 +5,7 @@ dual-LLM execution for agent security meshes.**
 
 ![tests](https://img.shields.io/badge/tests-216%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
-![license](https://img.shields.io/badge/license-Apache%202.0-blue)
+![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
 
 Tessera is a Python library and sidecar proxy that implements two primitives
@@ -339,7 +339,12 @@ should include tests that pin the invariant being added or changed.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+The AGPL ensures that anyone running Tessera or AgentMesh as a network
+service must make their source code available to users of that service.
+This closes the SaaS loophole that permits companies to run open-source
+software as a service without contributing improvements back.
 
 The accompanying paper in [`papers/`](papers/) is licensed under
 CC BY 4.0.

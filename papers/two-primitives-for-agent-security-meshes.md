@@ -10,7 +10,7 @@ mesh implementers.
 **Version:** 0.1, April 2026
 
 **License:** This paper is licensed under CC BY 4.0. The reference
-implementation referenced herein is licensed under Apache 2.0.
+implementation referenced herein is licensed under AGPL-3.0-or-later.
 
 ---
 
@@ -780,7 +780,7 @@ production code, close the two specific holes that recent agent security
 surveys identify as unimplemented in production systems. Neither primitive
 requires model modification, new hardware, or changes to control-plane
 infrastructure. Both have reference implementations with test-verified
-invariants and an Apache 2.0 license.
+invariants and an AGPL-3.0-or-later license.
 
 The remaining work is not research. It is standardization (Section 9),
 adoption into production mesh data planes (Section 6), and the

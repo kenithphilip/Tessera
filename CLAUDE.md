@@ -195,7 +195,7 @@ CLAUDE.md              this file
 SECURITY.md            threat model and disclosure policy
 CONTRIBUTING.md        contribution standards
 README.md              public-facing entry point
-LICENSE                Apache 2.0
+LICENSE                AGPL-3.0-or-later
 ```
 
 ## Memory discipline for AI assistants

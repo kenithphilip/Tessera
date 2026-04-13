@@ -137,5 +137,5 @@ Follow the disclosure process in [`SECURITY.md`](SECURITY.md) instead.
 ## License
 
 By contributing to Tessera, you agree that your contributions will be
-licensed under the Apache License 2.0, the same license as the rest of
-the project. See [`LICENSE`](LICENSE).
+licensed under the GNU Affero General Public License v3.0 or later,
+the same license as the rest of the project. See [`LICENSE`](LICENSE).
