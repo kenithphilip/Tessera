@@ -1,0 +1,82 @@
+name: SPIRE Integration
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  spire-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev,spiffe]'
+
+      - name: Start SPIRE server
+        working-directory: deployment/spire
+        run: docker compose up -d spire-server
+
+      - name: Wait for SPIRE server
+        working-directory: deployment/spire
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose exec -T spire-server \
+              /opt/spire/bin/spire-server healthcheck 2>/dev/null; then
+              echo "SPIRE server ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "SPIRE server failed to start"
+              docker compose logs spire-server
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Start SPIRE agent with join token
+        working-directory: deployment/spire
+        run: |
+          JOIN_TOKEN=$(docker compose exec -T spire-server \
+            /opt/spire/bin/spire-server token generate \
+            -spiffeID spiffe://example.org/agent \
+            -output json | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
+
+          docker compose run -d --name spire-agent-ci \
+            spire-agent \
+            /opt/spire/bin/spire-agent run \
+            -config /opt/spire/conf/agent/agent.conf \
+            -joinToken "${JOIN_TOKEN}"
+
+          for i in $(seq 1 30); do
+            if docker exec spire-agent-ci \
+              /opt/spire/bin/spire-agent healthcheck 2>/dev/null; then
+              echo "SPIRE agent ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "SPIRE agent failed to start"
+              docker logs spire-agent-ci
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Register workload entries
+        working-directory: deployment/spire
+        run: bash ci-setup.sh
+
+      - name: Run SPIRE integration tests
+        env:
+          SPIFFE_ENDPOINT_SOCKET: unix:///tmp/spire-agent-api/api.sock
+          TESSERA_SPIRE_TRUST_DOMAIN: example.org
+        run: pytest tests/integration/ -v --tb=long
+
+      - name: Tear down
+        if: always()
+        working-directory: deployment/spire
+        run: |
+          docker rm -f spire-agent-ci 2>/dev/null || true
+          docker compose down -v
