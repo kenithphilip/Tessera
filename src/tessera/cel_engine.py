@@ -111,6 +111,6 @@ class CELPolicyEngine:
                 context.delegation_subject or ""
             ),
             "delegation_actions": ct.ListType(
-                elements=[ct.StringType(a) for a in context.delegation_actions]
+                [ct.StringType(a) for a in context.delegation_actions]
             ),
         }
