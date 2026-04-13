@@ -31,6 +31,7 @@ class PolicyViolation(Exception):
 class DecisionKind(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
+    REQUIRE_APPROVAL = "require_approval"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,10 @@ class Decision:
     @property
     def allowed(self) -> bool:
         return self.kind is DecisionKind.ALLOW
+
+    @property
+    def requires_approval(self) -> bool:
+        return self.kind is DecisionKind.REQUIRE_APPROVAL
 
 
 @dataclass(frozen=True)
@@ -69,9 +74,14 @@ class Policy:
     fail_closed_backend_errors: bool = True
     base_requirements: dict[str, ToolRequirement] | None = None
     request_requirements: dict[str, ToolRequirement] = field(default_factory=dict)
+    _human_approval_tools: set[str] = field(default_factory=set)
 
     def require(self, name: str, level: TrustLevel) -> None:
         self.requirements[name] = ToolRequirement(name=name, required_trust=level)
+
+    def requires_human_approval(self, tool: str) -> None:
+        """Mark a tool as requiring human approval regardless of trust level."""
+        self._human_approval_tools.add(tool)
 
     def evaluate(
         self,
@@ -181,7 +191,28 @@ class Policy:
             )
             backend_name = None
             metadata = {}
-        if not decision.allowed:
+        # Human approval gate: only triggers when taint floor allows the call.
+        # DENY always takes precedence.
+        if decision.allowed and tool_name in self._human_approval_tools:
+            decision = Decision(
+                kind=DecisionKind.REQUIRE_APPROVAL,
+                reason="tool requires human approval",
+                tool=tool_name,
+                required_trust=required,
+                observed_trust=observed,
+            )
+            emit_event(
+                SecurityEvent.now(
+                    kind=EventKind.HUMAN_APPROVAL_REQUIRED,
+                    principal=context.principal,
+                    detail={
+                        "tool": tool_name,
+                        "required_trust": int(required),
+                        "observed_trust": int(observed),
+                    },
+                )
+            )
+        if not decision.allowed and not decision.requires_approval:
             emit_event(
                 SecurityEvent.now(
                     kind=EventKind.POLICY_DENY,

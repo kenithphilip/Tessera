@@ -42,6 +42,8 @@ class EventKind(StrEnum):
     PROOF_VERIFY_FAILURE = "proof_verify_failure"
     PROVENANCE_VERIFY_FAILURE = "provenance_verify_failure"
     DELEGATION_VERIFY_FAILURE = "delegation_verify_failure"
+    HUMAN_APPROVAL_REQUIRED = "human_approval_required"
+    HUMAN_APPROVAL_RESOLVED = "human_approval_resolved"
 
 
 @dataclass(frozen=True)
