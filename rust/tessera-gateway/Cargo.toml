@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "macros"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -12,6 +13,7 @@ hex = "0.4"
 hmac = "0.12"
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+secrecy = "0.8"
 rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
