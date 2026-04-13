@@ -3,7 +3,7 @@
 **Signed provenance, delegation-aware taint tracking, and schema-enforced
 dual-LLM execution for agent security meshes.**
 
-![tests](https://img.shields.io/badge/tests-166%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-216%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -251,6 +251,29 @@ out-of-scope list.
 
 ---
 
+## Tessera and AgentMesh
+
+Tessera is the primitives library. It provides the building blocks for
+agent security: signed provenance labels, taint-tracking policy,
+schema-enforced dual-LLM execution, delegation tokens, workload identity,
+and supporting infrastructure. It is designed to compose with any agent
+mesh, not to be one.
+
+**AgentMesh** is the larger goal: a full agent security mesh for AI
+workloads, analogous to what Istio and Cilium provide for Kubernetes
+networking. AgentMesh composes Tessera with production infrastructure
+(agentgateway, SPIFFE/SPIRE, OPA/Cedar, OpenTelemetry) into a unified
+security control plane with tiered deployment from solo developer to
+enterprise scale.
+
+The AgentMesh architecture is proposed in
+[docs/AGENT_SECURITY_MESH_V1_SPEC.md](docs/AGENT_SECURITY_MESH_V1_SPEC.md).
+Tessera is the core library that AgentMesh is built on. The Rust gateway
+in [`rust/tessera-gateway/`](rust/tessera-gateway/) is a reference
+implementation for contributing primitives upstream to agentgateway.
+
+---
+
 ## Composition with existing mesh infrastructure
 
 Tessera is designed to slot into any agent mesh, not to replace one:
@@ -298,14 +321,15 @@ What is likely to change:
 
 ## Contributing
 
-Tessera is a draft-for-discussion reference implementation accompanying
-the position paper in [`papers/`](papers/). Contributions are welcome,
-particularly:
+Contributions are welcome, particularly:
 
-- Benchmarks against CaMeL's reported 6.6x latency cost
-- Integrations with Cedar or OPA as a policy backend
-- A Rust port of the proxy into agentgateway or an equivalent data plane
+- Like-for-like CaMeL latency comparison (microbenchmarks for primitive
+  overhead have landed, head-to-head workload comparison is still open)
+- Contributing Tessera primitives upstream to agentgateway as a
+  middleware plugin
 - MCP SEP-1913 interop once the standard lands
+- Framework-specific SDK adapters (LangChain, CrewAI, OpenAI Agents SDK)
+  for the future AgentMesh integration layer
 - Additional test coverage for edge cases in the taint-tracking invariant
 
 Open an issue with questions, corrections, or proposals. Pull requests

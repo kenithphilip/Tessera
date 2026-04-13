@@ -72,18 +72,37 @@ security primitive. Do not do that without explicit discussion.
 6. **JWT verifiers have a 30-second clock-skew leeway by default.** Do
    not remove it without replacing it with a documented justification.
 
-## Project state as of the initial public release
+## Tessera vs AgentMesh
+
+Tessera is the primitives library: signed provenance labels, taint-tracking
+policy, schema-enforced dual-LLM execution, delegation, workload identity,
+and the supporting infrastructure. It is designed to compose with any agent
+mesh, not to be one.
+
+AgentMesh is the larger vision: a full agent security mesh that composes
+Tessera with agentgateway, SPIFFE/SPIRE, OPA/Cedar, OpenTelemetry, and
+framework-specific SDKs. AgentMesh does not exist as a shipped product yet.
+The specifications in `docs/AGENT_SECURITY_MESH_V1_SPEC.md` describe the
+proposed architecture. Tessera is the core library that AgentMesh will be
+built on.
+
+When writing about this project, do not conflate the two. Tessera is real,
+tested, and composable. AgentMesh is a proposed architecture with a roadmap.
+
+## Project state
 
 - **Version:** v0.0.1, published April 2026
-- **Source:** ~3,237 lines of Python across 15 modules in `src/tessera/`
-- **Tests:** ~2,856 lines, 125 passing, runtime under 3 seconds
+- **Python source:** ~7,155 lines across 21 modules in `src/tessera/`
+- **Rust gateway:** ~7,600 lines in `rust/tessera-gateway/` (reference data plane)
+- **Python tests:** ~5,900 lines, 216 passing, runtime ~6 seconds
+- **Rust tests:** 40 tokio::test functions in `lib.rs`
 - **Python:** 3.12+ only
-- **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, the `mcp`
-  Python package, optional OpenTelemetry SDK
+- **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, httpx,
+  the `mcp` Python package, optional OpenTelemetry SDK
 
-Stable APIs:
+Stable APIs (unlikely to change before v1.0):
 
-- `tessera.labels.TrustLabel`
+- `tessera.labels.TrustLabel`, `Origin`, `TrustLevel`
 - `tessera.context.make_segment`, `Context`
 - `tessera.policy.Policy`, `Decision`
 - `tessera.delegation.DelegationToken`, `sign_delegation`, `verify_delegation`
@@ -91,12 +110,19 @@ Stable APIs:
 - `tessera.quarantine.QuarantinedExecutor`, `strict_worker`, `WorkerReport`
 - `tessera.signing.HMACSigner`, `HMACVerifier`, `JWTSigner`, `JWTVerifier`, `JWKSVerifier`
 - `tessera.events.SecurityEvent`, `register_sink`
+- `tessera.redaction.SecretRegistry`, `redact_nested`
 
 Less stable, expected to change:
 
-- `tessera.proxy` (FastAPI reference, meant to be ported into a Rust data plane)
+- `tessera.proxy` (FastAPI reference, production deployments use the Rust gateway or agentgateway)
 - `tessera.mcp` interceptor interface (will change when MCP SEP-1913 lands)
 - `tessera.a2a` transport and verification helpers
+- `tessera.identity` workload identity and proof-of-possession
+- `tessera.mtls` transport identity extraction
+- `tessera.spire` Workload API adapters
+- `tessera.policy_backends` external policy backend integration
+- `tessera.evidence` evidence bundle format
+- `tessera.control_plane` reference control plane (not for production use)
 - `tessera.mcp.MCPSecurityContext`
 - Security event sink API (will grow as more SIEM integrations land)
 
@@ -110,7 +136,7 @@ pytest
 ```
 
 All tests must pass before any change is committed. The suite is fast
-(~2 seconds); there is no excuse to skip it.
+(~6 seconds); there is no excuse to skip it.
 
 To run a specific test:
 ```bash
@@ -157,12 +183,14 @@ A is the primary way external readers verify our claims.
 ## Where things live
 
 ```
-src/tessera/           source modules
-tests/                 pytest suite
+src/tessera/           Python primitives library (21 modules)
+rust/tessera-gateway/  Rust reference data plane
+tests/                 pytest suite (216 tests)
+benchmarks/            microbenchmark suite (python -m benchmarks)
 examples/              runnable demos (offline + real-API)
 deployment/spire/      SPIRE docker-compose reference (not end-to-end tested)
 papers/                position paper, authoritative spec
-docs/                  additional documentation (architecture, roadmap, etc.)
+docs/                  architecture, roadmap, changelog, mesh specs
 CLAUDE.md              this file
 SECURITY.md            threat model and disclosure policy
 CONTRIBUTING.md        contribution standards
@@ -172,10 +200,23 @@ LICENSE                Apache 2.0
 
 ## Memory discipline for AI assistants
 
-- Do not overclaim Tessera's scope. It is two primitives, not "an agent
-  security mesh." Pitch it as a composable library that slots into any
-  existing mesh (agentgateway, Bedrock AgentCore, Microsoft Agent
-  Governance Toolkit).
+- Tessera is the primitives library. AgentMesh is the future mesh product.
+  Do not conflate them. When someone asks "what is Tessera," say it is a
+  composable library of security primitives for agent systems. When someone
+  asks "what is AgentMesh," say it is a proposed architecture for a full
+  agent security mesh, with Tessera as the core library.
+- Do not overclaim Tessera's scope. It has grown beyond the original two
+  primitives (now includes delegation, provenance, identity, A2A, policy
+  backends, evidence), but it is still a library, not a mesh. Pitch it
+  as composable with any existing mesh (agentgateway, Bedrock AgentCore,
+  Microsoft Agent Governance Toolkit).
+- The Rust gateway (`rust/tessera-gateway/`) is a reference implementation
+  proving the primitives port to a production data plane. It is not a
+  competitor to agentgateway. The goal is to contribute these primitives
+  upstream. Say this when asked.
+- The control plane (`tessera.control_plane`) is a reference integration
+  surface, not a production control plane. Production deployments should
+  use an existing control plane. Say this when asked.
 - Do not guess at numbers. If a user asks for CaMeL latency comparisons,
   say we do not have them yet and point to Section 4.5 of the paper.
 - Do not fabricate SPIRE deployment experience. The `deployment/spire/`

@@ -1,6 +1,15 @@
 # tessera-gateway
 
-Rust data plane scaffold for Tessera.
+Rust reference data plane for Tessera primitives.
+
+This crate proves the Tessera primitives (trust labels, taint-floor
+policy, delegation, provenance, workload identity, evidence bundles)
+port cleanly to a Rust data plane suitable for production traffic. It
+is not a competing proxy. The long-term goal is to contribute these
+primitives upstream to [agentgateway](https://agentgateway.dev/) (Linux
+Foundation) as a middleware plugin, aligning with Tessera's design
+principle of composing with existing infrastructure rather than
+replacing it.
 
 What exists:
 - `/.well-known/agent.json`

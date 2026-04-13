@@ -46,7 +46,7 @@ minor release.
 
 - Removed employer attribution from README, paper byline, and ROADMAP
   v1.0.0 gate. Tessera is a personal project.
-- Test suite now stands at 153 passing tests
+- Test suite now stands at 216 passing tests
 - Repository assistant context and roadmap statistics updated to match
   the current tree
 - SPIRE reference docs now describe live JWT-SVID identity retrieval and
