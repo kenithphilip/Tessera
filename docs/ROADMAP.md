@@ -1,10 +1,18 @@
 # Roadmap
 
-Tessera is a reference implementation of two primitives documented in
-[`../papers/two-primitives-for-agent-security-meshes.md`](../papers/two-primitives-for-agent-security-meshes.md).
-This roadmap reflects what has shipped and what we believe is worth
-building next. It is not a commitment. Priorities can change based on
-community feedback, standards work, and real deployment experience.
+Tessera is the primitives library for agent security meshes. It provides
+signed provenance, taint-tracking policy, schema-enforced dual-LLM
+execution, delegation, workload identity, and supporting infrastructure.
+
+AgentMesh is the larger goal: a full agent security mesh (the Istio for
+LLM agents) that composes Tessera with agentgateway, SPIFFE/SPIRE,
+OPA/Cedar, OpenTelemetry, and framework-specific SDKs. The AgentMesh
+architecture is specified in `docs/AGENT_SECURITY_MESH_V1_SPEC.md`.
+
+This roadmap covers both. It reflects what has shipped and what we
+believe is worth building next. It is not a commitment. Priorities can
+change based on community feedback, standards work, and real deployment
+experience.
 
 ## What has shipped
 
@@ -115,14 +123,17 @@ Ordered by security payoff per engineering effort.
 
 ### Bigger bets
 
-7. **Rust data plane.** The FastAPI reference is still a specification,
-   not a production artifact. The proxy primitives belong in a real
-   high-throughput data plane. That is still the right long-term move.
+7. **Rust data plane maturation.** A reference Rust gateway has landed
+   in `rust/tessera-gateway/` with HMAC/JWT label verification,
+   taint-floor policy, OPA callout, A2A JSON-RPC support, mTLS with
+   SPIFFE SAN extraction, evidence bundles, and 40 tests. The next
+   step is contributing these primitives upstream to agentgateway as a
+   middleware plugin, not maintaining a parallel proxy.
 
-8. **Production policy distribution and control-plane story.** Not
-   necessarily a Tessera-branded control plane, but something real for
-   hot policy distribution, registry and discovery, fleet governance,
-   and multi-tenant management.
+8. **AgentMesh SDK.** The integration layer that composes Tessera with
+   agentgateway, SPIFFE/SPIRE, OPA/Cedar, and OpenTelemetry into a
+   single installable package with framework adapters. This is the
+   "AgentMesh" product layer on top of the Tessera primitives library.
 
 ### Still valuable, but not first
 
@@ -154,33 +165,42 @@ Ordered by security payoff per engineering effort.
 
 ## What we are deliberately not building
 
-16. **A new control plane.** Istio has Istiod, agentgateway is building
-    its own control plane, Microsoft has the Agent Governance Toolkit.
-    Tessera should not compete. The primitives must work under any
-    control plane, from none to fully distributed. A Tessera-branded
-    control plane would fragment the ecosystem we are trying to
-    integrate with.
+14. **A production control plane.** `tessera.control_plane` is a
+    reference integration surface for testing policy distribution and
+    agent heartbeats. It is not a production control plane. Istio has
+    Istiod, agentgateway is building its own control plane, Microsoft
+    has the Agent Governance Toolkit. AgentMesh should compose with
+    those, not compete. The reference module exists so the primitives
+    have something to integrate against in tests, not as a product.
 
-17. **Attention-level trust masking (CIV).** The paper acknowledges this
+15. **A competing data plane proxy.** The Rust gateway in
+    `rust/tessera-gateway/` is a reference implementation proving the
+    primitives port cleanly to a Rust data plane. The goal is to
+    contribute these primitives upstream to agentgateway (Linux
+    Foundation) or an equivalent production proxy, not to maintain a
+    parallel gateway long-term.
+
+16. **Attention-level trust masking (CIV).** The paper acknowledges this
     as experimental and single-author. We are not in a position to
     verify or validate this line of work. If it matures and the
     academic community validates it, we can add it as an optional
     enforcement layer.
 
-18. **Firecracker or gVisor orchestration.** Real work, wrong team. E2B,
+17. **Firecracker or gVisor orchestration.** Real work, wrong team. E2B,
     Blaxel, and Google's Agent Sandbox on GKE own this space. Tessera
-    should interop with them at the proxy level, not replicate them.
+    and AgentMesh should interop with them at the proxy level, not
+    replicate them.
 
-19. **Tetragon TracingPolicy templates for agent workloads.** Platform
+18. **Tetragon TracingPolicy templates for agent workloads.** Platform
     team responsibility, not security library responsibility. Tessera
     should document how to compose with Tetragon, not ship policies.
 
-20. **A new MCP client implementation.** The official `mcp` package is
+19. **A new MCP client implementation.** The official `mcp` package is
     fine, and the Protocol-based abstraction in `tessera.mcp` lets us
     wrap any client that satisfies the interface. We are not building
     a competing MCP client.
 
-21. **A dashboard or UI.** Security events go to SIEMs, observability
+20. **A dashboard or UI.** Security events go to SIEMs, observability
     data goes to OTel backends. Both of those ecosystems have mature
     UIs. We do not need to build another one.
 
@@ -197,7 +217,7 @@ before v1.0.0 is experimental. We will bump:
 v1.0.0 is gated on:
 
 - Completion of items 1, 2, 4, 5, and either 7 or 12 above.
-- At least one independent production deployment (not Fivetran-only).
+- At least one independent production deployment.
 - Stable `TrustLabel` serialization format that we are willing to
   freeze as an interop standard.
 

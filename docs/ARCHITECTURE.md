@@ -18,14 +18,20 @@ src/tessera/
 ├── context.py          LabeledSegment, Context, Spotlighting renderer
 ├── delegation.py       signed user-to-agent delegation tokens
 ├── provenance.py       signed prompt provenance envelopes and manifests
-├── policy.py           taint-tracking policy engine
+├── identity.py         workload identity tokens, proof-of-possession, replay protection
+├── mtls.py             SPIFFE-aware transport identity from ASGI TLS and XFCC
+├── spire.py            live SPIRE Workload API adapters for SVIDs and trust bundles
+├── policy.py           taint-tracking policy engine with delegation constraints
+├── policy_backends.py  external deny-only policy backends (OPA, Cedar)
 ├── quarantine.py       QuarantinedExecutor, strict_worker, WorkerReport
 ├── mcp.py              MCPInterceptor auto-labeling tool outputs
 ├── registry.py         org-level external-tool registry
-├── events.py           SecurityEvent with pluggable sinks
+├── events.py           SecurityEvent with pluggable sinks and evidence buffering
+├── evidence.py         signed evidence bundles for audit export
 ├── telemetry.py        optional OpenTelemetry instrumentation
-├── proxy.py            FastAPI sidecar reference
+├── proxy.py            FastAPI reference proxy (chat, A2A, discovery)
 ├── redaction.py        SecretRegistry for credential isolation at the proxy
+├── control_plane.py    reference control plane for policy and registry distribution
 └── cli.py              `tessera serve` entrypoint
 ```
 
@@ -94,6 +100,49 @@ These are stronger than simple spotlighting markers because signatures
 cover both metadata and the exact content digests the proxy and A2A
 surfaces rely on.
 
+### `identity.py`
+
+Workload identity and proof-of-possession for inbound agent traffic.
+Defines `AgentIdentity` (a JWT with a SPIFFE subject and optional
+`cnf.jkt` proof key binding), `AgentProofVerifier` (validates a
+DPoP-style proof JWT binding the credential to one HTTP request), and
+`AgentProofReplayCache` (thread-safe `jti` replay detection with
+configurable window).
+
+Supports HS256 (symmetric, single-process) and RS256/ES256 (asymmetric,
+multi-workload) verification. The proof verifier is strict: method, URI,
+and access token hash must all match. Replay protection uses a bounded
+time window rather than an unbounded set.
+
+### `mtls.py`
+
+Validates caller identity from the transport session rather than from
+application tokens. Two sources are supported:
+
+- The ASGI TLS extension, when the server exposes a verified client
+  certificate chain in the request scope. SPIFFE URIs are extracted from
+  the SAN extension.
+- Envoy-style `X-Forwarded-Client-Cert` headers, but only when the
+  request arrived from an explicitly trusted proxy host.
+
+The module refuses to trust XFCC headers unless the immediate peer is
+on the `trusted_proxy_hosts` allowlist, and optionally pins acceptable
+SPIFFE trust domains.
+
+### `spire.py`
+
+Adapters for the SPIRE Workload API. Keeps SPIRE-specific plumbing out
+of the core modules. Supports two runtime capabilities:
+
+1. Fetch a live JWT-SVID for outbound `ASM-Agent-Identity` carriage.
+2. Fetch JWT bundles and expose them as a JWKS-backed verifier for
+   inbound identity checks.
+
+Uses duck typing so it works with both the modern `spiffe` Python
+package and the older `pyspiffe.workloadapi` API. Intentionally
+defensive: malformed SVIDs or bundle responses raise
+`SpireProtocolError` rather than silently degrading.
+
 ### `policy.py`
 
 The taint-tracking engine. Per-tool trust requirements are declared
@@ -113,6 +162,20 @@ consumes bounded delegated authority, including per-tool authorization,
 delegate binding, per-action cost caps, delegated human-approval
 requirements, and delegated domain allowlists for common network
 destination arguments.
+
+### `policy_backends.py`
+
+External deny-only policy backends that compose with the local taint
+floor. The local trust check and delegation checks remain authoritative.
+External backends (OPA, Cedar, or any HTTP policy endpoint) can only add
+denies after the local checks have already allowed. This preserves the
+taint floor invariant while enabling attribute-based policy decisions
+that are too organization-specific for the local engine.
+
+`PolicySegmentSummary` sends content hashes and metadata to the backend,
+never raw prompt content. This is a deliberate privacy boundary: the
+external policy engine evaluates policy over metadata, not over the
+text the agent saw. Backend failures fail closed by default.
 
 ### `quarantine.py`
 
@@ -177,6 +240,17 @@ number of sinks. Built-in sinks:
 Sink exceptions are swallowed so a broken observability path cannot
 take down the security path.
 
+### `evidence.py`
+
+Signed evidence bundles for audit and incident workflows. An
+`EvidenceBundle` packages a set of security events into a portable
+structure with schema version, event counts, per-kind tallies, and
+optional dropped-event accounting. Bundles can be HMAC-signed or
+JWT-signed for tamper evidence.
+
+The Rust gateway implements the same bundle schema, so Python and Rust
+components produce interoperable evidence artifacts.
+
 ### `telemetry.py`
 
 Optional OpenTelemetry instrumentation. Every function is a no-op if
@@ -236,6 +310,24 @@ marker. This is defense-in-depth for agents that still hold real
 credentials in process; the right long-term answer is to give the
 agent process placeholder tokens and substitute on egress to
 downstream services.
+
+### `control_plane.py`
+
+Reference control plane for signed policy and registry distribution.
+Exposes FastAPI endpoints that agents poll for policy bundles, tool
+registries, and OPA configuration. Documents are content-addressed
+(SHA-256 revision hashes), ETag-gated, and optionally JWT-signed so
+agents can verify that the policy they received came from the
+control plane and was not modified in transit.
+
+Includes heartbeat ingress with workload identity verification, so
+the control plane knows which agents are alive and authenticated.
+
+This module exists because the primitives need a reference integration
+surface, not because Tessera is building a production control plane.
+Production deployments should use an existing control plane (Istiod,
+agentgateway's management API, Microsoft AGT) and adapt the Tessera
+distribution format to it.
 
 ### `cli.py`
 
@@ -455,7 +547,7 @@ Every security-relevant change must come with a test that pins the
 specific invariant the change affects. The test should fail on the old
 behavior and pass on the new. This is enforced informally in code review.
 
-The test suite is fast (~2.5 seconds for 125 tests) and should stay fast.
+The test suite is fast (~6 seconds for 216 tests) and should stay fast.
 Slow tests get less love and are more likely to be skipped under time
 pressure. If a test is slow because it is doing too much, split it.
 
