@@ -25,6 +25,9 @@ from tessera.policy_backends import PolicyBackend, PolicyInput
 from tessera.telemetry import emit_decision
 
 if TYPE_CHECKING:
+    from tessera.taint import ArgTaintResult, DependencyAccumulator
+
+if TYPE_CHECKING:
     from tessera.cel_engine import CELPolicyEngine
 
 
@@ -166,12 +169,22 @@ class Policy:
         delegation: DelegationToken | None = None,
         expected_delegate: str | None = None,
         resource_type: ResourceType = ResourceType.TOOL,
+        accumulator: "DependencyAccumulator | None" = None,
+        critical_args: frozenset[str] | None = None,
     ) -> Decision:
         """Return an allow or deny decision for a proposed tool call.
 
         The rule is: required_trust <= min_trust(context). Using min_trust
         (not max_trust) is what makes this taint tracking: any single
         untrusted segment drags the whole context down to its level.
+
+        When an accumulator is provided, the evaluation adds a second
+        layer: per-argument taint. If the context-level check passes
+        (or is skipped for side-effect-free tools), the accumulator
+        checks whether critical arguments (recipient, URL, target)
+        trace back to user input. This catches injections that modify
+        tool call arguments without triggering the context-level taint
+        floor.
 
         Delegation adds extra deny conditions. It never widens access
         beyond what the trust floor allows.
@@ -286,6 +299,30 @@ class Policy:
                 )
                 backend_name = None
                 metadata = {}
+
+        # Argument-level taint: if an accumulator is provided, check that
+        # critical arguments trace back to user input. Only runs on
+        # side-effecting tools when the context-level check passed.
+        if decision.allowed and accumulator is not None and args is not None:
+            if req is None or req.side_effects:
+                from tessera.taint import CRITICAL_ARGS_SEND, CRITICAL_ARGS_TRANSFER
+
+                effective_critical = critical_args
+                if effective_critical is None:
+                    effective_critical = CRITICAL_ARGS_SEND | CRITICAL_ARGS_TRANSFER
+                arg_result = accumulator.evaluate_args(
+                    tool_name, args, critical_args=effective_critical,
+                )
+                if not arg_result.passed:
+                    decision = Decision(
+                        kind=DecisionKind.DENY,
+                        reason=arg_result.reason or "argument taint check failed",
+                        tool=tool_name,
+                        required_trust=required,
+                        observed_trust=observed,
+                    )
+                    backend_name = None
+                    metadata = {}
 
         # CEL deny rules: evaluated after taint floor passes. A CEL rule
         # can block or require approval but cannot allow a taint-denied call.

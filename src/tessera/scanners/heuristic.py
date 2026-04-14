@@ -109,6 +109,31 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(overwrite|write\s+.{0,20}to)\s+/(etc|usr|opt|root|var)/",
         re.IGNORECASE,
     ),
+    # Task-prefix injection (AgentDojo DirectAttack format)
+    # "TODO:", "TASK:", "IMPORTANT!" as line starters followed by action verbs
+    re.compile(
+        r"^(?:TODO|TASK|IMPORTANT|ACTION|URGENT)\s*[:\-!]\s*"
+        r"(send|transfer|execute|delete|create|forward|make|update|change|modify|set|grant)",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # Urgency + action (InjecAgent format): "IMPORTANT!!!" or "CRITICAL:"
+    re.compile(
+        r"(?:IMPORTANT|CRITICAL|URGENT|WARNING)\s*[!]{2,}.{0,40}"
+        r"(send|transfer|execute|delete|create|forward|make|update|email|pay)",
+        re.IGNORECASE,
+    ),
+    # Fake system message prefix (SystemMessageAttack format)
+    re.compile(
+        r"#{2,}\s*\(?system[_ ]?message\)?",
+        re.IGNORECASE,
+    ),
+    # Imperative with external target: action verb + IBAN, email, or URL
+    # in tool output context (not in user prompts)
+    re.compile(
+        r"\b(send|transfer|pay|wire|forward|email)\b.{0,60}"
+        r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
+        re.IGNORECASE,
+    ),
 )
 
 
