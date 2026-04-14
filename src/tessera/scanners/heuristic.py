@@ -86,13 +86,13 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"authorized_keys|id_rsa",
         re.IGNORECASE,
     ),
-    # Shell command injection
+    # Shell command injection (exempt when inside backticks or code blocks)
     re.compile(
-        r"\b(curl|wget|bash|chmod|chown|sudo)\s+\S|"
-        r"rm\s+-rf\b|"
+        r"(?<!`)\b(curl|wget|bash|chmod|chown|sudo)\s+\S|"
+        r"(?<!`)rm\s+-rf\b|"
         r"reverse\s+shell|"
-        r"\bsubprocess\b|"
-        r"\bimport\s+os\b",
+        r"(?<!`)\bsubprocess\b|"
+        r"(?<!`)\bimport\s+os\b",
         re.IGNORECASE,
     ),
     # Exfiltration: forward/send/email + external target
@@ -110,16 +110,23 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     # Task-prefix injection (AgentDojo DirectAttack format)
-    # "TODO:", "TASK:", "IMPORTANT!" as line starters followed by action verbs
+    # "TODO:", "TASK:", etc. followed by action verb AND an external target
+    # (IBAN, email, URL). Without a target, the pattern matches legitimate
+    # developer task notes like "TODO: Create a new branch."
     re.compile(
         r"^(?:TODO|TASK|IMPORTANT|ACTION|URGENT)\s*[:\-!]\s*"
-        r"(send|transfer|execute|delete|create|forward|make|update|change|modify|set|grant)",
+        r"(send|transfer|execute|delete|forward|make|pay|wire|email|grant)"
+        r".{0,80}"
+        r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
         re.IGNORECASE | re.MULTILINE,
     ),
     # Urgency + action (InjecAgent format): "IMPORTANT!!!" or "CRITICAL:"
+    # Requires external target to avoid matching "IMPORTANT!! Update docs"
     re.compile(
-        r"(?:IMPORTANT|CRITICAL|URGENT|WARNING)\s*[!]{2,}.{0,40}"
-        r"(send|transfer|execute|delete|create|forward|make|update|email|pay)",
+        r"(?:IMPORTANT|CRITICAL|URGENT|WARNING)\s*[!]{2,}.{0,60}"
+        r"(send|transfer|execute|delete|forward|make|pay|wire|email)"
+        r".{0,60}"
+        r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
         re.IGNORECASE,
     ),
     # Fake system message prefix (SystemMessageAttack format)
@@ -127,12 +134,16 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"#{2,}\s*\(?system[_ ]?message\)?",
         re.IGNORECASE,
     ),
-    # Imperative with external target: action verb + IBAN, email, or URL
-    # in tool output context (not in user prompts)
+    # Imperative with external target: action verb + IBAN, email, or URL.
+    # Requires imperative mood (verb at sentence start, after instruction
+    # prefix, or after "please"). Filters out nominal forms like
+    # "Transfer of EUR 500 to DE89..." (transaction record).
     re.compile(
-        r"\b(send|transfer|pay|wire|forward|email)\b.{0,60}"
+        r"(?:^|[.!?]\s+|please\s+)"
+        r"(send|transfer|pay|wire|forward|email)\s+(?!of\s)"
+        r".{0,60}"
         r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     ),
 )
 

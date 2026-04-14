@@ -53,6 +53,21 @@ _INSTRUCTION_PREFIXES = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Past-tense/passive markers preceding the verb: "was sent", "has been
+# transferred", "email sent to". These indicate records of completed
+# actions, not instructions.
+_PAST_PASSIVE = re.compile(
+    r"\b(was|were|been|has|have|had|got)\s+$",
+    re.IGNORECASE,
+)
+
+# Quoted/reported speech markers: the verb appears inside dialogue,
+# not as a direct instruction to the model.
+_QUOTED_SPEECH = re.compile(
+    r"""(?:['"\u201c\u201d]|said|wrote|asked|replied)\s*[:.]?\s*$""",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class IntentMatch:
@@ -97,6 +112,30 @@ def scan_intent(
     for m in raw_matches:
         verb = m.group(1).lower()
         clause = m.group(0).strip()
+
+        # Filter out past-tense/passive constructions: "was sent",
+        # "has been transferred". These are records, not instructions.
+        # Check both before the verb ("was sent") and after ("Email was
+        # sent to" where "Email" is matched as the verb).
+        prefix_window = tool_output[max(0, m.start() - 20):m.start()]
+        suffix_window = m.group(2)[:30] if m.group(2) else ""
+        if _PAST_PASSIVE.search(prefix_window):
+            continue
+        if re.search(r"^was\s+\w+|^were\s+\w+|^has\s+been|^had\s+been", suffix_window, re.IGNORECASE):
+            continue
+
+        # Filter out quoted/reported speech: text inside quotes or
+        # after "said:" is dialogue from within the data.
+        quote_window = tool_output[max(0, m.start() - 30):m.start()]
+        if _QUOTED_SPEECH.search(quote_window):
+            continue
+
+        # Filter out nominal forms: "Transfer of EUR 500" is a noun
+        # phrase, not an imperative. Check for article/preposition
+        # immediately after the verb.
+        rest = m.group(2).lstrip()
+        if rest.lower().startswith("of "):
+            continue
 
         has_target = any(p.search(clause) for p in _TARGET_PATTERNS)
         is_prefixed = bool(_INSTRUCTION_PREFIXES.search(
