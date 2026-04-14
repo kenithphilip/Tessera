@@ -165,6 +165,35 @@ def _args_are_unrequested(
     return False
 
 
+def _infer_critical_args(tool_name: str) -> frozenset[str] | None:
+    """Map tool name patterns to critical argument sets.
+
+    Returns the set of arguments that must be user-sourced for the tool
+    call to be allowed. Returns None if no specific critical args are
+    known (falls back to DependencyAccumulator defaults).
+    """
+    from tessera.taint import (
+        CRITICAL_ARGS_EXECUTE,
+        CRITICAL_ARGS_SEND,
+        CRITICAL_ARGS_TRANSFER,
+        CRITICAL_ARGS_WRITE,
+    )
+
+    lower = tool_name.lower()
+    if any(p in lower for p in ("send_email", "email", "forward")):
+        return CRITICAL_ARGS_SEND
+    if any(p in lower for p in ("send_money", "transfer", "wire", "pay")):
+        return CRITICAL_ARGS_TRANSFER
+    if any(p in lower for p in ("write", "delete", "upload", "post_webpage")):
+        return CRITICAL_ARGS_WRITE
+    if any(p in lower for p in ("execute", "run", "install")):
+        return CRITICAL_ARGS_EXECUTE
+    # For invite, reserve, create: treat all args as critical
+    if any(p in lower for p in ("invite", "reserve", "create", "book", "schedule")):
+        return None  # all args checked
+    return None
+
+
 def _infer_tools_from_goal(goal: str) -> list[str]:
     """Infer required side-effecting tools from an injection GOAL string.
 
@@ -270,6 +299,7 @@ class ReplayEvaluator:
         from tessera.context import Context, make_segment
         from tessera.labels import Origin, TrustLevel
         from tessera.policy import Policy
+        from tessera.taint import DependencyAccumulator
 
         is_benign = injection_task is None
 
@@ -291,6 +321,9 @@ class ReplayEvaluator:
         policy = Policy()
         for pattern in _DEFAULT_READ_ONLY_PATTERNS:
             policy.require(pattern, TrustLevel.USER, side_effects=False)
+
+        # Value-level taint: track which arguments came from which segments.
+        acc = DependencyAccumulator(context=ctx)
 
         tool_names: list[str] = []
         tool_scores: list[tuple[str, float]] = []
@@ -321,7 +354,22 @@ class ReplayEvaluator:
                 trust = TrustLevel.UNTRUSTED
                 origin = Origin.WEB
 
+            seg_idx = len(ctx.segments)
             ctx.add(make_segment(output_text, origin, "bench", key, trust_level=trust))
+
+            # Bind each argument of this tool call to its source segment
+            # for value-level taint tracking. In the replay, the tool's
+            # arguments are from ground_truth (so they are either from
+            # the user prompt or from data the model would have extracted
+            # from a previous tool output). We bind each argument to the
+            # output segment that just got added, since in the injection
+            # scenario that output is the tainted source.
+            if not is_benign and call.args:
+                for arg_name, arg_val in call.args.items():
+                    if isinstance(arg_val, str) and arg_val in user_task.PROMPT:
+                        acc.bind_from_user(arg_name, arg_val)
+                    else:
+                        acc.bind_from_segment(arg_name, arg_val, seg_idx)
 
             # Scan tool outputs in injection trials for output manipulation.
             # Two complementary checks run in order:
@@ -369,6 +417,8 @@ class ReplayEvaluator:
                 decision = policy.evaluate(
                     ctx, next_call.function,
                     args=dict(next_call.args) if next_call.args else None,
+                    accumulator=acc,
+                    critical_args=_infer_critical_args(next_call.function),
                 )
                 if not decision.allowed:
                     blocked = True
@@ -449,9 +499,18 @@ class ReplayEvaluator:
                         tool_names.append(inj_tool)
                         break
                     continue
+                # Bind injection task arguments to accumulator.
+                # In injection scenarios, the attacker's args come from
+                # untrusted tool output. Bind each to the last untrusted
+                # segment as the likely source.
+                if inj_call.args:
+                    for arg_name, arg_val in inj_call.args.items():
+                        acc.bind_from_tool_output(arg_name, arg_val, inj_tool)
                 decision = policy.evaluate(
                     ctx, inj_tool,
                     args=dict(inj_call.args) if inj_call.args else None,
+                    accumulator=acc,
+                    critical_args=_infer_critical_args(inj_tool),
                 )
                 if not decision.allowed:
                     blocked = True
