@@ -3,7 +3,7 @@
 **Signed provenance, delegation-aware taint tracking, and schema-enforced
 dual-LLM execution for agent security meshes.**
 
-![tests](https://img.shields.io/badge/tests-572%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-991%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -131,7 +131,7 @@ TrustLabel(
 | `tessera.ir` | Intermediate representation: compile YAML/dict policy config to live `Policy` instances |
 | `tessera.hooks` | gRPC extension hooks (PostPolicyEvaluate, PostToolCallGate), deny-only, fail-closed |
 | `tessera.xds` | xDS-compatible resource distribution over HTTP/SSE and gRPC ADS (requires `[xds]`) |
-| `tessera.scanners` | Content-aware injection scoring, canary leakage detection, PII entity detection |
+| `tessera.scanners` | Content-aware injection scoring (directive, intent, heuristic), canary leakage detection, PII entity detection, prompt screening, tool output schema enforcement, tool shadow detection |
 | `tessera.risk` | Irreversibility scoring, salami attack chain detection, adaptive cooldown escalation |
 | `tessera.compliance` | NIST SP 800-53 and CWE enrichment, hash-chain tamper-evident audit log |
 | `tessera.ratelimit` | Per-principal token budget enforcement for denial-of-wallet defense |
@@ -142,11 +142,26 @@ TrustLabel(
 | `tessera.registry` | Org-level external-tool registry, registry-wins-on-inclusion |
 | `tessera.events` | Structured `SecurityEvent` with stdout, OTel, and webhook sinks |
 | `tessera.evidence` | Signed evidence bundles for audit export and offline verification |
+| `tessera.output_monitor` | Output manipulation defense: detects when model outputs deviate from verified tool results |
+| `tessera.delegation_intent` | Delegation intent verification: ensures delegated tool calls match the stated purpose |
+| `tessera.trust_decay` | Time-based trust decay: segments lose trust as they age, configurable per origin |
+| `tessera.plan_verifier` | Plan verification: validates multi-step agent plans against policy before execution |
+| `tessera.side_channels` | Side-channel mitigations: constant-time comparison, timing jitter, output padding |
+| `tessera.claim_provenance` | Claim provenance tracking: binds model assertions to the tool outputs that produced them |
+| `tessera.confidence` | Confidence scoring for scanner results with model-targeting and tense-aware filtering |
+| `tessera.taint` | Value-level taint tracking wired into the policy evaluator and adapter layer |
 | `tessera.telemetry` | Optional OpenTelemetry spans across proxy, MCP, policy, quarantine |
 | `tessera.proxy` | FastAPI reference proxy with chat and A2A JSON-RPC mediation |
 | `tessera.adapters.langchain` | LangChain callback handler: labels segments, gates tool calls, scans outputs (requires `[langchain]`) |
 | `tessera.adapters.mcp_proxy` | Transparent MCP sidecar proxy: sits between any MCP client and a real MCP server, adding trust labels and policy gates to every tool call (requires `[mcp]`) |
 | `tessera.adapters.openai_agents` | OpenAI Agents SDK hook adapter: policy gate on tool start, output labeling, session risk on end (requires `[openai-agents]`) |
+| `tessera.adapters.agentdojo` | AgentDojo benchmark adapter: policy gates and injection scoring in AgentDojo evaluation pipelines (requires `[agentdojo]`) |
+| `tessera.adapters.crewai` | CrewAI step callback: labels segments, gates tool calls, tracks session risk (requires `[crewai]`) |
+| `tessera.adapters.google_adk` | Google ADK before/after tool callbacks: policy enforcement and output labeling (requires `[google-adk]`) |
+| `tessera.adapters.llamaindex` | LlamaIndex callback handler: tool-call gating and output labeling (requires `[llamaindex]`) |
+| `tessera.adapters.haystack` | Haystack pipeline component: policy gate as a pipeline node (requires `[haystack]`) |
+| `tessera.adapters.langgraph` | LangGraph tool node wrapper: gates tool invocations within graph execution (requires `[langgraph]`) |
+| `tessera.adapters.pydantic_ai` | PydanticAI tool wrapper: policy-enforced tool decorator (requires `[pydantic-ai]`) |
 | `tessera.adapters.upstream` | Ready-to-use `UpstreamFn` callables: `openai_upstream` (OpenAI, Mistral, Deepseek, xAI, Qwen, Groq, Ollama, vLLM) and `anthropic_upstream` (with full schema translation) |
 | `tessera.liveness` | Agent liveness attestation via heartbeat TTL (three-property gate: identity AND authority AND liveness) |
 | `tessera.hooks.compatibility` | Decision-event compatibility matrix for hook authoring validation |
@@ -164,6 +179,51 @@ Reference deployments:
 - [`examples/quarantine_openai.py`](examples/quarantine_openai.py):
   dual-LLM demo with real OpenAI API calls (gpt-4o-mini as worker,
   gpt-4o as planner), schema-enforced via `EarningsFacts`
+
+---
+
+## Defense layers (v0.1.0)
+
+Beyond the two core primitives, Tessera v0.1.0 adds layered defenses that
+compose with the taint-tracking policy engine:
+
+- **Content analysis scanners.** Directive detection, intent classification,
+  and heuristic scoring identify injected instructions in tool outputs and
+  retrieved content. Scanners run in parallel with configurable confidence
+  thresholds, model-targeting checks, and past-tense filters to reduce
+  false positives.
+- **Output manipulation defense.** The output monitor detects when a model's
+  response contradicts or fabricates data relative to the tool outputs it
+  received, catching post-hoc injection where the model is tricked into
+  misrepresenting verified results.
+- **Trust decay.** Segments lose trust over time based on configurable
+  per-origin decay curves. A tool output that was trustworthy five minutes
+  ago may not be trustworthy five hours later, and the policy engine
+  reflects this automatically.
+- **Plan verification.** Multi-step agent plans are validated against the
+  policy before execution begins. The verifier checks that every step in
+  the proposed plan would be permitted given the current context, preventing
+  the agent from committing to a sequence it cannot complete.
+- **Side-channel mitigations.** Constant-time label comparison, timing
+  jitter on policy evaluation, and output padding defend against
+  adversaries who probe the system by measuring response timing or output
+  length to infer trust decisions.
+- **Prompt screening.** Inbound prompts are screened for known injection
+  patterns before they enter the context, providing an early-reject path
+  that avoids polluting the taint-tracking state with content that would
+  have been blocked anyway.
+
+## Framework adapters
+
+Tessera integrates with ten agent frameworks through drop-in adapters.
+Each adapter wires policy gates, trust labels, and security events into
+the framework's native extension points:
+
+LangChain, OpenAI Agents SDK, AgentDojo, MCP (transparent sidecar proxy),
+CrewAI, Google ADK, LlamaIndex, Haystack, LangGraph, PydanticAI.
+
+See the module table above for per-adapter details and optional
+dependency groups.
 
 ---
 
@@ -329,11 +389,11 @@ Tessera is designed to slot into any agent mesh, not to replace one:
 
 ## Status
 
-**Experimental.** This is a reference implementation of two primitives,
-not a production security control. The invariants are testable and the
-primitives compose, but the API will change, the ergonomics will change,
-and the integrations with existing mesh infrastructure are not yet
-battle-tested at scale.
+**Experimental.** v0.1.0 ships ~18,200 lines of Python across 92
+modules, ~15,700 lines of tests (991 passing), and a Rust reference
+gateway. The invariants are testable and the primitives compose, but the
+API will change, the ergonomics will change, and the integrations with
+existing mesh infrastructure are not yet battle-tested at scale.
 
 What is stable:
 
@@ -361,8 +421,9 @@ Contributions are welcome, particularly:
 - Contributing Tessera primitives upstream to agentgateway as a
   middleware plugin
 - MCP SEP-1913 interop once the standard lands
-- Framework-specific SDK adapters (LangChain, CrewAI, OpenAI Agents SDK)
-  for the future AgentMesh integration layer
+- Additional framework adapters or improvements to the existing ten
+  (LangChain, OpenAI Agents SDK, AgentDojo, MCP, CrewAI, Google ADK,
+  LlamaIndex, Haystack, LangGraph, PydanticAI)
 - Additional test coverage for edge cases in the taint-tracking invariant
 
 Open an issue with questions, corrections, or proposals. Pull requests
