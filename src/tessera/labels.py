@@ -58,6 +58,14 @@ class TrustLabel:
     The signature covers origin, principal, trust_level, nonce, and the
     SHA-256 of the content. Verifying a label requires the content it was
     issued for.
+
+    readers: Optional access-control set. None means Public (any principal
+    may receive this data). A frozenset restricts which principals can be
+    recipients of tool calls that depend on this segment. Context computes
+    the intersection across all segments; a call sending data outside that
+    intersection is denied by the readers lattice check in Policy.evaluate.
+    readers is NOT included in the HMAC canonical form: it is policy metadata,
+    not a content commitment. Changing it does not invalidate existing labels.
     """
 
     origin: Origin
@@ -65,6 +73,7 @@ class TrustLabel:
     trust_level: TrustLevel
     nonce: str = field(default_factory=lambda: secrets.token_hex(16))
     signature: str = ""
+    readers: frozenset[str] | None = None
 
     def canonical(self, content: str) -> bytes:
         """Return the bytes that the signature covers."""

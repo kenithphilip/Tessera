@@ -1,3 +1,8 @@
+// Result<T, Response> is idiomatic for axum error-path short-circuits. The
+// Response type is large by nature (axum body + headers). Refactoring all
+// call sites to Box the error would increase noise without improving safety.
+#![allow(clippy::result_large_err)]
+
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
@@ -794,6 +799,8 @@ pub struct AppState {
     client: Option<Client>,
     proof_replay_cache: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
     runtime_control: Arc<RwLock<RuntimeControlState>>,
+    filter_chain: Arc<filters::FilterChain>,
+    a2a_filter_chain: Arc<filters::a2a::A2AFilterChain>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -905,7 +912,7 @@ pub(crate) struct ChatRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct JsonRpcRequestModel {
+pub(crate) struct JsonRpcRequestModel {
     jsonrpc: String,
     #[serde(default = "default_null")]
     id: Value,
@@ -915,7 +922,7 @@ struct JsonRpcRequestModel {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct A2ATaskParamsModel {
+pub(crate) struct A2ATaskParamsModel {
     task_id: String,
     intent: String,
     input_segments: Vec<A2AInputSegmentModel>,
@@ -1007,7 +1014,7 @@ struct ManifestModel {
 }
 
 #[derive(Clone, Debug)]
-struct VerifiedA2ASecurityContext {
+pub(crate) struct VerifiedA2ASecurityContext {
     delegation: Option<DelegationHeaderModel>,
     envelopes: Vec<EnvelopeModel>,
 }
@@ -1396,52 +1403,64 @@ fn read_der_tlv(input: &[u8], offset: usize) -> Result<(u8, usize, usize), Strin
     Ok((tag, value_start, value_end))
 }
 
-pub fn build_state(config: GatewayConfig) -> AppState {
+pub fn build_state(config: GatewayConfig) -> Result<AppState, String> {
     if config.trust_xfcc && config.trusted_proxy_hosts.is_empty() {
-        panic!("trusted_proxy_hosts is required when trust_xfcc is enabled");
+        return Err("trusted_proxy_hosts is required when trust_xfcc is enabled".into());
     }
     if config.require_mtls && config.effective_mtls_trust_domains().is_empty() {
-        panic!("mtls_trust_domains or agent_id is required when mTLS enforcement is enabled");
+        return Err("mtls_trust_domains or agent_id is required when mTLS enforcement is enabled".into());
     }
     if config
         .a2a_required_trust
         .values()
         .any(|level| !is_valid_trust_level(*level))
     {
-        panic!("a2a_required_trust contains an invalid trust level");
+        return Err("a2a_required_trust contains an invalid trust level".into());
     }
     if config.external_policy_enabled() && config.policy_opa_path.trim().is_empty() {
-        panic!("policy_opa_path must not be empty when external policy is enabled");
+        return Err("policy_opa_path must not be empty when external policy is enabled".into());
     }
     if config.control_plane_enabled() && config.control_plane_hmac_key.is_none() {
-        panic!("control_plane_hmac_key is required when control-plane sync is enabled");
+        return Err("control_plane_hmac_key is required when control-plane sync is enabled".into());
     }
     if config.control_plane_enabled() && config.agent_id.is_none() {
-        panic!("agent_id is required when control-plane sync is enabled");
+        return Err("agent_id is required when control-plane sync is enabled".into());
     }
     if config.control_plane_heartbeat_uses_spire()
         && config.control_plane_heartbeat_identity_hs256_key.is_some()
     {
-        panic!("control-plane heartbeat identity must use either HS256 or SPIRE, not both");
+        return Err("control-plane heartbeat identity must use either HS256 or SPIRE, not both".into());
     }
     if config.control_plane_heartbeat_proof_private_key_pem.is_some()
         != config.control_plane_heartbeat_proof_public_jwk.is_some()
     {
-        panic!(
-            "control-plane heartbeat proof configuration requires both private key and public JWK"
+        return Err(
+            "control-plane heartbeat proof configuration requires both private key and public JWK".into()
         );
     }
     if config.control_plane_heartbeat_uses_spire()
         && config.control_plane_heartbeat_proof_private_key_pem.is_some()
     {
-        panic!("control-plane heartbeat proof is not supported with SPIRE identity");
+        return Err("control-plane heartbeat proof is not supported with SPIRE identity".into());
     }
     if config.control_plane_heartbeat_proof_private_key_pem.is_some()
         && !config.control_plane_heartbeat_identity_enabled()
     {
-        panic!("control-plane heartbeat proof requires heartbeat identity signing");
+        return Err("control-plane heartbeat proof requires heartbeat identity signing".into());
     }
-    AppState {
+    let filter_chain = Arc::new(filters::FilterChain::new(vec![
+        Box::new(filters::label_verification::LabelVerificationFilter),
+        Box::new(filters::identity_verification::IdentityVerificationFilter),
+        Box::new(filters::policy_evaluation::PolicyEvaluationFilter),
+        Box::new(filters::upstream::UpstreamFilter),
+    ]));
+    let a2a_filter_chain = Arc::new(filters::a2a::A2AFilterChain::new(vec![
+        Box::new(filters::a2a::A2AIdentityFilter),
+        Box::new(filters::a2a::A2ASecurityContextFilter),
+        Box::new(filters::a2a::A2APolicyFilter),
+        Box::new(filters::a2a::A2AUpstreamFilter),
+    ]));
+    Ok(AppState {
         client: (config.upstream_url.is_some()
             || config.a2a_upstream_url.is_some()
             || config.external_policy_enabled()
@@ -1457,11 +1476,13 @@ pub fn build_state(config: GatewayConfig) -> AppState {
         })),
         config,
         proof_replay_cache: Arc::new(Mutex::new(HashMap::new())),
-    }
+        filter_chain,
+        a2a_filter_chain,
+    })
 }
 
 pub fn build_app(config: GatewayConfig) -> Router {
-    build_app_with_state(build_state(config))
+    build_app_with_state(build_state(config).expect("invalid gateway configuration"))
 }
 
 pub fn build_app_with_state(state: AppState) -> Router {
@@ -1541,6 +1562,7 @@ async fn local_status(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn chat_completions(
     State(state): State<AppState>,
     method: Method,
@@ -1551,175 +1573,27 @@ async fn chat_completions(
     headers: HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> Response {
-    if !state.config.chat_enforcement_enabled() {
-        return not_implemented(
-            "Rust gateway scaffold exists, chat mediation is not implemented yet",
-        );
-    }
-    let label_key = match state.config.label_hmac_key.as_deref() {
-        Some(key) => key,
-        None => {
-            return not_implemented(
-                "Rust gateway scaffold exists, chat mediation is not implemented yet",
-            )
-        }
+    let mut ctx = filters::RequestContext {
+        request: req,
+        state: state.clone(),
+        headers,
+        method,
+        uri,
+        immediate_client_host: immediate_client_host.map(|Extension(v)| v.0),
+        transport_identity: transport_identity.map(|Extension(v)| v),
+        transport_error: transport_error.map(|Extension(v)| v.0),
+        verified_identity: None,
+        peer_identity: None,
+        delegation: None,
+        provenance_verified: false,
+        runtime: None,
+        rendered_messages: Vec::new(),
+        upstream_payload: None,
     };
-
-    if let Err(response) = verify_labels(&req.messages, label_key) {
-        return response;
-    }
-    if let Err(response) = validate_declared_tools(&req.tools) {
-        return response;
-    }
-    let identity_header = headers
-        .get("ASM-Agent-Identity")
-        .and_then(|value| value.to_str().ok());
-    let proof_header = headers
-        .get("ASM-Agent-Proof")
-        .and_then(|value| value.to_str().ok());
-    let delegation_header = headers
-        .get("ASM-Agent-Delegation")
-        .and_then(|value| value.to_str().ok());
-    let peer_identity = match verify_transport_identity(
-        &state.config,
-        headers
-            .get("x-forwarded-client-cert")
-            .and_then(|value| value.to_str().ok()),
-        immediate_client_host.map(|Extension(value)| value.0),
-        transport_identity.map(|Extension(value)| value),
-        transport_error.map(|Extension(value)| value.0),
-    ) {
-        Ok(identity) => identity,
-        Err(response) => return response,
-    };
-    let _identity = match verify_identity_headers(
-        identity_header,
-        proof_header,
-        &state.config,
-        &method,
-        &request_url(&headers, &uri),
-        &state.proof_replay_cache,
-        peer_identity.as_ref(),
-    ) {
-        Ok(identity) => identity,
-        Err(response) => return response,
-    };
-    let delegation = match verify_delegation_header(delegation_header, &state.config) {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let provenance_header = headers
-        .get("ASM-Prompt-Provenance")
-        .and_then(|value| value.to_str().ok());
-    if let Err(response) = verify_prompt_provenance(
-        provenance_header,
-        &req.messages,
-        state.config.provenance_key(),
-    ) {
-        return response;
-    }
-    let runtime = state.runtime_control.read().await.clone();
-
-    let rendered_messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|message| {
-            json!({
-                "role": message.role,
-                "content": render_for_upstream(message),
-            })
-        })
-        .collect();
-    let upstream_payload = json!({
-        "model": req.model,
-        "messages": rendered_messages,
-    });
-
-    if !state.config.chat_forwarding_enabled() {
-        return echo_response(req.model, rendered_messages, provenance_header.is_some());
-    }
-
-    let upstream_url = match &state.config.upstream_url {
-        Some(value) => value,
-        None => return echo_response(req.model, rendered_messages, provenance_header.is_some()),
-    };
-    let client = match &state.client {
-        Some(value) => value,
-        None => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "upstream forwarding is configured but no HTTP client is available",
-            )
-        }
-    };
-
-    let mut upstream_response =
-        match forward_upstream(client, upstream_url, &upstream_payload).await {
-            Ok(response) => response,
-            Err(response) => return response,
-        };
-
-    let proposed_calls = extract_tool_calls(&upstream_response.body);
-    if proposed_calls.is_empty() {
-        return (upstream_response.status, Json(upstream_response.body)).into_response();
-    }
-
-    let observed_trust = min_trust(&req.messages);
-    let mut allowed = Vec::new();
-    let mut denied = Vec::new();
-    for call in &proposed_calls {
-        let outcome = evaluate_call_outcome(
-            &state,
-            &req,
-            call,
-            observed_trust,
-            delegation.as_ref(),
-            &runtime,
-        )
-        .await;
-        match outcome.decision {
-            Decision::Allow => {
-                allowed.push(json!({
-                    "name": call.name,
-                    "arguments": call.arguments,
-                }));
-            }
-            Decision::Deny {
-                reason,
-                required_trust,
-                observed_trust,
-            } => {
-                denied.push(json!({
-                    "tool": call.name,
-                    "denied": true,
-                    "reason": reason,
-                    "required_trust": required_trust,
-                    "observed_trust": observed_trust,
-                    "backend": outcome.backend,
-                    "backend_metadata": outcome.backend_metadata,
-                }));
-            }
-        }
-    }
-
-    match upstream_response.body.as_object_mut() {
-        Some(body) => {
-            body.insert(
-                "tessera".to_string(),
-                json!({
-                    "allowed": allowed,
-                    "denied": denied,
-                }),
-            );
-            (upstream_response.status, Json(upstream_response.body)).into_response()
-        }
-        None => error_response(
-            StatusCode::BAD_GATEWAY,
-            "upstream response must be a JSON object",
-        ),
-    }
+    state.filter_chain.execute_request(&mut ctx).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn a2a_jsonrpc(
     State(state): State<AppState>,
     method: Method,
@@ -1730,11 +1604,10 @@ async fn a2a_jsonrpc(
     headers: HeaderMap,
     Json(req): Json<JsonRpcRequestModel>,
 ) -> Response {
+    // Pre-flight: JSON-RPC wire format and routing checks that must happen
+    // before we can construct A2ARequestContext.
     if req.jsonrpc != "2.0" {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "A2A requests must use JSON-RPC 2.0",
-        );
+        return error_response(StatusCode::BAD_REQUEST, "A2A requests must use JSON-RPC 2.0");
     }
     if req.method != "tasks.send" {
         return jsonrpc_error_response(req.id, -32601, "method not found", None);
@@ -1747,112 +1620,29 @@ async fn a2a_jsonrpc(
             None,
         );
     }
-
-    let params: A2ATaskParamsModel = match serde_json::from_value(req.params.clone()) {
+    let params: A2ATaskParamsModel = match serde_json::from_value(req.params) {
         Ok(value) => value,
-        Err(_) => {
-            return error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid A2A task params")
-        }
+        Err(_) => return error_response(StatusCode::UNPROCESSABLE_ENTITY, "invalid A2A task params"),
     };
     if let Err(response) = validate_a2a_params(&params) {
         return response;
     }
 
-    let identity_header = headers
-        .get("ASM-Agent-Identity")
-        .and_then(|value| value.to_str().ok());
-    let proof_header = headers
-        .get("ASM-Agent-Proof")
-        .and_then(|value| value.to_str().ok());
-    let peer_identity = match verify_transport_identity(
-        &state.config,
-        headers
-            .get("x-forwarded-client-cert")
-            .and_then(|value| value.to_str().ok()),
-        immediate_client_host.map(|Extension(value)| value.0),
-        transport_identity.map(|Extension(value)| value),
-        transport_error.map(|Extension(value)| value.0),
-    ) {
-        Ok(identity) => identity,
-        Err(response) => return response,
+    let mut ctx = filters::a2a::A2ARequestContext {
+        state: state.clone(),
+        req_id: req.id,
+        params,
+        headers,
+        method,
+        uri,
+        immediate_client_host: immediate_client_host.map(|Extension(v)| v.0),
+        transport_identity: transport_identity.map(|Extension(v)| v),
+        transport_error: transport_error.map(|Extension(v)| v.0),
+        peer_identity: None,
+        security_context: None,
+        observed_trust: 0,
     };
-    if let Err(response) = verify_identity_headers(
-        identity_header,
-        proof_header,
-        &state.config,
-        &method,
-        &request_url(&headers, &uri),
-        &state.proof_replay_cache,
-        peer_identity.as_ref(),
-    ) {
-        return response;
-    }
-
-    let security_context = match require_verified_a2a_security_context(&params, &state.config) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    let observed_trust = min_envelope_trust(&security_context.envelopes);
-    let required_trust = state.config.a2a_required_trust(&params.intent);
-    let outcome = evaluate_intent_outcome(
-        &state,
-        &params,
-        &security_context,
-        observed_trust,
-        required_trust,
-    )
-    .await;
-    if let Decision::Deny {
-        reason,
-        required_trust,
-        observed_trust,
-    } = outcome.decision
-    {
-        return jsonrpc_error_response(
-            req.id,
-            -32003,
-            &reason,
-            Some(json!({
-                "intent": params.intent,
-                "required_trust": required_trust,
-                "observed_trust": observed_trust,
-                "backend": outcome.backend,
-                "backend_metadata": outcome.backend_metadata,
-            })),
-        );
-    }
-
-    let upstream_url = match &state.config.a2a_upstream_url {
-        Some(value) => value,
-        None => {
-            return jsonrpc_error_response(
-                req.id,
-                -32004,
-                "A2A transport is not configured on this gateway",
-                None,
-            )
-        }
-    };
-    let client = match &state.client {
-        Some(value) => value,
-        None => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "A2A forwarding is configured but no HTTP client is available",
-            )
-        }
-    };
-    let upstream_payload = json!({
-        "jsonrpc": req.jsonrpc,
-        "id": req.id,
-        "method": req.method,
-        "params": params,
-    });
-
-    match forward_upstream(client, upstream_url, &upstream_payload).await {
-        Ok(response) => (response.status, Json(response.body)).into_response(),
-        Err(response) => response,
-    }
+    state.a2a_filter_chain.execute_request(&mut ctx).await
 }
 
 fn discovery_document(config: &GatewayConfig) -> Value {
@@ -2291,7 +2081,7 @@ fn validate_a2a_params(params: &A2ATaskParamsModel) -> Result<(), Response> {
     Ok(())
 }
 
-fn require_verified_a2a_security_context(
+pub(crate) fn require_verified_a2a_security_context(
     params: &A2ATaskParamsModel,
     config: &GatewayConfig,
 ) -> Result<VerifiedA2ASecurityContext, Response> {
@@ -2685,7 +2475,8 @@ pub(crate) fn verify_identity_headers(
 }
 
 fn verify_identity_token(token: &str, config: &GatewayConfig) -> Option<VerifiedIdentity> {
-    let key = config.identity_hs256_key.as_deref()?;
+    let secret = config.identity_hs256_secret()?;
+    let key = secret.expose_secret().as_slice();
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
     validation.validate_aud = false;
@@ -2712,7 +2503,7 @@ fn verify_identity_token(token: &str, config: &GatewayConfig) -> Option<Verified
     })
 }
 
-fn verify_delegation_header(
+pub(crate) fn verify_delegation_header(
     header: Option<&str>,
     config: &GatewayConfig,
 ) -> Result<Option<DelegationHeaderModel>, Response> {
@@ -2787,7 +2578,7 @@ fn verify_delegation_header(
     Ok(Some(token))
 }
 
-fn verify_transport_identity(
+pub(crate) fn verify_transport_identity(
     config: &GatewayConfig,
     xfcc_header: Option<&str>,
     client_host: Option<String>,
@@ -2928,7 +2719,7 @@ fn extract_xfcc_identity(
     }))
 }
 
-fn verify_prompt_provenance(
+pub(crate) fn verify_prompt_provenance(
     header: Option<&str>,
     messages: &[MessageModel],
     key: Option<&[u8]>,
@@ -3288,7 +3079,7 @@ fn enrich_opa_policy_metadata(metadata: &mut Value, payload: &Value, issued_deci
     }
 }
 
-fn render_for_upstream(message: &MessageModel) -> String {
+pub(crate) fn render_for_upstream(message: &MessageModel) -> String {
     if message.label.trust_level < TOOL_TRUST {
         format!(
             "<<<TESSERA-UNTRUSTED>>> origin={}\n{}\n<<<END-TESSERA-UNTRUSTED>>>",
@@ -3299,7 +3090,7 @@ fn render_for_upstream(message: &MessageModel) -> String {
     }
 }
 
-async fn forward_upstream(
+pub(crate) async fn forward_upstream(
     client: &Client,
     upstream_url: &str,
     payload: &Value,
@@ -3321,7 +3112,7 @@ async fn forward_upstream(
     Ok(UpstreamResponse { status, body })
 }
 
-fn extract_tool_calls(response: &Value) -> Vec<ProposedCall> {
+pub(crate) fn extract_tool_calls(response: &Value) -> Vec<ProposedCall> {
     response
         .get("choices")
         .and_then(Value::as_array)
@@ -3356,7 +3147,7 @@ fn normalize_arguments(arguments: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn min_trust(messages: &[MessageModel]) -> i64 {
+pub(crate) fn min_trust(messages: &[MessageModel]) -> i64 {
     messages
         .iter()
         .map(|message| message.label.trust_level)
@@ -3364,7 +3155,7 @@ fn min_trust(messages: &[MessageModel]) -> i64 {
         .unwrap_or(SYSTEM_TRUST)
 }
 
-fn min_envelope_trust(envelopes: &[EnvelopeModel]) -> i64 {
+pub(crate) fn min_envelope_trust(envelopes: &[EnvelopeModel]) -> i64 {
     envelopes
         .iter()
         .map(|envelope| envelope.trust_level)
@@ -3426,7 +3217,7 @@ fn decision_for_intent(
     Decision::Allow
 }
 
-async fn evaluate_call_outcome(
+pub(crate) async fn evaluate_call_outcome(
     state: &AppState,
     req: &ChatRequest,
     call: &ProposedCall,
@@ -3511,7 +3302,7 @@ async fn evaluate_call_outcome(
     outcome
 }
 
-async fn evaluate_intent_outcome(
+pub(crate) async fn evaluate_intent_outcome(
     state: &AppState,
     params: &A2ATaskParamsModel,
     security_context: &VerifiedA2ASecurityContext,
@@ -3729,7 +3520,7 @@ fn tool_list_constraint_reason(
     let Some(tools) = tools.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
         return Some(format!("delegation constraint {:?} is invalid", field_name));
     };
-    let contains = tools.iter().any(|candidate| *candidate == subject_name);
+    let contains = tools.contains(&subject_name);
     if deny_if_missing && contains {
         return Some(format!(
             "delegation constraint {:?} blocks {} {:?}",
@@ -3762,9 +3553,7 @@ fn intent_arguments(metadata: &Value) -> Option<&Value> {
 
 fn max_cost_constraint_reason(args: Option<&Value>, constraints: &Value) -> Option<String> {
     let object = constraints.as_object()?;
-    let Some(limit_value) = object.get("max_cost_usd") else {
-        return None;
-    };
+    let limit_value = object.get("max_cost_usd")?;
     let Some(limit) = limit_value.as_f64() else {
         return Some("delegation constraint 'max_cost_usd' is invalid".to_string());
     };
@@ -3922,7 +3711,7 @@ fn domain_matches(destination: &str, rule: &str) -> bool {
     destination == rule || destination.ends_with(&format!(".{rule}"))
 }
 
-fn echo_response(
+pub(crate) fn echo_response(
     model: String,
     rendered_messages: Vec<Value>,
     verified_prompt_provenance: bool,
@@ -4158,7 +3947,7 @@ fn verify_agent_proof(
     )
 }
 
-fn request_url(headers: &HeaderMap, uri: &Uri) -> String {
+pub(crate) fn request_url(headers: &HeaderMap, uri: &Uri) -> String {
     let scheme = headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
@@ -4187,7 +3976,7 @@ fn sign_control_plane_identity(config: &GatewayConfig) -> Result<String, String>
     let confirmation_jkt = match &config.control_plane_heartbeat_proof_public_jwk {
         Some(jwk) => jwk_thumbprint_value(jwk)
             .ok_or_else(|| "control-plane heartbeat proof public JWK is invalid".to_string())?,
-        None => return Ok(encode(
+        None => return encode(
             &Header::new(Algorithm::HS256),
             &IdentityClaims {
                 sub: agent_id.clone(),
@@ -4199,7 +3988,7 @@ fn sign_control_plane_identity(config: &GatewayConfig) -> Result<String, String>
                 cnf: None,
             },
             &EncodingKey::from_secret(key),
-        ).map_err(|error| error.to_string())?),
+        ).map_err(|error| error.to_string()),
     };
     encode(
         &Header::new(Algorithm::HS256),
@@ -4460,7 +4249,7 @@ fn is_valid_trust_level(level: i64) -> bool {
     ALLOWED_TRUST_LEVELS.contains(&level)
 }
 
-fn not_implemented(message: &str) -> Response {
+pub(crate) fn not_implemented(message: &str) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({
@@ -4473,7 +4262,7 @@ fn not_implemented(message: &str) -> Response {
         .into_response()
 }
 
-fn jsonrpc_error_response(
+pub(crate) fn jsonrpc_error_response(
     request_id: Value,
     code: i64,
     message: &str,
@@ -4497,7 +4286,7 @@ fn jsonrpc_error_response(
         .into_response()
 }
 
-fn error_response(status: StatusCode, detail: &str) -> Response {
+pub(crate) fn error_response(status: StatusCode, detail: &str) -> Response {
     (status, Json(json!({ "detail": detail }))).into_response()
 }
 
@@ -5423,7 +5212,7 @@ hADvwH1m3FRUySyFRbtdBA==
         config.control_plane_url = Some(control_plane_url);
         config.control_plane_token = Some("control-plane-token".to_string());
         config.control_plane_hmac_key = Some(KEY.to_vec());
-        let state = build_state(config);
+        let state = build_state(config).unwrap();
         bootstrap_control_plane(&state).await.unwrap();
         let app = build_app_with_state(state.clone());
 
@@ -5506,7 +5295,7 @@ hADvwH1m3FRUySyFRbtdBA==
         config.upstream_url = Some(upstream_url);
         config.control_plane_url = Some(control_plane_url);
         config.control_plane_hmac_key = Some(KEY.to_vec());
-        let state = build_state(config);
+        let state = build_state(config).unwrap();
         bootstrap_control_plane(&state).await.unwrap();
         let app = build_app_with_state(state.clone());
         let message = valid_message("send Bob a reminder", "user", USER_TRUST);
@@ -5620,7 +5409,7 @@ hADvwH1m3FRUySyFRbtdBA==
             Some(PROOF_PRIVATE_KEY_PEM.as_bytes().to_vec());
         config.control_plane_heartbeat_proof_public_jwk =
             Some(serde_json::from_str(PROOF_PUBLIC_JWK_JSON).unwrap());
-        let state = build_state(config.clone());
+        let state = build_state(config.clone()).unwrap();
 
         bootstrap_control_plane(&state).await.unwrap();
 
@@ -5698,7 +5487,7 @@ hADvwH1m3FRUySyFRbtdBA==
         config.control_plane_heartbeat_proof_public_jwk =
             Some(serde_json::from_str(PROOF_PUBLIC_JWK_JSON).unwrap());
 
-        let _state = build_state(config);
+        let _state = build_state(config).unwrap();
     }
 
     #[tokio::test]

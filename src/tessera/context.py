@@ -52,6 +52,7 @@ def make_segment(
     key: "bytes | None" = None,
     trust_level: TrustLevel | None = None,
     signer: "LabelSigner | None" = None,
+    readers: "frozenset[str] | None" = None,
 ) -> LabeledSegment:
     """Construct a segment with a freshly signed label.
 
@@ -67,6 +68,8 @@ def make_segment(
             HMACSigner, or a custom implementation). Use this instead of
             `key` when a workload holds a JWT-SVID and needs asymmetric
             signing.
+        readers: Optional set of principals allowed to receive data derived
+            from this segment. None means Public. See TrustLabel.readers.
 
     Returns:
         A LabeledSegment whose label signature covers content + metadata.
@@ -79,7 +82,7 @@ def make_segment(
             "make_segment requires exactly one of `key` (HMAC) or `signer` (LabelSigner)"
         )
     level = trust_level if trust_level is not None else DEFAULT_TRUST[origin]
-    label = TrustLabel(origin=origin, principal=principal, trust_level=level)
+    label = TrustLabel(origin=origin, principal=principal, trust_level=level, readers=readers)
     if signer is not None:
         label = signer.sign(label, content)
     else:
@@ -123,6 +126,24 @@ class Context:
         if not self.segments:
             return TrustLevel.SYSTEM
         return min(s.label.trust_level for s in self.segments)
+
+    @property
+    def effective_readers(self) -> frozenset[str] | None:
+        """Intersection of readers across all segments that have explicit readers.
+
+        None means all segments are Public (no restriction). If any segment
+        carries a non-None readers set, the effective set is the intersection
+        of all such sets: the context is only as readable as its most
+        restrictive ingredient. An empty frozenset means no principal is
+        allowed, which will block all recipient-bearing tool calls.
+        """
+        restricted = [s.label.readers for s in self.segments if s.label.readers is not None]
+        if not restricted:
+            return None
+        result = restricted[0]
+        for r in restricted[1:]:
+            result = result & r
+        return result
 
     @property
     def principal(self) -> str | None:

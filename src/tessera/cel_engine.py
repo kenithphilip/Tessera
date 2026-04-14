@@ -104,6 +104,9 @@ class CELPolicyEngine:
         ct = self._celtypes
         return {
             "tool": ct.StringType(context.tool),
+            "args": ct.MapType(
+                {ct.StringType(k): ct.StringType(str(v)) for k, v in context.args.items()}
+            ),
             "min_trust": ct.IntType(context.min_trust),
             "principal": ct.StringType(context.principal),
             "segment_count": ct.IntType(context.segment_count),
@@ -111,6 +114,6 @@ class CELPolicyEngine:
                 context.delegation_subject or ""
             ),
             "delegation_actions": ct.ListType(
-                elements=[ct.StringType(a) for a in context.delegation_actions]
+                [ct.StringType(a) for a in context.delegation_actions]
             ),
         }

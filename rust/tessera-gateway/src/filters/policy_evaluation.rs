@@ -2,10 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use super::{Filter, FilterResult, RequestContext};
-use crate::{
-    echo_response, evaluate_call_outcome, extract_tool_calls, min_trust, render_for_upstream,
-    Decision,
-};
+use crate::{echo_response, render_for_upstream};
 
 /// Renders messages for upstream, evaluates tool calls against
 /// trust policy, and produces the final annotated response.

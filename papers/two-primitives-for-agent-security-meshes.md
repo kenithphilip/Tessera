@@ -542,10 +542,44 @@ against whatever latency budget they care about, and so claims like
 "Pydantic validation is microseconds" are backed by reproducible
 numbers rather than intuition.
 
-A full head-to-head comparison against CaMeL on the same workload
-remains future work and is tracked in `docs/ROADMAP.md`. Reproducing
-the numbers above requires only `pip install -e '.[dev]'` and
-`python -m benchmarks`.
+A full head-to-head comparison against CaMeL on the same workload is
+implemented in `benchmarks/comparison/` and can be run with `python -m
+benchmarks.comparison` or `python -m benchmarks.comparison -o
+docs/benchmarks/comparison.md`. The comparison uses an identical workload
+(financial analyst assistant with embedded prompt injection) and measures
+security-layer overhead only, with deterministic stubs in place of LLM
+calls. The CaMeL side faithfully reimplements the value system from the
+original source (CaMeLValue wrappers with dependency DAGs, Capabilities
+with Sources and Readers, recursive DAG walking for taint propagation,
+and the SecurityPolicyEngine with fnmatch-based policy matching). It does
+not include CaMeL's full 2,700-line AST interpreter, so the numbers are
+a lower bound on CaMeL's actual security-layer cost. On the same
+hardware, the security-layer overhead is:
+
+- Baseline (single LLM, no security): approximately 0.5 microseconds per
+  tool call.
+- CaMeL value system (dependency DAG walking, reader intersection,
+  SecurityPolicyEngine): approximately 13 microseconds per tool call, or
+  roughly 26x the baseline.
+- Tessera (sign and verify three segments, schema validation, policy
+  evaluation): approximately 50 microseconds per tool call, or roughly
+  100x the baseline.
+
+Both CaMeL and Tessera achieve 100% injection resistance on the workload.
+The comparison is instructive for several reasons. CaMeL's published 6.6x
+end-to-end overhead is dominated by the cost of making two LLM calls
+(plan generation followed by plan execution), not by the interpreter
+itself. Our 26x figure for the security layer alone (value wrapping,
+dependency DAG traversal, frozenset reader intersections, and policy
+engine checks) is a lower bound because it omits the full AST interpreter
+overhead. Tessera's 100x security-layer overhead is dominated by
+HMAC-SHA256 signing and verification, which is fundamentally more
+expensive than in-memory taint tracking but provides a different security
+property: cryptographic provenance that can be verified across trust
+boundaries, not just within a single interpreter process. Against a
+200-millisecond LLM round-trip, Tessera's overhead is approximately
+0.025 percent. Against a 1-second round-trip it is approximately 0.005
+percent.
 
 ---
 

@@ -92,10 +92,10 @@ tested, and composable. AgentMesh is a proposed architecture with a roadmap.
 ## Project state
 
 - **Version:** v0.0.1, published April 2026
-- **Python source:** ~7,155 lines across 21 modules in `src/tessera/`
-- **Rust gateway:** ~7,600 lines in `rust/tessera-gateway/` (reference data plane)
-- **Python tests:** ~5,900 lines, 216 passing, runtime ~6 seconds
-- **Rust tests:** 40 tokio::test functions in `lib.rs`
+- **Python source:** ~20,200 lines across 57 modules in `src/tessera/`
+- **Rust gateway:** ~8,200 lines in `rust/tessera-gateway/` (reference data plane)
+- **Python tests:** ~10,000 lines, 513 passing, runtime ~8 seconds
+- **Rust tests:** 45 tokio::test functions in `lib.rs`
 - **Python:** 3.12+ only
 - **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, httpx,
   the `mcp` Python package, optional OpenTelemetry SDK
@@ -123,6 +123,15 @@ Less stable, expected to change:
 - `tessera.policy_backends` external policy backend integration
 - `tessera.evidence` evidence bundle format
 - `tessera.control_plane` reference control plane (not for production use)
+- `tessera.cel_engine` CEL expression engine (cel-python API may evolve)
+- `tessera.approval` and `tessera.sessions` approval gate design is early
+- `tessera.ir` intermediate representation (schema will grow with new config features)
+- `tessera.hooks` gRPC hook wire format (may change before v1.0)
+- `tessera.xds` gRPC wire format (delta-xDS and ACK/NACK planned for later release)
+- `tessera.scanners` content analysis (heuristic, canary, PII detection)
+- `tessera.risk` session-level risk intelligence (irreversibility, salami, cooldown)
+- `tessera.compliance` NIST/CWE enrichment and hash-chain audit log
+- `tessera.ratelimit` token budget enforcement
 - `tessera.mcp.MCPSecurityContext`
 - Security event sink API (will grow as more SIEM integrations land)
 
@@ -183,7 +192,7 @@ A is the primary way external readers verify our claims.
 ## Where things live
 
 ```
-src/tessera/           Python primitives library (21 modules)
+src/tessera/           Python primitives library (57 modules including hooks/, xds/, scanners/, risk/, adapters/)
 rust/tessera-gateway/  Rust reference data plane
 tests/                 pytest suite (216 tests)
 benchmarks/            microbenchmark suite (python -m benchmarks)

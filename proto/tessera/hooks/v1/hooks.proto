@@ -1,5 +1,5 @@
 syntax = "proto3";
-package tessera.hooks.v1;
+package tessera_proto.hooks.v1;
 
 message PostPolicyEvaluateRequest {
     string tool = 1;

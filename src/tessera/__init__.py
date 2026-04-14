@@ -24,7 +24,20 @@ from tessera.control_plane import (
     SignedControlPlaneDocument,
     create_control_plane_app,
 )
-from tessera.delegation import DelegationToken, sign_delegation, verify_delegation
+from tessera.delegation import (
+    DelegationNarrowingViolation,
+    DelegationToken,
+    narrow_delegation,
+    sign_delegation,
+    verify_delegation,
+)
+from tessera.liveness import LivenessChecker, LivenessState
+from tessera.hooks.compatibility import (
+    HookEvent,
+    IncompatibleDecisionError,
+    valid_decisions,
+    validate_decision,
+)
 from tessera.evidence import (
     EvidenceBundle,
     EvidenceSigningNotAvailable,
@@ -100,12 +113,28 @@ from tessera.quarantine import (
     split_by_trust,
     strict_worker,
 )
+from tessera.compliance import ChainedAuditLog, enrich_event
+from tessera.risk.cooldown import CooldownEscalator
+from tessera.risk.forecaster import SessionRisk, SessionRiskForecaster
+from tessera.risk.irreversibility import IrreversibilityScore, score_irreversibility
 from tessera.hooks.client import RemoteHookClient
-from tessera.hooks.dispatcher import HookDispatcher
+from tessera.hooks.dispatcher import (
+    HookDispatcher,
+    PostPolicyEvaluateHook,
+    PostToolCallGateHook,
+)
 from tessera.redaction import Secret, SecretRegistry, redact_nested
 from tessera.registry import ToolRegistry
+from tessera.ratelimit import BudgetStatus, TokenBudget
+from tessera.scanners.canary import CanaryGuard
+from tessera.scanners.heuristic import injection_score
+from tessera.scanners.pii import PIIEntity, PIIScanner
 from tessera.xds.client import XDSClient
 from tessera.xds.server import XDSServer
+from tessera.adapters.langchain import LangChainNotAvailable, TesseraCallbackHandler
+from tessera.adapters.mcp_proxy import MCPNotAvailable, MCPTrustProxy
+from tessera.adapters.openai_agents import OpenAIAgentsNotAvailable, TesseraAgentHooks
+from tessera.adapters.upstream import PROVIDERS, anthropic_upstream, openai_upstream
 from tessera.sessions import PendingApproval, SessionStore
 from tessera.signing import (
     HMACSigner,
@@ -140,6 +169,9 @@ __all__ = [
     "CELPolicyEngine",
     "CELRule",
     "CELRuleIR",
+    "CanaryGuard",
+    "ChainedAuditLog",
+    "CooldownEscalator",
     "AgentIdentity",
     "AgentIdentityVerifier",
     "AgentHeartbeat",
@@ -153,7 +185,15 @@ __all__ = [
     "ContextSegmentEnvelope",
     "Decision",
     "DecisionKind",
+    "DelegationNarrowingViolation",
     "DelegationToken",
+    "HookEvent",
+    "IncompatibleDecisionError",
+    "LivenessChecker",
+    "LivenessState",
+    "narrow_delegation",
+    "valid_decisions",
+    "validate_decision",
     "EvidenceBundle",
     "EvidenceBuffer",
     "EvidenceSigningNotAvailable",
@@ -166,6 +206,18 @@ __all__ = [
     "HMACControlPlaneVerifier",
     "HMACVerifier",
     "HookDispatcher",
+    "BudgetStatus",
+    "IrreversibilityScore",
+    "PIIEntity",
+    "PIIScanner",
+    "TokenBudget",
+    "SessionRisk",
+    "SessionRiskForecaster",
+    "enrich_event",
+    "injection_score",
+    "score_irreversibility",
+    "PostPolicyEvaluateHook",
+    "PostToolCallGateHook",
     "JWKSAgentIdentityVerifier",
     "JWKSVerifier",
     "JWTControlPlaneSigner",
@@ -226,6 +278,15 @@ __all__ = [
     "WorkerSchemaViolation",
     "XDSClient",
     "XDSServer",
+    "LangChainNotAvailable",
+    "MCPNotAvailable",
+    "MCPTrustProxy",
+    "OpenAIAgentsNotAvailable",
+    "TesseraAgentHooks",
+    "TesseraCallbackHandler",
+    "PROVIDERS",
+    "anthropic_upstream",
+    "openai_upstream",
     "attach_security_context",
     "compile_policy",
     "async_webhook_sink",

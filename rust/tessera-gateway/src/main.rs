@@ -179,7 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         provenance_hmac_key,
         delegation_key,
         delegation_audience,
-    });
+    })
+    .map_err(std::io::Error::other)?;
     bootstrap_control_plane(&state)
         .await
         .map_err(std::io::Error::other)?;

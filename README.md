@@ -3,7 +3,7 @@
 **Signed provenance, delegation-aware taint tracking, and schema-enforced
 dual-LLM execution for agent security meshes.**
 
-![tests](https://img.shields.io/badge/tests-216%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-572%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -123,8 +123,18 @@ TrustLabel(
 | `tessera.provenance` | Signed context segment envelopes and prompt provenance manifests |
 | `tessera.identity` | Inbound workload identity tokens, proof-of-possession, replay checks |
 | `tessera.mtls` | SPIFFE-aware transport identity extraction from ASGI TLS and trusted XFCC |
-| `tessera.policy` | Taint-tracking policy engine with per-tool trust requirements |
+| `tessera.policy` | Taint-tracking policy engine with per-tool trust requirements, CEL rules, MCP RBAC, hierarchical scopes |
 | `tessera.policy_backends` | External deny-only policy backends, including OPA integration and audit metadata |
+| `tessera.cel_engine` | CEL expression engine for deny-only policy refinements (requires `[cel]`) |
+| `tessera.approval` | Human-in-the-loop approval gates with fail-closed webhook delivery |
+| `tessera.sessions` | Encrypted in-memory session store for pending approvals, with TTL expiry |
+| `tessera.ir` | Intermediate representation: compile YAML/dict policy config to live `Policy` instances |
+| `tessera.hooks` | gRPC extension hooks (PostPolicyEvaluate, PostToolCallGate), deny-only, fail-closed |
+| `tessera.xds` | xDS-compatible resource distribution over HTTP/SSE and gRPC ADS (requires `[xds]`) |
+| `tessera.scanners` | Content-aware injection scoring, canary leakage detection, PII entity detection |
+| `tessera.risk` | Irreversibility scoring, salami attack chain detection, adaptive cooldown escalation |
+| `tessera.compliance` | NIST SP 800-53 and CWE enrichment, hash-chain tamper-evident audit log |
+| `tessera.ratelimit` | Per-principal token budget enforcement for denial-of-wallet defense |
 | `tessera.quarantine` | `QuarantinedExecutor`, `strict_worker`, safe-by-default `WorkerReport` |
 | `tessera.mcp` | MCP interceptor that auto-labels tool outputs |
 | `tessera.a2a` | A2A security context carriage and verification helpers |
@@ -134,6 +144,12 @@ TrustLabel(
 | `tessera.evidence` | Signed evidence bundles for audit export and offline verification |
 | `tessera.telemetry` | Optional OpenTelemetry spans across proxy, MCP, policy, quarantine |
 | `tessera.proxy` | FastAPI reference proxy with chat and A2A JSON-RPC mediation |
+| `tessera.adapters.langchain` | LangChain callback handler: labels segments, gates tool calls, scans outputs (requires `[langchain]`) |
+| `tessera.adapters.mcp_proxy` | Transparent MCP sidecar proxy: sits between any MCP client and a real MCP server, adding trust labels and policy gates to every tool call (requires `[mcp]`) |
+| `tessera.adapters.openai_agents` | OpenAI Agents SDK hook adapter: policy gate on tool start, output labeling, session risk on end (requires `[openai-agents]`) |
+| `tessera.adapters.upstream` | Ready-to-use `UpstreamFn` callables: `openai_upstream` (OpenAI, Mistral, Deepseek, xAI, Qwen, Groq, Ollama, vLLM) and `anthropic_upstream` (with full schema translation) |
+| `tessera.liveness` | Agent liveness attestation via heartbeat TTL (three-property gate: identity AND authority AND liveness) |
+| `tessera.hooks.compatibility` | Decision-event compatibility matrix for hook authoring validation |
 
 Reference deployments:
 
@@ -217,6 +233,21 @@ async def planner(trusted_ctx, report: WorkerReport):
 
 executor = QuarantinedExecutor(planner=planner, worker=worker)
 result = await executor.run(full_context)
+```
+
+Proxy wired to any LLM provider:
+
+```python
+from tessera.adapters.upstream import openai_upstream, anthropic_upstream, PROVIDERS
+from tessera.proxy import create_app
+
+# OpenAI (or drop in Mistral, Deepseek, xAI, Qwen, Groq, Ollama -- same call)
+upstream = openai_upstream(api_key="sk-...", base_url=PROVIDERS["mistral"])
+
+# Anthropic (schema translation is handled automatically)
+upstream = anthropic_upstream(api_key="sk-ant-...")
+
+app = create_app(policy=policy, verifier=verifier, upstream=upstream)
 ```
 
 Security event emission to a SIEM:
@@ -316,6 +347,8 @@ What is likely to change:
   into a Rust data plane)
 - The MCP interceptor interface as MCP SEP-1913 lands
 - The `SecurityEvent` sink API as we integrate with more SIEMs
+- The xDS and hooks gRPC wire format (adding delta-xDS and full ACK/NACK
+  in a later release)
 
 ---
 

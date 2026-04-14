@@ -1,6 +1,6 @@
-"""Tests for the CaMeL-style interpreter used in comparison benchmarks.
+"""Tests for the CaMeL value system used in comparison benchmarks.
 
-Pins the taint-tracking and capability-checking behavior that drives the
+Pins the taint-tracking and security policy behavior that drives the
 benchmark's security claims. If these fail, the benchmark numbers are
 measuring the wrong thing.
 """
@@ -12,68 +12,88 @@ from typing import Any
 import pytest
 
 from benchmarks.comparison.interpreter import (
-    Capability,
+    Allowed,
     CaMeLInterpreter,
+    Capabilities,
     CapabilityViolation,
+    Denied,
     PlanStep,
+    Public,
+    SecurityPolicyEngine,
+    SourceEnum,
+    Value,
+    base_security_policy,
+    get_all_readers,
+    is_public,
     parse_plan,
 )
 
 
 def _echo_dispatch(name: str, args: dict[str, Any]) -> Any:
-    """Returns args unchanged so tests can inspect what the tool received."""
     return {"tool": name, "args": args}
 
 
-def _make_interpreter(**capabilities: bool) -> CaMeLInterpreter:
-    """Build an interpreter with named capabilities.
+def _make_interpreter(
+    side_effect_tools: set[str] | None = None,
+    no_side_effect_tools: set[str] | None = None,
+) -> CaMeLInterpreter:
+    """Build an interpreter with a policy engine.
 
-    Usage: _make_interpreter(send_email=True, fetch_url=False)
-    True means the tool requires clean inputs; False means it allows tainted.
+    side_effect_tools: tools that have side effects (will be denied if
+        any argument has non-public readers).
+    no_side_effect_tools: tools that are read-only (always allowed).
     """
-    caps = {
-        name: Capability(tool=name, requires_clean=requires_clean)
-        for name, requires_clean in capabilities.items()
-    }
-    return CaMeLInterpreter(capabilities=caps)
+    nse = no_side_effect_tools or set()
+
+    def wildcard(tn: str, kw: dict) -> Allowed | Denied:
+        return base_security_policy(tn, kw, nse)
+
+    engine = SecurityPolicyEngine(
+        policies=[("*", wildcard)],
+        no_side_effect_tools=nse,
+    )
+    return CaMeLInterpreter(policy_engine=engine)
 
 
-class TestCleanVariablePassesCapabilityCheck:
-    def test_clean_variable_passes_capability_check(self) -> None:
-        interp = _make_interpreter(send_email=True)
-        interp.set_variable("addr", "team@acme.com", taint="clean", source="user")
+class TestCleanVariablePassesPolicyCheck:
+    def test_clean_variable_passes_policy_check(self) -> None:
+        interp = _make_interpreter()
+        interp.bind("addr", "team@acme.com", Capabilities.user())
 
         plan = [PlanStep(function="send_email", args={"to": "addr"}, result_var="out")]
         results = interp.execute_plan(plan, _echo_dispatch)
 
         assert len(results) == 1
         assert results[0]["blocked"] is False
-        assert results[0]["output_taint"] == "clean"
 
 
-class TestTaintedVariableBlocksSensitiveTool:
-    def test_tainted_variable_blocks_sensitive_tool(self) -> None:
-        interp = _make_interpreter(send_email=True)
-        interp.set_variable("data", "stolen secrets", taint="tainted", source="web")
+class TestTaintedVariableBlocksSideEffectingTool:
+    def test_tainted_variable_blocks_side_effecting_tool(self) -> None:
+        interp = _make_interpreter()
+        # Restricted readers = untrusted data (non-public).
+        interp.bind(
+            "data", "stolen secrets",
+            Capabilities.untrusted_tool("web", frozenset({"web"})),
+        )
 
         plan = [PlanStep(function="send_email", args={"body": "data"}, result_var="out")]
         results = interp.execute_plan(plan, _echo_dispatch)
 
         assert len(results) == 1
         assert results[0]["blocked"] is True
-        assert results[0]["output_taint"] == "tainted"
-        assert "requires clean" in results[0]["reason"]
+        assert "state-changing" in results[0]["reason"]
 
 
-class TestTaintPropagationThroughIntermediateSteps:
+class TestTaintPropagationThroughDependencyDAG:
     def test_taint_propagation_through_intermediate_steps(self) -> None:
         """Taint flows through extract -> transform -> send, blocking the send."""
         interp = _make_interpreter(
-            extract=False,
-            transform=False,
-            send_email=True,
+            no_side_effect_tools={"extract", "transform"},
         )
-        interp.set_variable("raw", "attacker data", taint="tainted", source="web")
+        interp.bind(
+            "raw", "attacker data",
+            Capabilities.untrusted_tool("web", frozenset({"web"})),
+        )
 
         plan = [
             PlanStep(function="extract", args={"input": "raw"}, result_var="extracted"),
@@ -82,21 +102,22 @@ class TestTaintPropagationThroughIntermediateSteps:
         ]
         results = interp.execute_plan(plan, _echo_dispatch)
 
-        # extract and transform succeed (no clean requirement).
+        # extract and transform succeed (no side effects).
         assert results[0]["blocked"] is False
-        assert results[0]["output_taint"] == "tainted"
         assert results[1]["blocked"] is False
-        assert results[1]["output_taint"] == "tainted"
-        # send_email blocks because taint propagated through the chain.
+        # send_email blocks because taint propagated through the DAG.
         assert results[2]["blocked"] is True
 
 
-class TestMixedCleanAndTaintedArgsPropagatesTaint:
-    def test_mixed_clean_and_tainted_args_propagates_taint(self) -> None:
-        """One tainted arg among clean ones is enough to taint the output."""
-        interp = _make_interpreter(merge=False, send_email=True)
-        interp.set_variable("clean_data", "safe", taint="clean", source="user")
-        interp.set_variable("dirty_data", "injected", taint="tainted", source="web")
+class TestMixedCleanAndTaintedInputs:
+    def test_mixed_clean_and_tainted_args_blocks(self) -> None:
+        """One tainted arg among clean ones blocks side-effecting tools."""
+        interp = _make_interpreter(no_side_effect_tools={"merge"})
+        interp.bind("clean_data", "safe", Capabilities.user())
+        interp.bind(
+            "dirty_data", "injected",
+            Capabilities.untrusted_tool("web", frozenset({"web"})),
+        )
 
         plan = [
             PlanStep(
@@ -112,25 +133,57 @@ class TestMixedCleanAndTaintedArgsPropagatesTaint:
         ]
         results = interp.execute_plan(plan, _echo_dispatch)
 
-        # merge succeeds but produces tainted output.
+        # merge succeeds (no side effects).
         assert results[0]["blocked"] is False
-        assert results[0]["output_taint"] == "tainted"
-        # send_email blocks due to tainted input.
+        # send_email blocks: merged value depends on dirty_data.
         assert results[1]["blocked"] is True
 
 
-class TestToolWithoutCapabilityRestrictionAllowsTainted:
-    def test_tool_without_capability_restriction_allows_tainted(self) -> None:
-        """Tools not in the capability map allow tainted data through."""
-        interp = CaMeLInterpreter(capabilities={})
-        interp.set_variable("data", "tainted payload", taint="tainted", source="web")
+class TestNoSideEffectToolAllowsTainted:
+    def test_no_side_effect_tool_allows_tainted(self) -> None:
+        """Read-only tools allow tainted data through."""
+        interp = _make_interpreter(no_side_effect_tools={"log_event"})
+        interp.bind(
+            "data", "tainted payload",
+            Capabilities.untrusted_tool("web", frozenset({"web"})),
+        )
 
         plan = [PlanStep(function="log_event", args={"msg": "data"}, result_var="out")]
         results = interp.execute_plan(plan, _echo_dispatch)
 
         assert len(results) == 1
         assert results[0]["blocked"] is False
-        assert results[0]["output_taint"] == "tainted"
+
+
+class TestReaderIntersection:
+    def test_public_and_restricted_yields_restricted(self) -> None:
+        """Public & restricted = restricted (CaMeL's core taint mechanism)."""
+        public_val = Value(_python_value="clean", _metadata=Capabilities.user())
+        restricted_val = Value(
+            _python_value="dirty",
+            _metadata=Capabilities.untrusted_tool("web", frozenset({"web"})),
+        )
+
+        assert is_public(public_val)
+        assert not is_public(restricted_val)
+
+        # A value depending on both inherits the restricted readers.
+        combined = Value(
+            _python_value="combined",
+            _metadata=Capabilities.user(),
+            _dependencies=(public_val, restricted_val),
+        )
+        assert not is_public(combined)
+
+    def test_public_and_public_stays_public(self) -> None:
+        a = Value(_python_value="a", _metadata=Capabilities.user())
+        b = Value(_python_value="b", _metadata=Capabilities.user())
+        combined = Value(
+            _python_value="ab",
+            _metadata=Capabilities.user(),
+            _dependencies=(a, b),
+        )
+        assert is_public(combined)
 
 
 class TestParsePlan:

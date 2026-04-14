@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -161,3 +163,104 @@ def test_xds_fetch_empty_type_returns_empty_resources() -> None:
     body = resp.json()
     assert body["resources"] == []
     assert body["version_info"] == ""
+
+
+# -- gRPC ADS tests ----------------------------------------------------------
+
+
+@pytest.fixture()
+async def grpc_server_and_stub() -> tuple:
+    """Start a gRPC ADS server on a free port and return (server, stub, xds)."""
+    grpc = pytest.importorskip("grpc")
+    grpc_aio = pytest.importorskip("grpc.aio")
+
+    from tessera.xds.v1 import discovery_pb2_grpc as pb2_grpc
+    from tessera.xds.grpc_server import GRPCXDSServer
+
+    xds = XDSServer()
+    srv = GRPCXDSServer(xds)
+    port = await srv.start("[::]:0")
+
+    channel = grpc_aio.insecure_channel(f"localhost:{port}")
+    stub = pb2_grpc.AggregatedDiscoveryServiceStub(channel)
+
+    yield stub, xds
+
+    await channel.close()
+    await srv.stop(grace=0.5)
+
+
+async def test_grpc_fetch_empty_type(grpc_server_and_stub: tuple) -> None:
+    """FetchResources on an unknown type returns an empty resource list."""
+    from tessera.xds.v1 import discovery_pb2 as pb2
+
+    stub, _xds = grpc_server_and_stub
+    response = await stub.FetchResources(
+        pb2.DiscoveryRequest(resource_type="unknown.type")
+    )
+    assert response.version_info == ""
+    assert len(response.resources) == 0
+
+
+async def test_grpc_fetch_resources(grpc_server_and_stub: tuple) -> None:
+    """FetchResources returns the current state for a known type."""
+    from tessera.xds.v1 import discovery_pb2 as pb2
+
+    stub, xds = grpc_server_and_stub
+    xds.set_resource(TYPE_POLICY_BUNDLE, "default", {"trust": 100})
+
+    response = await stub.FetchResources(
+        pb2.DiscoveryRequest(resource_type=TYPE_POLICY_BUNDLE)
+    )
+    assert response.type_url == TYPE_POLICY_BUNDLE
+    assert response.version_info != ""
+    assert len(response.resources) == 1
+    assert response.resources[0].name == "default"
+    payload = json.loads(response.resources[0].resource)
+    assert payload == {"trust": 100}
+
+
+async def test_grpc_stream_initial_snapshot(grpc_server_and_stub: tuple) -> None:
+    """StreamResources delivers the current snapshot as the first message."""
+    from tessera.xds.v1 import discovery_pb2 as pb2
+
+    stub, xds = grpc_server_and_stub
+    xds.set_resource(TYPE_TOOL_REGISTRY, "tools", {"tools": ["a", "b"]})
+
+    async def request_gen():
+        yield pb2.DiscoveryRequest(resource_type=TYPE_TOOL_REGISTRY)
+        # Keep the stream open briefly so the initial snapshot can arrive.
+        await asyncio.sleep(0.2)
+
+    stream = stub.StreamResources(request_gen())
+    first = await stream.read()
+    stream.cancel()
+
+    assert first.type_url == TYPE_TOOL_REGISTRY
+    assert len(first.resources) == 1
+    assert first.resources[0].name == "tools"
+
+
+async def test_grpc_stream_receives_update(grpc_server_and_stub: tuple) -> None:
+    """StreamResources pushes updates when the resource store changes."""
+    from tessera.xds.v1 import discovery_pb2 as pb2
+
+    stub, xds = grpc_server_and_stub
+    xds.set_resource(TYPE_POLICY_BUNDLE, "policy", {"v": 1})
+
+    async def request_gen():
+        yield pb2.DiscoveryRequest(resource_type=TYPE_POLICY_BUNDLE)
+        await asyncio.sleep(1.0)  # keep stream alive for the update
+
+    stream = stub.StreamResources(request_gen())
+
+    # Read initial snapshot.
+    initial = await stream.read()
+    assert json.loads(initial.resources[0].resource) == {"v": 1}
+
+    # Push an update and verify it arrives on the stream.
+    xds.set_resource(TYPE_POLICY_BUNDLE, "policy", {"v": 2})
+    update = await asyncio.wait_for(stream.read(), timeout=3.0)
+    assert json.loads(update.resources[0].resource) == {"v": 2}
+
+    stream.cancel()

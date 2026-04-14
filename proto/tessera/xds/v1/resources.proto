@@ -1,5 +1,5 @@
 syntax = "proto3";
-package tessera.xds.v1;
+package tessera_proto.xds.v1;
 
 message PolicyBundle {
     string version = 1;

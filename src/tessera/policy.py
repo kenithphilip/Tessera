@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -35,6 +36,9 @@ class DecisionKind(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     REQUIRE_APPROVAL = "require_approval"
+    MODIFY = "modify"
+    ADD_CONTEXT = "add_context"
+    CONFIRM = "confirm"
 
 
 class ResourceType(StrEnum):
@@ -71,6 +75,9 @@ class Decision:
     tool: str
     required_trust: TrustLevel
     observed_trust: TrustLevel
+    modified_args: dict[str, Any] | None = None
+    injected_context: str | None = None
+    confirmation_token: str | None = None
 
     @property
     def allowed(self) -> bool:
@@ -88,11 +95,18 @@ class ResourceRequirement:
     Sensitive tools that mutate external state or exfiltrate data should
     require TrustLevel.USER. Read-only tools can run at TrustLevel.TOOL.
     Nothing should require SYSTEM unless the proxy itself is the caller.
+
+    side_effects: If False, this tool is read-only and exempt from the
+    taint-floor denial. It can read tainted data but cannot act on it in
+    ways that escape the trust boundary (no email, no writes, no exfil).
+    Matches CaMeL's no_side_effect_tools set. Default True preserves
+    existing deny-by-default behavior.
     """
 
     name: str
     resource_type: ResourceType = ResourceType.TOOL
     required_trust: TrustLevel = TrustLevel.USER
+    side_effects: bool = True
 
 
 # Backward-compatible alias.
@@ -120,11 +134,24 @@ class Policy:
         name: str,
         level: TrustLevel,
         resource_type: ResourceType = ResourceType.TOOL,
+        side_effects: bool = True,
     ) -> None:
+        """Register a trust requirement for a tool or resource.
+
+        Args:
+            name: Exact tool name or fnmatch glob pattern (e.g. "send_*").
+                Exact names take precedence over patterns at evaluation time.
+            level: Minimum trust level required to invoke this tool.
+            resource_type: TOOL, PROMPT, or RESOURCE.
+            side_effects: If False, this tool is read-only and exempt from
+                the taint-floor denial. Tainted context can still be read
+                but the tool cannot exfiltrate data or mutate external state.
+        """
         self.requirements[(name, resource_type)] = ResourceRequirement(
             name=name,
             resource_type=resource_type,
             required_trust=level,
+            side_effects=side_effects,
         )
 
     def requires_human_approval(self, tool: str) -> None:
@@ -149,16 +176,19 @@ class Policy:
         Delegation adds extra deny conditions. It never widens access
         beyond what the trust floor allows.
         """
-        key = (tool_name, resource_type)
-        required = (
-            self.requirements[key].required_trust
-            if key in self.requirements
-            else self.default_required_trust
-        )
+        req = self._lookup_requirement(tool_name, resource_type)
+        required = req.required_trust if req is not None else self.default_required_trust
+        # Side-effect-free tools are exempt from the taint-floor denial.
+        # They can consume tainted data but cannot act on it externally.
+        # Setting required to UNTRUSTED ensures observed >= required always
+        # holds; delegation and readers checks still apply.
+        if req is not None and not req.side_effects:
+            required = TrustLevel.UNTRUSTED
         if self.base_requirements is None:
             base_required = required
         elif tool_name in self.base_requirements:
-            base_required = self.base_requirements[tool_name].required_trust
+            base_req = self.base_requirements[tool_name]
+            base_required = TrustLevel.UNTRUSTED if not base_req.side_effects else base_req.required_trust
         else:
             base_required = self.default_required_trust
         request_required = (
@@ -241,6 +271,22 @@ class Policy:
             )
             backend_name = None
             metadata = {}
+        # Readers lattice check: if any context segment has restricted readers,
+        # verify that all recipient-like args are within the allowed set.
+        # Only runs when the taint-floor check has already passed.
+        if decision.allowed:
+            readers_reason = _readers_deny_reason(args, context.effective_readers)
+            if readers_reason is not None:
+                decision = Decision(
+                    kind=DecisionKind.DENY,
+                    reason=readers_reason,
+                    tool=tool_name,
+                    required_trust=required,
+                    observed_trust=observed,
+                )
+                backend_name = None
+                metadata = {}
+
         # CEL deny rules: evaluated after taint floor passes. A CEL rule
         # can block or require approval but cannot allow a taint-denied call.
         if decision.allowed and self.cel_engine is not None:
@@ -337,6 +383,25 @@ class Policy:
         if not decision.allowed:
             raise PolicyViolation(decision.reason)
         return decision
+
+    def _lookup_requirement(
+        self,
+        tool_name: str,
+        resource_type: ResourceType,
+    ) -> ResourceRequirement | None:
+        """Resolve the requirement for a tool name with fnmatch fallback.
+
+        Exact match takes precedence over glob patterns. Among patterns,
+        the first registered match wins (registration order matters for
+        overlapping patterns like "send_*" and "send_email_*").
+        """
+        key = (tool_name, resource_type)
+        if key in self.requirements:
+            return self.requirements[key]
+        for (pattern, rtype), req in self.requirements.items():
+            if rtype == resource_type and fnmatch(tool_name, pattern):
+                return req
+        return None
 
     @classmethod
     def merge(cls, *policies: Policy) -> Policy:
@@ -569,3 +634,35 @@ def _add_destination_value(destinations: set[str], value: Any) -> None:
 
 def _domain_matches(destination: str, rule: str) -> bool:
     return destination == rule or destination.endswith(f".{rule}")
+
+
+def _readers_deny_reason(
+    args: dict[str, Any] | None,
+    effective_readers: frozenset[str] | None,
+) -> str | None:
+    """Return a denial reason if the call's recipients are outside effective_readers.
+
+    Only fires when at least one context segment carries restricted readers
+    (effective_readers is not None). Recipients are extracted from common
+    destination-like argument names.
+    """
+    if effective_readers is None or args is None:
+        return None
+    recipients: set[str] = set()
+    for fname in ("to", "recipient", "recipients", "email", "destination", "destinations"):
+        val = args.get(fname)
+        if isinstance(val, str) and val.strip():
+            recipients.add(val.strip())
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, str) and item.strip():
+                    recipients.add(item.strip())
+    if not recipients:
+        return None
+    blocked = recipients - effective_readers
+    if blocked:
+        return (
+            f"readers lattice violation: recipients {sorted(blocked)} "
+            f"are outside the allowed readers set {sorted(effective_readers)}"
+        )
+    return None

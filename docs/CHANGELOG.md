@@ -41,12 +41,52 @@ minor release.
 - delegate-to-agent identity binding on delegated requests
 - MCP security context carriage for delegation and provenance
 - delegated `requires_human_for` and domain allowlist checks in policy
+- `tessera.cel_engine` CEL expression engine for deny-only policy
+  refinements via `[cel]` optional dependency; `CELRule` and
+  `CELPolicyEngine` evaluate against request, context, and delegation
+  attributes
+- `tessera.policy`: `ResourceType` enum (TOOL, PROMPT, RESOURCE) for
+  MCP RBAC per-resource authorization; `PolicyScope` enum (MESH, TEAM,
+  AGENT) with `Policy.merge()` enforcing higher scopes as trust floors;
+  `DecisionKind.REQUIRE_APPROVAL` for human-in-the-loop gating
+- `tessera.approval` human-in-the-loop approval gates with fail-closed
+  webhook delivery; `HumanApprovalGate` blocks tool calls that require
+  human authorization and dispatches a signed webhook request
+- `tessera.sessions` encrypted in-memory session store for pending
+  approvals; `SessionStore` with TTL expiry and optional Fernet
+  encryption; expired sessions auto-resolve as DENY
+- `tessera.ir` intermediate representation for policy configuration;
+  `PolicyIR` compiled from YAML or dict via `from_yaml_string()` and
+  `from_dict()`; `compile_policy()` converts IR to a live `Policy`
+- `tessera.hooks` gRPC extension hook dispatcher; `HookDispatcher`
+  with `PostPolicyEvaluateHook` and `PostToolCallGateHook` protocols,
+  deny-only semantics, and fail-closed behavior on timeout or error;
+  `RemoteHookClient` for calling external extension servers
+- `tessera.xds` xDS-compatible resource distribution; `XDSServer`
+  with content-addressed versioning, HTTP/SSE push via `add_to_app()`,
+  and gRPC `AggregatedDiscoveryService` via `GRPCXDSServer`
+  (`StreamResources` bidirectional streaming, `FetchResources` unary);
+  `PolicyBundleResource`, `ToolRegistryResource`, `TrustConfigResource`
+  with full serialization support
+- Rust gateway: filter pipeline with `Filter` trait and `FilterChain`
+  extracting `LabelVerificationFilter`, `IdentityVerificationFilter`,
+  `PolicyEvaluationFilter`, and `UpstreamFilter` from the monolithic
+  handler; `SecretString` credential management via the `secrecy` crate
+- `proto/tessera/xds/v1/` and `proto/tessera/hooks/v1/` protobuf
+  definitions (package `tessera_proto.xds.v1` and `tessera_proto.hooks.v1`)
+- Human-in-the-loop approval gates now integrated into the policy engine
+  via `Policy.requires_human_approval()`
+- GitHub repository topics for discoverability: llm-security,
+  agent-security, prompt-injection, indirect-prompt-injection,
+  taint-tracking, dual-llm, mcp, spiffe, grpc, and more
 
 ### Changed
 
 - Removed employer attribution from README, paper byline, and ROADMAP
   v1.0.0 gate. Tessera is a personal project.
-- Test suite now stands at 216 passing tests
+- Test suite now stands at 350 passing tests (up from 216 at last entry)
+- `pyproject.toml` xds optional dependency bumped to `grpcio>=1.70` to
+  match generated stub requirements
 - Repository assistant context and roadmap statistics updated to match
   the current tree
 - SPIRE reference docs now describe live JWT-SVID identity retrieval and
