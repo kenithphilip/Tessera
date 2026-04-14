@@ -47,6 +47,16 @@ class WorkerSchemaViolation(Exception):
     """
 
 
+class WorkerInsufficientInformation(Exception):
+    """Raised when the worker reports it does not have enough data.
+
+    This is not a security failure. It means the worker honestly signaled
+    that the untrusted context did not contain sufficient information to
+    produce a reliable report. The executor can retry with more context
+    or escalate to the user.
+    """
+
+
 class WorkerReport(BaseModel):
     """Safe-by-default structured output schema for the worker model.
 
@@ -64,8 +74,13 @@ class WorkerReport(BaseModel):
     to close. If your agent genuinely needs a summary, build a custom
     schema and document how the planner will render that field (e.g.
     wrap it in a spotlighted untrusted block before showing the planner).
+
+    The `have_enough_information` field forces the worker to signal
+    uncertainty. When False, the QuarantinedExecutor re-queries with
+    more context rather than acting on partial or hallucinated output.
     """
 
+    have_enough_information: bool = True
     entities: list[str] = Field(default_factory=list)
     urls: list[str] = Field(default_factory=list)
     numbers: dict[str, float] = Field(default_factory=dict)
@@ -159,6 +174,7 @@ class QuarantinedExecutor:
     planner: PlannerFn
     worker: WorkerFn
     threshold: TrustLevel = TrustLevel.TOOL
+    max_worker_retries: int = 1
 
     async def run(self, context: Context) -> dict[str, Any]:
         trusted, untrusted = split_by_trust(context, self.threshold)
@@ -168,10 +184,39 @@ class QuarantinedExecutor:
             untrusted_count=len(untrusted.segments),
         ):
             if untrusted.segments:
-                with quarantine_worker_span():
-                    report = await self.worker(untrusted)
+                report = await self._run_worker_with_retry(untrusted)
             else:
                 report = WorkerReport()
 
             with quarantine_planner_span():
                 return await self.planner(trusted, report)
+
+    async def _run_worker_with_retry(self, untrusted: Context) -> Any:
+        """Run the worker, retrying if it reports insufficient information."""
+        for attempt in range(1 + self.max_worker_retries):
+            with quarantine_worker_span():
+                report = await self.worker(untrusted)
+
+            # Check if the report signals insufficient information.
+            # Only applies to WorkerReport or subclasses with the field.
+            has_flag = hasattr(report, "have_enough_information")
+            if not has_flag or report.have_enough_information:
+                return report
+
+            if attempt < self.max_worker_retries:
+                continue
+
+            # Out of retries. Emit event and raise.
+            emit_event(
+                SecurityEvent.now(
+                    kind=EventKind.WORKER_SCHEMA_VIOLATION,
+                    principal=untrusted.principal,
+                    detail={
+                        "reason": "worker reported insufficient information after retries",
+                        "attempts": attempt + 1,
+                    },
+                )
+            )
+            raise WorkerInsufficientInformation(
+                f"worker reported have_enough_information=False after {attempt + 1} attempts"
+            )

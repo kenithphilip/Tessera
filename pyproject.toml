@@ -24,6 +24,9 @@ dev = [
     "opentelemetry-sdk>=1.25",
     "pyjwt[crypto]>=2.8",
     "mcp>=1.0",
+    "grpcio>=1.70",
+    "grpcio-tools>=1.70",
+    "protobuf>=4.25",
 ]
 otel = [
     "opentelemetry-api>=1.25",
@@ -38,12 +41,21 @@ mcp = [
 cel = [
     "cel-python>=0.1",
 ]
+sessions = [
+    "cryptography>=42.0",
+]
 agentmesh = [
     "pyyaml>=6.0",
 ]
 xds = [
-    "grpcio>=1.60",
+    "grpcio>=1.70",
     "protobuf>=4.25",
+]
+langchain = [
+    "langchain-core>=0.2",
+]
+openai-agents = [
+    "openai-agents>=0.0.3",
 ]
 
 [project.scripts]

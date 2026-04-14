@@ -45,6 +45,7 @@ class EventKind(StrEnum):
     HUMAN_APPROVAL_REQUIRED = "human_approval_required"
     HUMAN_APPROVAL_RESOLVED = "human_approval_resolved"
     SESSION_EXPIRED = "session_expired"
+    CONTENT_INJECTION_DETECTED = "content_injection_detected"
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ class SecurityEvent:
     principal: str
     detail: dict[str, Any]
     timestamp: str  # ISO-8601 UTC
+    correlation_id: str | None = None
+    trace_id: str | None = None
 
     @classmethod
     def now(
@@ -62,21 +65,41 @@ class SecurityEvent:
         kind: EventKind,
         principal: str | None,
         detail: dict[str, Any],
+        correlation_id: str | None = None,
+        trace_id: str | None = None,
     ) -> "SecurityEvent":
+        resolved_trace = trace_id
+        if resolved_trace is None:
+            try:
+                from opentelemetry import trace
+
+                span = trace.get_current_span()
+                ctx = span.get_span_context()
+                if ctx and ctx.trace_id:
+                    resolved_trace = format(ctx.trace_id, "032x")
+            except ImportError:
+                pass
         return cls(
             kind=kind,
             principal=principal or "unknown",
             detail=detail,
             timestamp=datetime.now(timezone.utc).isoformat(),
+            correlation_id=correlation_id,
+            trace_id=resolved_trace,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "kind": str(self.kind),
             "principal": self.principal,
             "detail": self.detail,
             "timestamp": self.timestamp,
         }
+        if self.correlation_id is not None:
+            d["correlation_id"] = self.correlation_id
+        if self.trace_id is not None:
+            d["trace_id"] = self.trace_id
+        return d
 
 
 EventSink = Callable[[SecurityEvent], None]

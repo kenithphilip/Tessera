@@ -21,8 +21,12 @@ src/tessera/
 ├── identity.py         workload identity tokens, proof-of-possession, replay protection
 ├── mtls.py             SPIFFE-aware transport identity from ASGI TLS and XFCC
 ├── spire.py            live SPIRE Workload API adapters for SVIDs and trust bundles
-├── policy.py           taint-tracking policy engine with delegation constraints
+├── policy.py           taint-tracking policy engine with CEL rules, MCP RBAC, hierarchical scopes
+├── cel_engine.py       CEL expression engine for deny-only policy refinements
 ├── policy_backends.py  external deny-only policy backends (OPA, Cedar)
+├── approval.py         human-in-the-loop approval gates with fail-closed webhook delivery
+├── sessions.py         encrypted in-memory session store for pending approvals
+├── ir.py               intermediate representation: compile YAML/dict to live Policy
 ├── quarantine.py       QuarantinedExecutor, strict_worker, WorkerReport
 ├── mcp.py              MCPInterceptor auto-labeling tool outputs
 ├── registry.py         org-level external-tool registry
@@ -32,7 +36,18 @@ src/tessera/
 ├── proxy.py            FastAPI reference proxy (chat, A2A, discovery)
 ├── redaction.py        SecretRegistry for credential isolation at the proxy
 ├── control_plane.py    reference control plane for policy and registry distribution
-└── cli.py              `tessera serve` entrypoint
+├── cli.py              `tessera serve` entrypoint
+├── hooks/
+│   ├── __init__.py
+│   ├── dispatcher.py   gRPC extension hook dispatcher, deny-only, fail-closed
+│   └── client.py       RemoteHookClient for calling external extension servers
+└── xds/
+    ├── __init__.py
+    ├── server.py       HTTP/SSE xDS resource distribution server
+    ├── grpc_server.py  gRPC Aggregated Discovery Service (StreamResources, FetchResources)
+    ├── client.py       HTTP/SSE xDS client
+    ├── resources.py    PolicyBundle, ToolRegistry, TrustConfig resource types
+    └── v1/             protobuf-generated code (tessera.xds.v1)
 ```
 
 ## Module responsibilities
@@ -162,6 +177,56 @@ consumes bounded delegated authority, including per-tool authorization,
 delegate binding, per-action cost caps, delegated human-approval
 requirements, and delegated domain allowlists for common network
 destination arguments.
+
+### `cel_engine.py`
+
+CEL expression engine for deny-only policy refinements. `CELPolicyEngine`
+wraps cel-python and evaluates a list of `CELRule` objects against a
+request context. Rules can only add denies or require-approval decisions;
+they cannot promote a deny to an allow. The engine requires the `[cel]`
+optional dependency.
+
+CEL context variables: `request.tool`, `request.args`, `context.min_trust`,
+`context.principal`, `context.segment_count`, `delegation.subject`,
+`delegation.authorized_actions`. Rules are evaluated after the local
+taint-floor check so they never override the primary security invariant.
+
+### `approval.py`
+
+Human-in-the-loop approval gates. `ApprovalGate` intercepts tool calls
+that require human authorization and dispatches a webhook to a configured
+approval endpoint. The gate is fail-closed: if the webhook call times out,
+errors, or returns anything other than an explicit ALLOW, the result is
+DENY with a `HUMAN_APPROVAL_REQUIRED` security event.
+
+The approval gate works with `Policy.requires_human_approval()` to detect
+which tool calls need gating, and with `SessionStore` to persist pending
+approvals across the async webhook round-trip.
+
+### `sessions.py`
+
+Encrypted in-memory session store for pending approvals. `SessionStore`
+maps session IDs (UUID) to `PendingApproval` records with configurable
+TTL expiry. If Fernet (from `cryptography`) is available and a key is
+provided, session data is encrypted at rest. Sessions that expire without
+resolution auto-resolve as DENY. `SESSION_EXPIRED` security events fire
+on cleanup so SIEM visibility is maintained.
+
+The session store is thread-safe (uses `threading.Lock`). Expired sessions
+are cleaned on each `retrieve()` call and via explicit `expire_stale()`.
+
+### `ir.py`
+
+Intermediate representation for policy configuration. `PolicyIR` is a
+frozen dataclass that all config formats (YAML, dict, CEL) compile to.
+`compile_policy(ir)` converts an IR to a live `Policy` instance, handling
+optional features (CEL, approval gates) gracefully when their dependencies
+are not installed. `from_dict(data)` and `from_yaml_string(text)` parse
+the standard config format.
+
+The IR decouples config parsing from policy execution: any new config
+format only needs to produce a `PolicyIR`, and the rest of the pipeline
+is unchanged.
 
 ### `policy_backends.py`
 
@@ -334,6 +399,53 @@ distribution format to it.
 Minimal `tessera serve` command that wires the proxy to an OpenAI
 upstream using environment variables. Not load-bearing, mostly for
 demo convenience.
+
+### `hooks/`
+
+gRPC extension hooks. `HookDispatcher` calls registered extension
+servers at three named hook points:
+
+- `PostPolicyEvaluate`: invoked after the local policy evaluation,
+  can downgrade ALLOW to DENY (deny-only, cannot upgrade DENY to ALLOW)
+- `PostToolCallGate`: invoked before a tool call executes, can block it
+- `PostDelegationVerify`: invoked after delegation token verification
+
+`RemoteHookClient` implements the `PostPolicyEvaluateHook` protocol
+by calling an external gRPC extension server. Extension servers implement
+the `TesseraExtensionServer` proto service in `proto/tessera/hooks/v1/`.
+All hooks fail closed: timeouts and errors produce DENY decisions. The
+dispatcher runs hooks sequentially; a DENY from any hook short-circuits
+the remaining hooks.
+
+### `xds/`
+
+xDS-compatible resource distribution. `XDSServer` stores resources by
+type URL and name, versions them with content-addressed SHA-256 hashing,
+and fans out updates to subscribers.
+
+Two transports are available:
+
+- **HTTP/SSE** (`server.py`): FastAPI endpoints mounted via `add_to_app()`.
+  `GET /xds/v1/{type_url}` returns a state-of-the-world snapshot.
+  `GET /xds/v1/{type_url}/subscribe` streams Server-Sent Events.
+  This path has no extra dependencies.
+
+- **gRPC ADS** (`grpc_server.py`): `GRPCXDSServer` wraps the same
+  `XDSServer` instance and implements the `AggregatedDiscoveryService`
+  proto service. `FetchResources` is a unary call for snapshots.
+  `StreamResources` is a bidirectional stream: the client sends a
+  `DiscoveryRequest` with the desired `resource_type`, and the server
+  pushes a snapshot immediately then streams every subsequent update.
+  Requires the `[xds]` optional dependency.
+
+Both transports share one `XDSServer` instance, so HTTP and gRPC clients
+see identical state. The HTTP client (`client.py`) supports fetch and SSE
+subscription for environments where gRPC is not available.
+
+Three built-in resource types are defined in `resources.py`:
+`PolicyBundleResource`, `ToolRegistryResource`, and `TrustConfigResource`.
+All three support `to_dict()` / `from_dict()` / `to_json()` / `from_json()`
+for portable serialization independent of the protobuf runtime.
 
 ## Data flow: one chat proxy request
 
