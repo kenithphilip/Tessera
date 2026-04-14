@@ -7,20 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything before v1.0.0 is experimental; API changes may occur in any
 minor release.
 
-## [Unreleased]
+## [0.1.0] - 2026-04-14
 
 ### Added
 
 - `benchmarks/` microbenchmark suite (`python -m benchmarks`) covering
   HMAC sign and verify, `make_segment`, `Context.min_trust` and
   `Context.render`, `Policy.evaluate` allow and deny, `WorkerReport`
-  validation, and an end-to-end per-request path.
+  validation, and an end-to-end per-request path
 - `docs/benchmarks.md` reference snapshot of benchmark results on an
-  Apple Silicon laptop running Python 3.12.
-- Paper Section 4.5 updated with the concrete numbers from the
-  benchmark suite: approximately 1 microsecond for Pydantic validation,
-  approximately 32 microseconds for the full per-request path, and
-  roughly 0.016 percent overhead against a 200-millisecond LLM round-trip.
+  Apple Silicon laptop running Python 3.12
+- Paper Section 4.5 updated with concrete benchmark numbers
 - `tessera.delegation` with signed delegation tokens and verification
 - `tessera.provenance` with signed context segment envelopes and prompt
   provenance manifests
@@ -32,65 +29,79 @@ minor release.
   the ASGI TLS extension and trusted XFCC
 - `tessera.spire` with live SPIRE Workload API adapters for JWT-SVID
   retrieval and trust-bundle-backed verifier configuration
-- A2A JSON-RPC `tasks.send` ingress on the FastAPI reference proxy
-- prompt provenance enforcement and delegation enforcement on the proxy
-- inbound `ASM-Agent-Identity` and `ASM-Agent-Proof` enforcement on the
-  proxy
-- inbound mTLS transport identity enforcement on the proxy, including
-  SPIFFE URI SAN extraction and explicit trusted-proxy XFCC support
-- delegate-to-agent identity binding on delegated requests
-- MCP security context carriage for delegation and provenance
-- delegated `requires_human_for` and domain allowlist checks in policy
+- A2A JSON-RPC ingress, prompt provenance enforcement, and delegation
+  enforcement on the FastAPI reference proxy
+- Inbound mTLS transport identity enforcement on the proxy with SPIFFE
+  URI SAN extraction and trusted-proxy XFCC support
 - `tessera.cel_engine` CEL expression engine for deny-only policy
-  refinements via `[cel]` optional dependency; `CELRule` and
-  `CELPolicyEngine` evaluate against request, context, and delegation
-  attributes
-- `tessera.policy`: `ResourceType` enum (TOOL, PROMPT, RESOURCE) for
-  MCP RBAC per-resource authorization; `PolicyScope` enum (MESH, TEAM,
-  AGENT) with `Policy.merge()` enforcing higher scopes as trust floors;
-  `DecisionKind.REQUIRE_APPROVAL` for human-in-the-loop gating
+  refinements via `[cel]` optional dependency
+- `tessera.policy`: `ResourceType` enum for MCP RBAC, `PolicyScope` enum
+  with `Policy.merge()`, `DecisionKind.REQUIRE_APPROVAL` for
+  human-in-the-loop gating
 - `tessera.approval` human-in-the-loop approval gates with fail-closed
-  webhook delivery; `HumanApprovalGate` blocks tool calls that require
-  human authorization and dispatches a signed webhook request
+  webhook delivery
 - `tessera.sessions` encrypted in-memory session store for pending
-  approvals; `SessionStore` with TTL expiry and optional Fernet
-  encryption; expired sessions auto-resolve as DENY
-- `tessera.ir` intermediate representation for policy configuration;
-  `PolicyIR` compiled from YAML or dict via `from_yaml_string()` and
-  `from_dict()`; `compile_policy()` converts IR to a live `Policy`
-- `tessera.hooks` gRPC extension hook dispatcher; `HookDispatcher`
-  with `PostPolicyEvaluateHook` and `PostToolCallGateHook` protocols,
-  deny-only semantics, and fail-closed behavior on timeout or error;
-  `RemoteHookClient` for calling external extension servers
-- `tessera.xds` xDS-compatible resource distribution; `XDSServer`
-  with content-addressed versioning, HTTP/SSE push via `add_to_app()`,
-  and gRPC `AggregatedDiscoveryService` via `GRPCXDSServer`
-  (`StreamResources` bidirectional streaming, `FetchResources` unary);
-  `PolicyBundleResource`, `ToolRegistryResource`, `TrustConfigResource`
-  with full serialization support
-- Rust gateway: filter pipeline with `Filter` trait and `FilterChain`
-  extracting `LabelVerificationFilter`, `IdentityVerificationFilter`,
-  `PolicyEvaluationFilter`, and `UpstreamFilter` from the monolithic
-  handler; `SecretString` credential management via the `secrecy` crate
+  approvals with TTL expiry
+- `tessera.ir` intermediate representation: compile YAML/dict policy
+  config to live `Policy` instances
+- `tessera.hooks` gRPC extension hook dispatcher with deny-only semantics
+  and fail-closed behavior
+- `tessera.xds` xDS-compatible resource distribution over HTTP/SSE and
+  gRPC ADS
+- `tessera.scanners.directive` directive injection scanner
+- `tessera.scanners.intent` intent classification scanner
+- `tessera.scanners.prompt_screen` inbound prompt screening
+- `tessera.scanners.tool_output_schema` schema enforcement on tool outputs
+- `tessera.scanners.canary` canary token tracking and leakage detection
+- `tessera.scanners.tool_shadow` tool description shadow detection
+- `tessera.output_monitor` output manipulation defense
+- `tessera.delegation_intent` delegation intent verification
+- `tessera.trust_decay` time-based trust decay per origin
+- `tessera.plan_verifier` multi-step plan verification against policy
+- `tessera.side_channels` constant-time comparison, timing jitter, output
+  padding
+- `tessera.claim_provenance` binds model assertions to source tool outputs
+- `tessera.confidence` confidence scoring with model-targeting and
+  tense-aware filtering
+- `tessera.taint` value-level taint tracking
+- `tessera.adapters.crewai` CrewAI step callback adapter
+- `tessera.adapters.google_adk` Google ADK before/after tool callbacks
+- `tessera.adapters.llamaindex` LlamaIndex callback handler
+- `tessera.adapters.haystack` Haystack pipeline component
+- `tessera.adapters.langgraph` LangGraph tool node wrapper
+- `tessera.adapters.pydantic_ai` PydanticAI tool wrapper
+- `tessera.adapters.agentdojo` AgentDojo benchmark adapter
+- YAML policy DSL completion with `side_effects` and `critical_args`
+  declarations
+- Memory poisoning defense via taint-aware retrieval scoring
+- `benchmarks/adversarial/` adversarial injection benchmark scenario
+- `benchmarks/agentdojo/` AgentDojo integration benchmark scenario
+- `benchmarks/injection_taxonomy/` injection taxonomy benchmark scenario
+- Rust gateway: filter pipeline with `Filter` trait, `FilterChain`, and
+  `SecretString` credential management via the `secrecy` crate
 - `proto/tessera/xds/v1/` and `proto/tessera/hooks/v1/` protobuf
-  definitions (package `tessera_proto.xds.v1` and `tessera_proto.hooks.v1`)
-- Human-in-the-loop approval gates now integrated into the policy engine
-  via `Policy.requires_human_approval()`
-- GitHub repository topics for discoverability: llm-security,
-  agent-security, prompt-injection, indirect-prompt-injection,
-  taint-tracking, dual-llm, mcp, spiffe, grpc, and more
+  definitions
+- Human-in-the-loop approval gates integrated into `Policy` via
+  `requires_human_approval()`
 
 ### Changed
 
-- Removed employer attribution from README, paper byline, and ROADMAP
-  v1.0.0 gate. Tessera is a personal project.
-- Test suite now stands at 350 passing tests (up from 216 at last entry)
-- `pyproject.toml` xds optional dependency bumped to `grpcio>=1.70` to
-  match generated stub requirements
-- Repository assistant context and roadmap statistics updated to match
-  the current tree
-- SPIRE reference docs now describe live JWT-SVID identity retrieval and
-  trust-bundle verification instead of treating JWT-SVIDs as signing keys
+- Value-level taint now wired into the policy evaluator and adapter layer
+- Scanner precision improvements with model-targeting check and
+  past-tense filters to reduce false positives
+- Heuristic injection patterns updated with target qualifiers
+- Test suite: 991 passing tests (up from 65 at v0.0.1)
+- Python source: ~18,200 lines across 92 modules (up from ~2,500 at
+  v0.0.1)
+- Test code: ~15,700 lines (up from ~1,200 at v0.0.1)
+- Removed employer attribution; Tessera is a personal project
+- `pyproject.toml` xds optional dependency bumped to `grpcio>=1.70`
+
+### Fixed
+
+- CEL engine `ListType` API call updated for cel-python 0.5 compatibility
+- Rust gateway secrets routed through `expose_secret()` instead of
+  raw access
 
 ## [0.0.1] - 2026-04-10
 
@@ -212,7 +223,7 @@ of the paper for the full list with test names.
 
 ---
 
-## Unreleased
+## [Unreleased]
 
 No unreleased changes. Next planned items are tracked in
 [`ROADMAP.md`](ROADMAP.md).

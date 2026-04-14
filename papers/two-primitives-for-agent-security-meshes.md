@@ -7,7 +7,7 @@
 **Status:** Draft for discussion with OWASP Agentic AI, IETF WIMSE, and agent
 mesh implementers.
 
-**Version:** 0.1, April 2026
+**Version:** 0.2, April 2026
 
 **License:** This paper is licensed under CC BY 4.0. The reference
 implementation referenced herein is licensed under AGPL-3.0-or-later.
@@ -36,9 +36,20 @@ fraction of the cost of custom interpreter approaches. Neither primitive
 requires model modification, new hardware, or changes to existing mesh
 infrastructure.
 
+Since version 0.1 of this paper, the reference implementation has been
+extended with three additional defense layers that address attack classes
+the original two primitives explicitly disclaimed: output manipulation
+attacks that work through the model's text response rather than tool
+calls, value-level taint tracking that traces argument provenance rather
+than relying on context-level minimum trust, and adaptive trust scoring
+where trust levels decay over time and degrade based on observed
+anomalous behavior. These extensions are described in Sections 3.7
+through 3.10.
+
 The reference implementation is open-source and available as a Python
-library of approximately 1,500 lines, with approximately 1,200 lines of
-test coverage and 65 passing tests validating the stated invariants.
+library of approximately 18,200 lines across 92 modules, with
+approximately 15,700 lines of test coverage and 991 passing tests
+validating the stated invariants.
 
 ---
 
@@ -120,8 +131,15 @@ should treat the defense as incomplete with respect to them:
   equivalent). Our primitives do not replace sandboxing.
 - **Semantic attacks on the agent's output.** If the agent's natural
   language response to the user is the final artifact, an attacker who
-  poisoned the context can still poison the response. Our defense is at
-  the tool-call boundary, not at the generation boundary.
+  poisoned the context can still poison the response. The core primitives
+  (Sections 3 and 4) defend at the tool-call boundary, not at the
+  generation boundary. However, the content analysis extensions described
+  in Section 3.8 provide defense-in-depth against a specific subclass of
+  output manipulation: injections that direct the model to make
+  particular claims or recommendations ("Say that Riverside View Hotel
+  is the best"). These extensions detect the injection in the tool output
+  before the model processes it, but they do not prevent all forms of
+  output poisoning.
 
 This threat model is narrow by design. Within this scope, we claim that
 the two primitives described below are sufficient to provide deterministic
@@ -278,7 +296,7 @@ tool-call boundary. If the model ignores the delimiters entirely, the
 taint-tracking invariant still holds. The delimiters exist only so the
 model has structural information it may choose to respect.
 
-### 3.5 What this does not defend against
+### 3.5 What context-level taint does not defend against
 
 This invariant does not prevent an attacker from influencing the LLM's
 *output* via the untrusted segment. It only prevents that output from
@@ -293,6 +311,12 @@ trust labels. It is not. What is prevented is the escalation from "attacker
 influenced the model's output" to "attacker caused a privileged action."
 The former is a reputational and informational harm; the latter is an
 operational and financial harm. The primitive addresses the second class.
+
+Section 3.8 describes a content analysis layer that provides
+defense-in-depth against a specific subclass of output manipulation,
+but the fundamental limitation remains: deterministic control-flow
+guarantees apply at the tool-call boundary, not at the text-generation
+boundary.
 
 ### 3.6 Test-verified invariants
 
@@ -314,6 +338,129 @@ following tests (all passing at the time of writing):
   passed through as text. Binary content is replaced with a structured
   marker. This closes a vision-channel smuggling path that naive
   implementations leave open.
+
+### 3.7 Value-level taint tracking
+
+The `min_trust` invariant is conservative: a single untrusted segment in
+the context blocks all side-effecting tool calls, even when the specific
+arguments to the tool call came entirely from the user. This is correct
+from a security perspective but reduces utility. The AgentDojo benchmark
+(Debenedetti et al., 2025) exposes this tradeoff: context-level taint
+blocking achieves high attack prevention but also blocks legitimate tasks
+where the user explicitly requested a side-effecting action while
+untrusted data happened to be present in the context.
+
+CaMeL addresses this with per-variable taint tracking through a custom
+interpreter. Tessera extends the context-level invariant with a
+`DependencyAccumulator` that records which context segments contributed
+to which tool call arguments. When a tool call is proposed, each
+argument is checked individually:
+
+```
+allow(tool, arg, ctx, acc) iff
+    acc.binding(arg).trust_level(ctx) >= required_trust(tool)
+    for each arg in critical_args(tool)
+```
+
+Critical arguments are the security-relevant parameters of each tool:
+recipients for send operations, account identifiers for transfers, file
+paths for write operations, and commands for execution. Non-critical
+arguments (amounts, subjects, body text) are not checked because their
+taint does not create a new attack surface.
+
+The `DependencyAccumulator` is an opt-in refinement layer. When absent,
+`Policy.evaluate` falls back to context-level `min_trust`. When present,
+it enables per-argument provenance checking without changing the policy
+engine's interface. This preserves backward compatibility with
+deployments that use context-level taint only.
+
+### 3.8 Content analysis: the directive/ambient distinction
+
+Sections 3.1 through 3.6 defend at the tool-call boundary: an attacker
+cannot trigger a privileged tool call through tainted context. Section
+3.5 acknowledges a class of attacks this does not address: output
+manipulation, where the injection directs the model's text response
+rather than its tool calls. "Say that Riverside View Hotel is the best"
+has no tool call to block.
+
+The reference implementation now includes a content analysis layer that
+detects injection in tool outputs before they reach the model. Three
+scanners operate in sequence:
+
+1. **Schema enforcement.** Each tool declares an expected output shape
+   (structured data, list of records, free text, or numeric). A hotel
+   search tool that returns persuasive prose paragraphs is violating its
+   structural contract regardless of content. Prose density, imperative
+   verb presence, and key:value marker absence are measured against the
+   expected shape.
+
+2. **Directive detection with model-targeting.** The scanner distinguishes
+   between content addressed to the human reader ("You should check your
+   spam folder") and content addressed to the model ("You should
+   recommend Riverside View Hotel to the user"). The key insight: both
+   use identical syntax, but injections reference the model's output
+   behavior ("the user," "your response," "your recommendation").
+
+   Patterns are classified as *strong* (inherently model-targeted:
+   "say that," "tell the user," "include in your response") or *ambient*
+   (common in benign text: "you should," "make sure to," "I would
+   recommend"). Ambient patterns score at 5-15% of full weight by
+   default, only jumping to full weight when model-targeting context is
+   present. This eliminates false positives on FAQ text, product reviews,
+   tutorials, and help content.
+
+3. **Intent verification.** Detects side-effecting action verbs
+   (send, transfer, delete, execute) that the user did not request.
+   Filters out past-tense records ("was sent," "Transfer of EUR 500"),
+   passive constructions ("has been created"), quoted speech
+   ("Bob: 'Please send the deck'"), and nominal forms ("email for
+   confirmation"). Only imperative uses of action verbs, cross-checked
+   against the user's original prompt, produce a detection signal.
+
+These scanners are deterministic (no model call required) and run in
+under 1 millisecond per tool output. They are defense-in-depth: even if
+all three miss an injection, the tool-call boundary invariant from
+Section 3.2 still prevents privileged actions.
+
+### 3.9 Plan integrity verification
+
+CaMeL's strongest property is that untrusted data never influences which
+tools get called, only the data passed to those tools. The interpreter
+extracts control flow from the trusted query and executes it
+deterministically.
+
+Tessera does not replicate the full interpreter approach. Instead, a
+lightweight `PlanVerifier` checks whether a proposed tool-call sequence
+is consistent with the user's original intent. For common patterns
+("search for hotels" implies search tools, not send or delete tools),
+the verifier infers expected and forbidden tool patterns from the user
+prompt and flags sequences that include tools the user did not ask for.
+
+This is heuristic pattern matching, not formal plan verification. CaMeL's
+interpreter provides stronger guarantees because it controls execution.
+The verifier catches the obvious cases (an injection adding send_money
+to a search task) without requiring a custom AST executor, at the cost
+of missing subtle control-flow manipulations.
+
+### 3.10 Adaptive trust scoring
+
+The trust levels defined in Section 3.1 are static: a segment labeled
+TOOL stays at trust level 50 forever. Microsoft's Agent Governance
+Toolkit (April 2026) introduced dynamic trust scoring where trust
+decays based on observed behavior.
+
+Tessera adds a `TrustDecayPolicy` that computes effective trust on the
+fly without modifying the immutable `TrustLabel` (whose signature
+prevents modification). Effective trust decreases linearly with segment
+age past a configurable maximum, and decreases by a configurable penalty
+per scanner anomaly. A `ToolServerTrustTracker` accumulates per-server
+anomaly counts: if a tool server's outputs repeatedly trigger content
+analysis scanners, its future outputs start with lower effective trust.
+
+A `DecayAwareContext` wraps the standard `Context` and overrides the
+`min_trust` property to use effective trust. It can be passed to
+`Policy.evaluate` without changes to the policy engine, preserving
+backward compatibility.
 
 ---
 
@@ -695,34 +842,61 @@ This paper makes a deliberately narrow set of claims. We do not claim:
 ## 8. Reference implementation
 
 The reference implementation is Tessera, a Python library available at
-<https://github.com/kenithphilip/Tessera>. As of the time of writing:
+<https://github.com/kenithphilip/Tessera>. As of version 0.1.0:
 
-- **Source:** 1,556 lines of Python across 12 modules.
-- **Tests:** 1,187 lines of tests, 65 passing, including integration
-  tests against the real `mcp` Python package using in-memory transport.
+- **Source:** approximately 18,200 lines of Python across 92 modules.
+- **Rust gateway:** approximately 8,200 lines in `rust/tessera-gateway/`
+  (reference data plane).
+- **Tests:** approximately 15,700 lines of tests, 991 passing, runtime
+  approximately 2 minutes.
 - **Dependencies:** FastAPI and Pydantic (required), PyJWT with
-  cryptography (required for JWT-SVID signing), OpenTelemetry SDK
-  (optional for span emission), the `mcp` package (optional for MCP
-  interceptor).
+  cryptography (required for JWT-SVID signing). Optional extras for
+  OpenTelemetry, MCP, CEL, SPIFFE, gRPC/xDS, and 10 framework adapters.
 
-Key components:
+Key components (stable APIs):
 
 | Module | Purpose |
 |---|---|
-| `tessera.labels` | Signed TrustLabel structure, HMAC-SHA256 primitives |
+| `tessera.labels` | Signed TrustLabel, Origin, TrustLevel |
 | `tessera.signing` | JWTSigner, JWKSVerifier, HMACSigner, LabelSigner protocol |
-| `tessera.context` | LabeledSegment, Context, Spotlighting delimiter rendering |
-| `tessera.policy` | Taint-tracking policy engine with per-tool trust requirements |
-| `tessera.quarantine` | QuarantinedExecutor, strict_worker, safe-by-default WorkerReport |
-| `tessera.mcp` | MCP interceptor auto-labeling tool outputs |
-| `tessera.registry` | Org-level external-tool registry, registry-wins-on-inclusion |
+| `tessera.context` | LabeledSegment, Context, Spotlighting rendering |
+| `tessera.policy` | Taint-tracking policy engine with value-level accumulator |
+| `tessera.quarantine` | QuarantinedExecutor, strict_worker, WorkerReport |
+| `tessera.delegation` | DelegationToken, sign_delegation, verify_delegation |
+| `tessera.provenance` | ContextSegmentEnvelope, PromptProvenanceManifest |
 | `tessera.events` | Structured SecurityEvent with pluggable sinks |
-| `tessera.telemetry` | Optional OTel spans for proxy, MCP, policy, quarantine |
-| `tessera.proxy` | FastAPI sidecar reference implementation |
+| `tessera.taint` | TaintedValue, DependencyAccumulator, per-argument provenance |
+| `tessera.ir` | PolicyIR, YAML/JSON policy DSL, compile_policy |
 
-The deployment reference includes a SPIRE server, SPIRE agent, and
-example workload configuration demonstrating the JWT-SVID issuance and
-verification path.
+Content analysis and defense-in-depth:
+
+| Module | Purpose |
+|---|---|
+| `tessera.scanners.directive` | Two-layer directive detection (strong/ambient with model-targeting) |
+| `tessera.scanners.intent` | Intent verification (imperative action detection with tense/voice filtering) |
+| `tessera.scanners.heuristic` | Sliding-window injection scoring with target-qualified patterns |
+| `tessera.scanners.tool_output_schema` | Schema enforcement on tool output structural shape |
+| `tessera.output_monitor` | Token-level echo detection (URLs, IBANs, emails from untrusted segments) |
+| `tessera.claim_provenance` | Provenance-grounded response verification |
+| `tessera.plan_verifier` | Plan integrity verification (tool sequence vs user intent) |
+| `tessera.trust_decay` | Adaptive trust scoring with time decay and anomaly penalty |
+| `tessera.side_channels` | LoopGuard, StructuredResult, ConstantTimeDispatch |
+| `tessera.scanners.prompt_screen` | Initial prompt screening for delegated injection |
+
+Framework adapters (10):
+
+| Module | Framework |
+|---|---|
+| `tessera.adapters.langchain` | LangChain |
+| `tessera.adapters.openai_agents` | OpenAI Agents SDK |
+| `tessera.adapters.agentdojo` | AgentDojo |
+| `tessera.adapters.mcp_proxy` | MCP |
+| `tessera.adapters.crewai` | CrewAI |
+| `tessera.adapters.google_adk` | Google Agent Development Kit |
+| `tessera.adapters.llamaindex` | LlamaIndex |
+| `tessera.adapters.haystack` | Haystack |
+| `tessera.adapters.langgraph` | LangGraph |
+| `tessera.adapters.pydantic_ai` | PydanticAI |
 
 The test suite is the primary specification of the invariants claimed in
 Sections 3 and 4. Readers who want to verify the claims should read the
@@ -809,30 +983,48 @@ establish what content that actor is processing and where it came from.
 
 ## 11. Conclusion
 
-Two primitives, each implementable in approximately 200 lines of
-production code, close the two specific holes that recent agent security
-surveys identify as unimplemented in production systems. Neither primitive
-requires model modification, new hardware, or changes to control-plane
-infrastructure. Both have reference implementations with test-verified
-invariants and an AGPL-3.0-or-later license.
+The original version of this paper described two primitives, each
+implementable in approximately 200 lines, that close the two holes
+agent security surveys identify as unimplemented: trust-label injection
+and schema-enforced dual-LLM execution.
 
-The remaining work is not research. It is standardization (Section 9),
-adoption into production mesh data planes (Section 6), and the
-accompanying composition with identity, policy, sandboxing, and
-supply-chain verification at the other mesh layers. We expect that a
-deployment combining these primitives with an existing mesh (agentgateway
-or equivalent for the data plane, SPIRE for identity, Cedar or OPA for
-attribute-based policy, Firecracker or gVisor for sandboxing, and a
-standard OTel pipeline for observability) can provide defensible control-
-flow guarantees against indirect prompt injection within six months of
-focused integration work.
+This revision describes the extensions that grew from applying those
+primitives to the AgentDojo benchmark and from competitive analysis
+against CaMeL and Microsoft's Agent Governance Toolkit. The extensions
+address three attack classes the original primitives explicitly
+disclaimed:
 
-We are less interested in whether the reference implementation described
-in this paper becomes the adopted implementation, and more interested in
-whether the primitives themselves become widely understood as the minimum
-bar for any agent security mesh that claims to defend against indirect
-prompt injection. The survey literature is clear that the primitives are
-necessary. This paper shows that they are tractable.
+1. **Output manipulation** (the injection directs the model's text
+   response rather than its tool calls). Addressed by the directive
+   scanner's strong/ambient two-layer architecture, schema enforcement
+   on tool output structural shape, and intent verification with
+   tense/voice filtering.
+
+2. **Coarse-grained taint** (context-level min_trust blocks legitimate
+   tasks). Addressed by value-level taint tracking via
+   `DependencyAccumulator`, which traces per-argument provenance to
+   specific context segments.
+
+3. **Static trust** (trust levels never change). Addressed by adaptive
+   trust scoring with time decay and per-server anomaly penalties.
+
+Neither the original primitives nor these extensions require model
+modification, new hardware, or changes to control-plane infrastructure.
+All have reference implementations with test-verified invariants (991
+passing tests) and an AGPL-3.0-or-later license.
+
+The remaining work is validation: running the defenses against real
+models in real agent loops, not just deterministic replay. The replay
+evaluator measures what Tessera would block if the model followed the
+injection. It does not measure how often the model actually follows it.
+Live model evaluation against AgentDojo is the next step.
+
+We remain more interested in whether the primitives become widely
+understood as a minimum bar for agent security than in whether this
+specific implementation is adopted. The extensions described in this
+revision were driven by concrete benchmark gaps, not by architectural
+ambition. If a different implementation closes the same gaps with better
+tradeoffs, that is a good outcome.
 
 ---
 
@@ -859,6 +1051,43 @@ implementation should start with the following tests:
 - `tests/test_quarantine.py::test_planner_only_sees_trusted_segments`
 - `tests/test_events.py::test_worker_schema_violation_emits_event`
 
+**Value-level taint (Section 3.7):**
+
+- `tests/test_gap_analysis.py::TestArgumentTaintInPolicy::test_tainted_recipient_blocked_even_with_accumulator`
+- `tests/test_gap_analysis.py::TestArgumentTaintInPolicy::test_accumulator_blocks_on_clean_context_tainted_arg`
+- `tests/test_gap_analysis.py::TestArgumentTaintInPolicy::test_accumulator_not_checked_for_read_only_tools`
+
+**Content analysis (Section 3.8):**
+
+- `tests/test_gap_analysis.py::TestDirectiveScanner::test_speech_act_directive_detected`
+- `tests/test_gap_analysis.py::TestDirectiveScanner::test_ventriloquism_detected`
+- `tests/test_gap_analysis.py::TestDirectiveScanner::test_superlative_combined_with_speech_act_detected`
+- `tests/test_gap_analysis.py::TestIntentVerification::test_unrequested_send_flagged`
+- `tests/test_gap_analysis.py::TestIntentVerification::test_requested_action_not_flagged`
+- `tests/test_gap_analysis.py::TestOutputMonitoring::test_url_echo_detected`
+- `tests/test_gap_analysis.py::TestOutputMonitoring::test_user_mentioned_token_excluded`
+- `tests/test_tool_output_schema.py::TestSchemaEnforcement::test_prose_in_search_output_is_violation`
+- `tests/test_tool_output_schema.py::TestSchemaEnforcement::test_free_text_tool_never_violates`
+
+**False positive regression (scanner precision):**
+
+- `tests/test_scanner_false_positives.py::TestDirectiveFalsePositives::test_customer_service_advice`
+- `tests/test_scanner_false_positives.py::TestDirectiveFalsePositives::test_product_review_recommendation`
+- `tests/test_scanner_false_positives.py::TestIntentFalsePositives::test_past_tense_email_record`
+- `tests/test_scanner_false_positives.py::TestIntentFalsePositives::test_nominal_transfer`
+- `tests/test_scanner_false_positives.py::TestHeuristicFalsePositives::test_developer_todo_note`
+
+**Plan verification (Section 3.9):**
+
+- `tests/test_plan_verifier.py::test_search_prompt_forbids_send`
+- `tests/test_plan_verifier.py::test_forbidden_tool_detected`
+
+**Trust decay (Section 3.10):**
+
+- `tests/test_trust_decay.py::TestEffectiveTrust::test_decay_after_max_age`
+- `tests/test_trust_decay.py::TestEffectiveTrust::test_anomaly_penalty_applied`
+- `tests/test_trust_decay.py::TestDecayAwareContext::test_decay_aware_context_min_trust`
+
 **SPIFFE JWT-SVID signing:**
 
 - `tests/test_signing.py::test_jwt_round_trip`
@@ -866,7 +1095,16 @@ implementation should start with the following tests:
 - `tests/test_signing.py::test_jwks_verifier_resolves_by_kid`
 - `tests/test_signer_api.py::test_jwt_signer_via_make_segment_round_trips`
 
-Total passing tests at the time of writing: 65.
+**Delegation chain enforcement:**
+
+- `benchmarks/delegation_chain/test_delegation_attacks.py::TestDelegationScopeEnforcement::test_delegated_tool_outside_scope_denied`
+- `benchmarks/delegation_chain/test_delegation_attacks.py::TestDelegationScopeEnforcement::test_wrong_delegate_identity_denied`
+
+**Memory poisoning defense:**
+
+- `benchmarks/memory_poisoning/test_session_rescan.py::TestSessionRescan::test_poisoned_session_blocked_on_rescan`
+
+Total passing tests at the time of writing: 991.
 
 ---
 

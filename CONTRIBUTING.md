@@ -71,7 +71,7 @@ pytest
 ```
 
 All tests must pass before a pull request is reviewed. At the time of
-writing, the suite is 65 tests and runs in under two seconds. If your
+writing, the suite is 991 tests and runs in under ten seconds. If your
 change slows the suite significantly, document the reason.
 
 ## Pull request expectations
