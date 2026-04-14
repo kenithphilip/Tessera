@@ -38,6 +38,30 @@ _VERB_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Patterns that indicate a verb is describing a PAST action or STATUS,
+# not an imperative instruction. These eliminate false positives from
+# transaction records, status updates, and logs.
+_PAST_TENSE_CONTEXT = re.compile(
+    r"(?:"
+    r"(?:was|were|been|has|had|have|got|is)\s+\w*(?:ed|sent|created|transferred|updated|deleted|scheduled|booked|posted)|"  # passive: "was sent", "has been created"
+    r"\b(?:transfer|payment|download|upload|email|update|creation)\s+(?:of|on|at|to|from|by|for)\b|"  # nominal: "Transfer of", "Email for", "Download at"
+    r"\w+ed\s+(?:on|at|to|from|by|for)\b|"  # past participle: "created on", "transferred to", "scheduled for"
+    r"(?:status|result|log|record|history|confirm|receipt|notification|artifact|build)[:.\s]"  # context: status/log prefixes
+    r")",
+    re.IGNORECASE,
+)
+
+# Patterns indicating reported/quoted speech — someone else's words
+# embedded in the data, not instructions to the model.
+_QUOTED_SPEECH = re.compile(
+    r"(?:"
+    r"['\"].{0,5}\b(" + "|".join(_ACTION_VERBS) + r")\b|"  # inside quotes
+    r"\b\w+\s*:\s*['\"]|"                                    # "Bob: 'please send..."
+    r"\b(?:said|wrote|asked|replied|messaged|posted)\b.{0,20}\b(" + "|".join(_ACTION_VERBS[:8]) + r")\b"  # reported speech
+    r")",
+    re.IGNORECASE,
+)
+
 # Patterns that look like targets: IBANs, emails, URLs, file paths
 _TARGET_PATTERNS = (
     re.compile(r"[A-Z]{2}\d{10,34}"),                          # IBAN-like
@@ -51,21 +75,6 @@ _TARGET_PATTERNS = (
 _INSTRUCTION_PREFIXES = re.compile(
     r"^(?:TODO|TASK|IMPORTANT|NOTE|ACTION|PLEASE|NOW|NEXT)\s*[:\-!]?\s*",
     re.IGNORECASE | re.MULTILINE,
-)
-
-# Past-tense/passive markers preceding the verb: "was sent", "has been
-# transferred", "email sent to". These indicate records of completed
-# actions, not instructions.
-_PAST_PASSIVE = re.compile(
-    r"\b(was|were|been|has|have|had|got)\s+$",
-    re.IGNORECASE,
-)
-
-# Quoted/reported speech markers: the verb appears inside dialogue,
-# not as a direct instruction to the model.
-_QUOTED_SPEECH = re.compile(
-    r"""(?:['"\u201c\u201d]|said|wrote|asked|replied)\s*[:.]?\s*$""",
-    re.IGNORECASE,
 )
 
 
@@ -113,28 +122,16 @@ def scan_intent(
         verb = m.group(1).lower()
         clause = m.group(0).strip()
 
-        # Filter out past-tense/passive constructions: "was sent",
-        # "has been transferred". These are records, not instructions.
-        # Check both before the verb ("was sent") and after ("Email was
-        # sent to" where "Email" is matched as the verb).
-        prefix_window = tool_output[max(0, m.start() - 20):m.start()]
-        suffix_window = m.group(2)[:30] if m.group(2) else ""
-        if _PAST_PASSIVE.search(prefix_window):
-            continue
-        if re.search(r"^was\s+\w+|^were\s+\w+|^has\s+been|^had\s+been", suffix_window, re.IGNORECASE):
+        # Skip past-tense records and status descriptions.
+        # "Transfer of $500 to savings" and "Email sent to alice@acme.com"
+        # are records of completed actions, not imperative instructions.
+        surrounding = tool_output[max(0, m.start() - 40):m.end() + 20]
+        if _PAST_TENSE_CONTEXT.search(surrounding):
             continue
 
-        # Filter out quoted/reported speech: text inside quotes or
-        # after "said:" is dialogue from within the data.
-        quote_window = tool_output[max(0, m.start() - 30):m.start()]
-        if _QUOTED_SPEECH.search(quote_window):
-            continue
-
-        # Filter out nominal forms: "Transfer of EUR 500" is a noun
-        # phrase, not an imperative. Check for article/preposition
-        # immediately after the verb.
-        rest = m.group(2).lstrip()
-        if rest.lower().startswith("of "):
+        # Skip quoted/reported speech. "Bob: 'Please send the deck'"
+        # is someone else's words embedded in data, not an injection.
+        if _QUOTED_SPEECH.search(surrounding):
             continue
 
         has_target = any(p.search(clause) for p in _TARGET_PATTERNS)

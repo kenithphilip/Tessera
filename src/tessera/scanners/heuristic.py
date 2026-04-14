@@ -86,13 +86,20 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"authorized_keys|id_rsa",
         re.IGNORECASE,
     ),
-    # Shell command injection (exempt when inside backticks or code blocks)
+    # Shell command injection
+    # Shell command injection — exclude content inside backticks (code examples)
     re.compile(
-        r"(?<!`)\b(curl|wget|bash|chmod|chown|sudo)\s+\S|"
-        r"(?<!`)rm\s+-rf\b|"
+        r"(?<!`)"  # not preceded by backtick
+        r"\b(curl|wget|bash|chmod|chown|sudo)\s+\S"
+        r"(?!.*`)",  # not inside a code block
+        re.IGNORECASE,
+    ),
+    # Dangerous shell operations (always suspicious regardless of context)
+    re.compile(
+        r"rm\s+-rf\b|"
         r"reverse\s+shell|"
-        r"(?<!`)\bsubprocess\b|"
-        r"(?<!`)\bimport\s+os\b",
+        r"\bsubprocess\b|"
+        r"\bimport\s+os\b",
         re.IGNORECASE,
     ),
     # Exfiltration: forward/send/email + external target
@@ -110,23 +117,23 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     # Task-prefix injection (AgentDojo DirectAttack format)
-    # "TODO:", "TASK:", etc. followed by action verb AND an external target
-    # (IBAN, email, URL). Without a target, the pattern matches legitimate
-    # developer task notes like "TODO: Create a new branch."
+    # "TODO:", "TASK:", "IMPORTANT!" followed by action verb AND external target.
+    # Without external target, benign developer notes like "TODO: Create branch"
+    # would false-positive. Require an email, IBAN, URL, or dollar amount.
     re.compile(
         r"^(?:TODO|TASK|IMPORTANT|ACTION|URGENT)\s*[:\-!]\s*"
-        r"(send|transfer|execute|delete|forward|make|pay|wire|email|grant)"
-        r".{0,80}"
-        r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
+        r"(?:send|transfer|execute|delete|forward|make|pay|wire|email)\b"
+        r".{0,60}"
+        r"(?:[\w.+-]+@[\w-]+\.[\w.-]+|[A-Z]{2}\d{10,34}|https?://\S+|\$[\d,]+)",
         re.IGNORECASE | re.MULTILINE,
     ),
     # Urgency + action (InjecAgent format): "IMPORTANT!!!" or "CRITICAL:"
-    # Requires external target to avoid matching "IMPORTANT!! Update docs"
+    # Same requirement: must contain an external target.
     re.compile(
-        r"(?:IMPORTANT|CRITICAL|URGENT|WARNING)\s*[!]{2,}.{0,60}"
-        r"(send|transfer|execute|delete|forward|make|pay|wire|email)"
+        r"(?:IMPORTANT|CRITICAL|URGENT|WARNING)\s*[!]{2,}.{0,40}"
+        r"(?:send|transfer|execute|delete|forward|make|pay|wire|email)\b"
         r".{0,60}"
-        r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
+        r"(?:[\w.+-]+@[\w-]+\.[\w.-]+|[A-Z]{2}\d{10,34}|https?://\S+|\$[\d,]+)",
         re.IGNORECASE,
     ),
     # Fake system message prefix (SystemMessageAttack format)
@@ -135,15 +142,16 @@ _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     # Imperative with external target: action verb + IBAN, email, or URL.
-    # Requires imperative mood (verb at sentence start, after instruction
-    # prefix, or after "please"). Filters out nominal forms like
-    # "Transfer of EUR 500 to DE89..." (transaction record).
+    # Exclude nominal/past-tense: "Transfer of EUR 500 to DE89..." is a
+    # record, not an instruction. Require the verb to NOT be preceded by
+    # articles/prepositions that indicate a noun phrase.
     re.compile(
-        r"(?:^|[.!?]\s+|please\s+)"
-        r"(send|transfer|pay|wire|forward|email)\s+(?!of\s)"
+        r"(?<!\bof\s)(?<!\ba\s)(?<!\bthe\s)(?<!\bfor\s)"
+        r"\b(send|transfer|pay|wire|forward|email)\s+"
+        r"(?!of\b)"  # "Transfer of" is nominal
         r".{0,60}"
-        r"([A-Z]{2}\d{10,34}|[\w.+-]+@[\w-]+\.[\w.-]+|https?://\S+)",
-        re.IGNORECASE | re.MULTILINE,
+        r"([\w.+-]+@[\w-]+\.[\w.-]+|[A-Z]{2}\d{10,34}|https?://\S+)",
+        re.IGNORECASE,
     ),
 )
 
