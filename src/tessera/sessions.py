@@ -121,8 +121,27 @@ class SessionStore:
             self._sessions[approval.session_id] = self._serialize(approval)
         return approval.session_id
 
-    def retrieve(self, session_id: str) -> PendingApproval | None:
-        """Retrieve and return None if not found or expired."""
+    def retrieve(
+        self,
+        session_id: str,
+        scan_on_load: bool = False,
+        scan_threshold: float = 0.75,
+    ) -> PendingApproval | None:
+        """Retrieve and return None if not found, expired, or tainted.
+
+        Args:
+            session_id: Session to look up.
+            scan_on_load: If True, re-scan the stored context_summary
+                for injection before returning. Catches cross-session
+                memory poisoning where an attacker plants content in a
+                previous session.
+            scan_threshold: Heuristic injection score above which the
+                session is rejected. Only used when scan_on_load is True.
+
+        Returns:
+            PendingApproval if valid, None if not found, expired, or
+            injection was detected in the stored context.
+        """
         with self._lock:
             raw = self._sessions.get(session_id)
         if raw is None:
@@ -130,6 +149,39 @@ class SessionStore:
         approval = self._deserialize(raw)
         if approval.is_expired():
             return None
+
+        # Re-scan stored context for injection on retrieve.
+        # Catches memory poisoning: content planted in session N
+        # that gets loaded into session N+1.
+        if scan_on_load and approval.context_summary:
+            try:
+                from tessera.scanners.heuristic import injection_score
+                from tessera.scanners.directive import directive_score
+
+                h_score = injection_score(approval.context_summary)
+                d_score = directive_score(approval.context_summary)
+                # Either scanner triggering is sufficient. The directive
+                # scanner catches output manipulation, the heuristic
+                # catches override patterns. Both use their own thresholds
+                # to control false positives.
+                if h_score >= scan_threshold or d_score >= scan_threshold:
+                    emit_event(
+                        SecurityEvent.now(
+                            kind=EventKind.CONTENT_INJECTION_DETECTED,
+                            principal=approval.principal,
+                            detail={
+                                "scanner": "session_rescan",
+                                "session_id": session_id,
+                                "heuristic_score": h_score,
+                                "directive_score": d_score,
+                                "threshold": scan_threshold,
+                            },
+                        )
+                    )
+                    return None  # fail closed
+            except ImportError:
+                pass  # scanners not available, skip re-scan
+
         return approval
 
     def resolve(

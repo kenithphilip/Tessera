@@ -34,11 +34,25 @@ def _parse_trust(value: str | int) -> int:
 
 @dataclass(frozen=True)
 class ResourceRequirementIR:
-    """One resource requirement in the IR."""
+    """One resource requirement in the IR.
+
+    YAML example::
+
+        requirements:
+          - name: send_email
+            required_trust: user
+            side_effects: true
+            critical_args: [to, recipient, cc, bcc]
+          - name: "get_*"
+            required_trust: tool
+            side_effects: false
+    """
 
     name: str
     resource_type: str = "tool"  # "tool", "prompt", "resource"
     required_trust: int = 100  # TrustLevel int value
+    side_effects: bool = True   # False = read-only, exempt from taint floor
+    critical_args: tuple[str, ...] | None = None  # args requiring user provenance
 
 
 @dataclass(frozen=True)
@@ -89,9 +103,14 @@ def compile_policy(ir: PolicyIR) -> Any:
                 req.name,
                 TrustLevel(req.required_trust),
                 resource_type=ResourceType(req.resource_type),
+                side_effects=req.side_effects,
             )
         except (ImportError, AttributeError, TypeError):
-            policy.require(req.name, TrustLevel(req.required_trust))
+            policy.require(
+                req.name,
+                TrustLevel(req.required_trust),
+                side_effects=req.side_effects,
+            )
 
     # Add human approval tools.
     for tool in ir.human_approval_tools:
@@ -133,6 +152,10 @@ def from_dict(data: dict[str, Any]) -> PolicyIR:
             name=r["name"],
             resource_type=r.get("resource_type", "tool"),
             required_trust=_parse_trust(r.get("required_trust", 100)),
+            side_effects=r.get("side_effects", True),
+            critical_args=(
+                tuple(r["critical_args"]) if r.get("critical_args") else None
+            ),
         )
         for r in raw_reqs
     )
@@ -141,6 +164,10 @@ def from_dict(data: dict[str, Any]) -> PolicyIR:
     default_trust = _parse_trust(raw_trust) if raw_trust is not None else 100
 
     scope = data.get("scope", "agent")
+    if scope not in ("mesh", "team", "agent"):
+        raise ValueError(
+            f"invalid scope {scope!r}, expected 'mesh', 'team', or 'agent'"
+        )
 
     raw_cel = data.get("cel_rules") or []
     cel_rules = tuple(

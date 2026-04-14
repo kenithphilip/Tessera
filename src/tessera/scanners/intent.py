@@ -38,6 +38,30 @@ _VERB_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Patterns that indicate a verb is describing a PAST action or STATUS,
+# not an imperative instruction. These eliminate false positives from
+# transaction records, status updates, and logs.
+_PAST_TENSE_CONTEXT = re.compile(
+    r"(?:"
+    r"(?:was|were|been|has|had|have|got|is)\s+\w*(?:ed|sent|created|transferred|updated|deleted|scheduled|booked|posted)|"  # passive: "was sent", "has been created"
+    r"\b(?:transfer|payment|download|upload|email|update|creation)\s+(?:of|on|at|to|from|by|for)\b|"  # nominal: "Transfer of", "Email for", "Download at"
+    r"\w+ed\s+(?:on|at|to|from|by|for)\b|"  # past participle: "created on", "transferred to", "scheduled for"
+    r"(?:status|result|log|record|history|confirm|receipt|notification|artifact|build)[:.\s]"  # context: status/log prefixes
+    r")",
+    re.IGNORECASE,
+)
+
+# Patterns indicating reported/quoted speech — someone else's words
+# embedded in the data, not instructions to the model.
+_QUOTED_SPEECH = re.compile(
+    r"(?:"
+    r"['\"].{0,5}\b(" + "|".join(_ACTION_VERBS) + r")\b|"  # inside quotes
+    r"\b\w+\s*:\s*['\"]|"                                    # "Bob: 'please send..."
+    r"\b(?:said|wrote|asked|replied|messaged|posted)\b.{0,20}\b(" + "|".join(_ACTION_VERBS[:8]) + r")\b"  # reported speech
+    r")",
+    re.IGNORECASE,
+)
+
 # Patterns that look like targets: IBANs, emails, URLs, file paths
 _TARGET_PATTERNS = (
     re.compile(r"[A-Z]{2}\d{10,34}"),                          # IBAN-like
@@ -97,6 +121,18 @@ def scan_intent(
     for m in raw_matches:
         verb = m.group(1).lower()
         clause = m.group(0).strip()
+
+        # Skip past-tense records and status descriptions.
+        # "Transfer of $500 to savings" and "Email sent to alice@acme.com"
+        # are records of completed actions, not imperative instructions.
+        surrounding = tool_output[max(0, m.start() - 40):m.end() + 20]
+        if _PAST_TENSE_CONTEXT.search(surrounding):
+            continue
+
+        # Skip quoted/reported speech. "Bob: 'Please send the deck'"
+        # is someone else's words embedded in data, not an injection.
+        if _QUOTED_SPEECH.search(surrounding):
+            continue
 
         has_target = any(p.search(clause) for p in _TARGET_PATTERNS)
         is_prefixed = bool(_INSTRUCTION_PREFIXES.search(

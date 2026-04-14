@@ -57,6 +57,31 @@ langchain = [
 openai-agents = [
     "openai-agents>=0.0.3",
 ]
+crewai = [
+    "crewai>=0.50",
+]
+google-adk = [
+    "google-adk>=0.3",
+]
+llamaindex = [
+    "llama-index-core>=0.10",
+]
+haystack = [
+    "haystack-ai>=2.0",
+]
+langgraph = [
+    "langgraph>=0.2",
+]
+pydantic-ai = [
+    "pydantic-ai>=0.0.5",
+]
+agentdojo = [
+    "agentdojo>=1.2",
+]
+perplexity = [
+    "torch>=2.0",
+    "transformers>=4.30",
+]
 
 [project.scripts]
 tessera = "tessera.cli:main"

@@ -167,6 +167,75 @@ def test_compile_policy_default_trust() -> None:
     assert policy.default_required_trust == TrustLevel.TOOL
 
 
+def test_from_dict_side_effects_field() -> None:
+    """Parses side_effects from requirement dicts."""
+    ir = from_dict({
+        "requirements": [
+            {"name": "send_email", "required_trust": "user", "side_effects": True},
+            {"name": "get_balance", "required_trust": "tool", "side_effects": False},
+        ],
+    })
+    assert ir.requirements[0].side_effects is True
+    assert ir.requirements[1].side_effects is False
+
+
+def test_from_dict_side_effects_defaults_true() -> None:
+    """side_effects defaults to True when not specified."""
+    ir = from_dict({
+        "requirements": [{"name": "unknown_tool", "required_trust": "user"}],
+    })
+    assert ir.requirements[0].side_effects is True
+
+
+def test_from_dict_critical_args() -> None:
+    """Parses critical_args from requirement dicts."""
+    ir = from_dict({
+        "requirements": [
+            {
+                "name": "send_email",
+                "required_trust": "user",
+                "critical_args": ["to", "recipient", "cc"],
+            },
+        ],
+    })
+    assert ir.requirements[0].critical_args == ("to", "recipient", "cc")
+
+
+def test_from_dict_critical_args_defaults_none() -> None:
+    """critical_args defaults to None when not specified."""
+    ir = from_dict({
+        "requirements": [{"name": "read_file", "required_trust": "tool"}],
+    })
+    assert ir.requirements[0].critical_args is None
+
+
+def test_from_dict_invalid_scope_raises() -> None:
+    """Invalid scope values raise ValueError."""
+    with pytest.raises(ValueError, match="invalid scope"):
+        from_dict({"scope": "global"})
+
+
+def test_compile_policy_side_effects_propagated() -> None:
+    """side_effects=False on IR produces a read-only policy requirement."""
+    from tessera.context import Context, make_segment
+    from tessera.labels import Origin
+
+    ir = from_dict({
+        "requirements": [
+            {"name": "search_hotels", "required_trust": "user", "side_effects": False},
+        ],
+    })
+    policy = compile_policy(ir)
+
+    # Context at TOOL trust (below USER). Side-effect-free tools should pass.
+    key = b"ir-side-effects-test-key"
+    seg = make_segment("web content", Origin.WEB, "agent", key)
+    ctx = Context(segments=[seg])
+
+    decision = policy.evaluate(ctx, "search_hotels")
+    assert decision.kind == DecisionKind.ALLOW
+
+
 def test_from_yaml_string_parses_yaml() -> None:
     """YAML string parses to PolicyIR."""
     yaml = pytest.importorskip("yaml")  # noqa: F841
