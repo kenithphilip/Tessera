@@ -21,8 +21,11 @@ from tessera.mcp_allowlist import (
     scan_for_registration_attempts,
 )
 from tessera.read_only_guard import (
+    ArgumentPolicy,
     ReadOnlyViolation,
+    ToolArgumentPolicy,
     check_read_only_args,
+    check_toxic_flow,
 )
 from tessera.scanners.binary_content import (
     BinaryThreatCategory,
@@ -362,3 +365,113 @@ class TestReadOnlyGuard:
             user_prompt="read the invoice",
         )
         assert result.passed
+
+
+# ---------------------------------------------------------------------------
+# Per-tool argument policies (FIDES-inspired)
+# ---------------------------------------------------------------------------
+
+
+class TestToolArgumentPolicy:
+    def test_allowed_prefix_passes(self) -> None:
+        policy = ToolArgumentPolicy()
+        policy.register("read_file", "path", ArgumentPolicy(
+            arg_type="path",
+            allowed_prefixes=("/data/", "/public/"),
+        ))
+        result = policy.validate("read_file", {"path": "/data/report.txt"})
+        assert result.passed
+
+    def test_blocked_prefix_denied(self) -> None:
+        policy = ToolArgumentPolicy()
+        policy.register("read_file", "path", ArgumentPolicy(
+            arg_type="path",
+            blocked_prefixes=("/etc/", "/root/"),
+        ))
+        result = policy.validate("read_file", {"path": "/etc/passwd"})
+        assert not result.passed
+
+    def test_tainted_arg_blocked_by_policy(self) -> None:
+        policy = ToolArgumentPolicy()
+        policy.register("read_file", "path", ArgumentPolicy(
+            tainted_behavior="block",
+        ))
+        result = policy.validate(
+            "read_file",
+            {"path": "/some/file"},
+            tainted_args=frozenset({"path"}),
+        )
+        assert not result.passed
+
+    def test_tainted_arg_allowed_by_policy(self) -> None:
+        policy = ToolArgumentPolicy()
+        policy.register("read_file", "path", ArgumentPolicy(
+            tainted_behavior="allow",
+        ))
+        result = policy.validate(
+            "read_file",
+            {"path": "/some/file"},
+            tainted_args=frozenset({"path"}),
+        )
+        assert result.passed
+
+    def test_blocked_pattern_denied(self) -> None:
+        policy = ToolArgumentPolicy()
+        policy.register("search_db", "query", ArgumentPolicy(
+            blocked_patterns=("credentials", "passwords", "tokens"),
+        ))
+        result = policy.validate("search_db", {"query": "SELECT * FROM credentials"})
+        assert not result.passed
+
+    def test_unregistered_tool_passes(self) -> None:
+        policy = ToolArgumentPolicy()
+        result = policy.validate("unknown_tool", {"arg": "value"})
+        assert result.passed
+
+
+# ---------------------------------------------------------------------------
+# Toxic flow detection (PCAS-inspired)
+# ---------------------------------------------------------------------------
+
+
+class TestToxicFlow:
+    def test_no_toxic_flow_without_sensitive(self) -> None:
+        result = check_toxic_flow(
+            context_has_untrusted=True,
+            context_has_sensitive=False,
+            destination="email",
+        )
+        assert not result.toxic
+
+    def test_no_toxic_flow_without_untrusted(self) -> None:
+        result = check_toxic_flow(
+            context_has_untrusted=False,
+            context_has_sensitive=True,
+            destination="email",
+        )
+        assert not result.toxic
+
+    def test_toxic_flow_blocks_external(self) -> None:
+        result = check_toxic_flow(
+            context_has_untrusted=True,
+            context_has_sensitive=True,
+            destination="email",
+        )
+        assert result.toxic
+        assert "toxic flow" in result.reason
+
+    def test_toxic_flow_allows_user_destination(self) -> None:
+        result = check_toxic_flow(
+            context_has_untrusted=True,
+            context_has_sensitive=True,
+            destination="user",
+        )
+        assert not result.toxic
+
+    def test_toxic_flow_blocks_api_destination(self) -> None:
+        result = check_toxic_flow(
+            context_has_untrusted=True,
+            context_has_sensitive=True,
+            destination="webhook",
+        )
+        assert result.toxic
