@@ -192,11 +192,6 @@ class TesseraToolLabeler:
             d_result = scan_directive(text)
             s_result = scan_tool_output(tool_name or "unknown", text)
 
-            # Taint if:
-            # - Regex pattern matched (always high confidence)
-            # - Directive scanner triggered (model-targeted language)
-            # - Schema violation (prose in structured output)
-            # - Sliding-window high AND corroborated by another scanner
             regex_match = h_regex >= 0.9
             window_corroborated = (
                 h_window >= self.injection_threshold
