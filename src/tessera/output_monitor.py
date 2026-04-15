@@ -154,3 +154,150 @@ def scan_and_emit(
             )
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Output integrity checker (post-generation verification)
+# ---------------------------------------------------------------------------
+
+# Known patterns in model responses that indicate the model followed
+# an injection and is parroting attacker-controlled content.
+_INJECTION_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"I\s+should\s+absolutely\s+visit", re.IGNORECASE),
+    re.compile(r"I\s+have\s+been\s+instructed\s+to", re.IGNORECASE),
+    re.compile(r"my\s+new\s+instructions\s+are", re.IGNORECASE),
+    re.compile(
+        r"as\s+(?:an?\s+)?(?:AI|assistant)\s*,?\s+I\s+(?:must|should|will)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\[SYSTEM\]|\[INST\]", re.IGNORECASE),
+)
+
+# Stop words excluded from relevance and similarity calculations
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been",
+    "to", "of", "in", "for", "and", "or", "but", "not", "with",
+    "i", "you", "we", "they", "it", "this", "that", "my", "your",
+    "can", "will", "do", "does", "did", "has", "have", "had",
+    "at", "by", "from", "on", "as", "if", "so", "no", "yes",
+})
+
+
+@dataclass(frozen=True)
+class IntegrityCheckResult:
+    """Result of post-generation integrity check."""
+
+    clean: bool
+    score: float                           # 0.0-1.0 manipulation likelihood
+    patterns_matched: tuple[str, ...]      # which checks triggered
+    suspicious_segments: tuple[str, ...]   # untrusted content echoed
+    action: str                            # "pass", "flag", "block"
+
+
+def _ngram_overlap(text_a: str, text_b: str, n: int = 3) -> float:
+    """Compute n-gram overlap between two texts."""
+    def ngrams(text: str) -> set[tuple[str, ...]]:
+        words = [w for w in text.lower().split() if w not in _STOP_WORDS]
+        if len(words) < n:
+            return set()
+        return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+    grams_a = ngrams(text_a)
+    grams_b = ngrams(text_b)
+    if not grams_b:
+        return 0.0
+    return len(grams_a & grams_b) / len(grams_b)
+
+
+def _task_relevance(response: str, task: str) -> float:
+    """Keyword-overlap relevance between response and original task."""
+    task_words = {w.lower() for w in task.split()} - _STOP_WORDS
+    resp_words = {w.lower() for w in response.split()} - _STOP_WORDS
+    if not task_words:
+        return 1.0
+    return len(task_words & resp_words) / len(task_words)
+
+
+def check_output_integrity(
+    model_response: str,
+    context: Context,
+    user_task: str = "",
+    untrusted_threshold: TrustLevel = TrustLevel.TOOL,
+) -> IntegrityCheckResult:
+    """Post-generation integrity check for output manipulation.
+
+    Combines four checks:
+    1. N-gram similarity: does the response paraphrase untrusted content?
+    2. Task relevance: does the response address the user's actual request?
+    3. Known injection output patterns: "I should absolutely visit..."
+    4. Token echo: URLs/IBANs/emails from untrusted segments in response
+       (delegates to scan_output)
+
+    This catches the travel/injection_task_6 attack class where the
+    injection has no tool call to block but manipulates the model's
+    text output to promote attacker content.
+
+    References:
+    - FIDES (Costa et al., 2025): acknowledges text-to-text attacks
+      bypass tool-call policies
+    - PromptGuard Layer 4: adaptive response refinement
+    - Hossain et al.: guard agent post-screens all responses
+
+    Args:
+        model_response: The model's text response.
+        context: The context used for the model call.
+        user_task: The user's original task/prompt.
+        untrusted_threshold: Segments below this level are untrusted.
+
+    Returns:
+        IntegrityCheckResult with action recommendation.
+    """
+    patterns: list[str] = []
+    suspicious: list[str] = []
+    score = 0.0
+
+    # Check 1: n-gram similarity with untrusted segments
+    for i, seg in enumerate(context.segments):
+        if seg.label.trust_level < untrusted_threshold:
+            sim = _ngram_overlap(model_response, seg.content)
+            if sim > 0.4:
+                suspicious.append(seg.content[:100])
+                score = max(score, sim)
+                patterns.append(f"echo_similarity:{sim:.2f}")
+
+    # Check 2: task relevance
+    if user_task:
+        relevance = _task_relevance(model_response, user_task)
+        if relevance < 0.2:
+            patterns.append(f"low_task_relevance:{relevance:.2f}")
+            score = max(score, 1.0 - relevance)
+
+    # Check 3: known injection output patterns
+    for pat in _INJECTION_OUTPUT_PATTERNS:
+        if pat.search(model_response):
+            patterns.append(f"injection_output:{pat.pattern[:40]}")
+            score = max(score, 0.85)
+
+    # Check 4: token echo (delegate to existing scan_output)
+    echo_result = scan_output(model_response, context, untrusted_threshold)
+    if echo_result.echoes_detected:
+        patterns.append(f"token_echo:{echo_result.score:.2f}")
+        score = max(score, echo_result.score)
+
+    # Determine action
+    if score > 0.8:
+        action = "block"
+    elif score > 0.5:
+        action = "flag"
+    elif patterns:
+        action = "flag"
+    else:
+        action = "pass"
+
+    return IntegrityCheckResult(
+        clean=len(patterns) == 0,
+        score=min(score, 1.0),
+        patterns_matched=tuple(patterns),
+        suspicious_segments=tuple(suspicious),
+        action=action,
+    )
