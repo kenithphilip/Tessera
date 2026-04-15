@@ -51,10 +51,13 @@ _PHRASES_WITH_PREP: tuple[str, ...] = tuple(
 )
 
 _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # Instruction override
+    # Instruction override (handles "ignore all previous instructions",
+    # "disregard prior commands", "forget previous rules", etc.)
     re.compile(
-        r"(ignore|disregard|skip|forget)\s+(prior|previous|all)\s+"
-        r"(instructions|commands|rules)",
+        r"(ignore|disregard|skip|forget|override)\s+"
+        r"(?:all\s+)?(?:prior|previous|earlier|above|original)\s+"
+        r"(?:\w+\s+)?"
+        r"(instructions|commands|rules|guidelines|context|directives)",
         re.IGNORECASE,
     ),
     # Role override
@@ -191,6 +194,19 @@ def _regex_score(text: str) -> float:
         if pattern.search(text):
             return 1.0
     return 0.0
+
+
+def injection_scores(text: str) -> tuple[float, float]:
+    """Return (regex_score, sliding_window_score) separately.
+
+    Useful for callers that want to treat regex matches (high confidence)
+    differently from sliding-window matches (noisy baseline).
+    """
+    if not text or not text.strip():
+        return 0.0, 0.0
+    regex = _regex_score(text)
+    phrase = _sliding_window_score(text, _PHRASES)
+    return regex, phrase
 
 
 def injection_score(text: str) -> float:

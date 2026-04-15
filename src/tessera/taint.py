@@ -114,24 +114,43 @@ class DependencyAccumulator:
         self.bindings[name] = from_segment(value, segment_index)
 
     def bind_from_tool_output(self, name: str, value: Any, tool_name: str) -> None:
-        """Bind a value from the most recent segment matching a tool name.
+        """Bind a value to the context segment it came from.
 
         Searches context segments in reverse for one whose content contains
-        the string representation of the value. Falls back to the last
-        non-USER segment if no exact match is found.
+        the string representation of the value. Prefers the highest-trust
+        matching segment (if the value appears in both a clean and a
+        tainted segment, bind to the clean one).
+
+        If no segment contains the value, the value was model-generated
+        (computed from trusted context, formatted by the model, etc.)
+        and is treated as user-provided.
         """
         str_val = str(value)
+        if len(str_val) < 3:
+            # Very short values (numbers, single chars) match too broadly.
+            # Treat as model-generated.
+            self.bindings[name] = from_user(value)
+            return
+
+        # Find all segments that contain this value
+        matches: list[tuple[int, TrustLevel]] = []
         for i in range(len(self.context.segments) - 1, -1, -1):
             seg = self.context.segments[i]
             if str_val in seg.content:
-                self.bindings[name] = from_segment(value, i)
-                return
-        # Fallback: attribute to the last non-USER segment
-        for i in range(len(self.context.segments) - 1, -1, -1):
-            seg = self.context.segments[i]
-            if seg.label.trust_level < TrustLevel.USER:
-                self.bindings[name] = from_segment(value, i)
-                return
+                matches.append((i, seg.label.trust_level))
+
+        if matches:
+            # Prefer the highest-trust match. If the value appears in
+            # both a USER segment and an UNTRUSTED segment, the user
+            # mentioned it, so it's clean.
+            best = max(matches, key=lambda m: m[1])
+            self.bindings[name] = from_segment(value, best[0])
+            return
+
+        # Value not found in any segment: model-generated.
+        # The model computed this value from its reasoning (e.g.,
+        # formatted a date, composed an address, calculated a price).
+        # Not attributable to any untrusted source.
         self.bindings[name] = from_user(value)
 
     def get_taint(self, name: str) -> TaintedValue | None:
