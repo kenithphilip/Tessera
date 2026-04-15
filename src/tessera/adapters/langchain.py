@@ -80,38 +80,48 @@ class TesseraCallbackHandler:
         self._key = signing_key
         self._principal = principal
         self._injection_threshold = injection_threshold
-        # run_id (str) -> Context
-        self._contexts: dict[str, Context] = {}
+        # Single shared context across the session. LangGraph creates
+        # many nested run_ids (one per node), so per-run contexts lose
+        # taint state when chain_end cleans up between nodes.
+        self._context = Context()
+
+        # LangChain expects these properties on all callback handlers.
+        # They control event routing and error behavior.
+        self.raise_error = True       # raise exceptions on tool denial
+        self.ignore_llm = False
+        self.ignore_chat_model = False
+        self.ignore_chain = False
+        self.ignore_agent = False
+        self.ignore_retriever = False
+        self.ignore_retry = True
+        self.ignore_custom_event = True
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_or_create_context(self, run_id: Any) -> Context:
-        key = str(run_id)
-        if key not in self._contexts:
-            self._contexts[key] = Context()
-        return self._contexts[key]
+    @property
+    def context(self) -> Context:
+        """The current session context. Exposed for inspection."""
+        return self._context
 
-    def _add_user_segment(self, run_id: Any, text: str) -> None:
-        ctx = self._get_or_create_context(run_id)
+    def _add_user_segment(self, text: str) -> None:
         seg = make_segment(
             text,
             origin=Origin.USER,
             principal=self._principal,
             key=self._key,
         )
-        ctx.add(seg)
+        self._context.add(seg)
 
-    def _add_tool_segment(self, run_id: Any, text: str) -> None:
-        ctx = self._get_or_create_context(run_id)
+    def _add_tool_segment(self, text: str) -> None:
         seg = make_segment(
             text,
             origin=Origin.TOOL,
             principal=self._principal,
             key=self._key,
         )
-        ctx.add(seg)
+        self._context.add(seg)
 
     # ------------------------------------------------------------------
     # LangChain callback interface (duck-typed; no base class required)
@@ -126,10 +136,8 @@ class TesseraCallbackHandler:
         **kwargs: Any,
     ) -> None:
         """Label each prompt message as a USER segment."""
-        if run_id is None:
-            run_id = uuid.uuid4()
         for prompt in prompts:
-            self._add_user_segment(run_id, prompt)
+            self._add_user_segment(prompt)
 
     def on_chat_model_start(
         self,
@@ -139,14 +147,16 @@ class TesseraCallbackHandler:
         run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Label chat messages as USER segments (chat-model variant)."""
-        if run_id is None:
-            run_id = uuid.uuid4()
+        """Label chat messages as USER segments (chat-model variant).
+        Only labels the first user message to avoid re-labeling on
+        each LLM turn in an agent loop."""
+        if self._context.segments:
+            return  # already have context from previous turn
         for message_list in messages:
             for msg in message_list:
                 content = getattr(msg, "content", str(msg))
-                if isinstance(content, str):
-                    self._add_user_segment(run_id, content)
+                if isinstance(content, str) and content.strip():
+                    self._add_user_segment(content)
 
     def on_tool_start(
         self,
@@ -157,16 +167,10 @@ class TesseraCallbackHandler:
         parent_run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Gate the tool call against the Tessera policy.
-
-        Uses parent_run_id to look up the chain context (tools run
-        as child runs). Falls back to run_id if parent is absent.
-        """
-        lookup_id = parent_run_id if parent_run_id is not None else run_id
-        ctx = self._get_or_create_context(lookup_id)
+        """Gate the tool call against the Tessera policy."""
         tool_name = serialized.get("name", "unknown_tool")
 
-        decision = self._policy.evaluate(ctx, tool_name)
+        decision = self._policy.evaluate(self._context, tool_name)
         if not decision.allowed:
             try:
                 from langchain_core.tools import ToolException
@@ -182,11 +186,36 @@ class TesseraCallbackHandler:
         parent_run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Label tool output as TOOL trust and scan for injection."""
-        lookup_id = parent_run_id if parent_run_id is not None else run_id
-        self._add_tool_segment(lookup_id, str(output))
+        """Label tool output with trust level based on scanner results."""
+        from tessera.scanners.directive import scan_directive
+        from tessera.scanners.heuristic import injection_scores
 
-        score = injection_score(str(output))
+        text = str(output)
+
+        # Run scanners to determine trust level
+        h_regex, h_window = injection_scores(text)
+        d_result = scan_directive(text)
+
+        regex_match = h_regex >= 0.9
+        window_corroborated = h_window >= self._injection_threshold and d_result.score > 0.2
+        is_tainted = regex_match or d_result.detected or window_corroborated
+
+        if is_tainted:
+            seg = make_segment(
+                text, Origin.WEB, self._principal, self._key,
+                trust_level=TrustLevel.UNTRUSTED,
+            )
+        else:
+            # Clean tool output: label as USER trust so it doesn't
+            # drag the context min_trust below the threshold for
+            # side-effecting tools.
+            seg = make_segment(
+                text, Origin.TOOL, self._principal, self._key,
+                trust_level=TrustLevel.USER,
+            )
+        self._context.add(seg)
+
+        score = max(h_regex, h_window)
         if score >= self._injection_threshold:
             emit_event(
                 SecurityEvent.now(
@@ -207,8 +236,21 @@ class TesseraCallbackHandler:
         run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Clean up per-run context on completion."""
-        self._contexts.pop(str(run_id), None)
+        """LLM call completed. Do NOT clean up context here: in an agent
+        loop, tools execute after the LLM call ends and need the context.
+        Context cleanup happens in on_chain_end."""
+        pass
+
+    def on_chain_start(
+        self,
+        serialized: dict[str, Any],
+        inputs: dict[str, Any],
+        *,
+        run_id: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize context for a chain run."""
+        pass  # Context is created lazily in _get_or_create_context
 
     def on_chain_end(
         self,
@@ -217,15 +259,15 @@ class TesseraCallbackHandler:
         run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Clean up per-run context when the chain finishes."""
-        self._contexts.pop(str(run_id), None)
+        """Chain finished. Context is preserved for the session."""
+        pass
 
     def on_chain_error(
         self,
-        error: Union[Exception, KeyboardInterrupt],
+        error: Any,
         *,
         run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Clean up on chain error."""
-        self._contexts.pop(str(run_id), None)
+        """Chain errored. Context is preserved for inspection."""
+        pass

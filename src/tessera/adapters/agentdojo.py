@@ -176,15 +176,38 @@ class TesseraToolLabeler:
                     if tool_name:
                         break
 
-            # Run all three scanners. Any trigger marks UNTRUSTED.
-            h_score = injection_score(text)
+            # Run all three scanners with corroboration logic.
+            #
+            # The heuristic has two components: regex patterns (high
+            # confidence: delimiter injection, role override, shell
+            # commands) and sliding-window phrase matching (noisy:
+            # 0.50-0.65 baseline on hotel reviews, file listings).
+            #
+            # Regex matches always taint. Sliding-window matches need
+            # corroboration from the directive or schema scanner.
+            from tessera.scanners.heuristic import injection_scores
+
+            h_regex, h_window = injection_scores(text)
+            h_score = max(h_regex, h_window)
             d_result = scan_directive(text)
             s_result = scan_tool_output(tool_name or "unknown", text)
 
+            # Taint if:
+            # - Regex pattern matched (always high confidence)
+            # - Directive scanner triggered (model-targeted language)
+            # - Schema violation (prose in structured output)
+            # - Sliding-window high AND corroborated by another scanner
+            regex_match = h_regex >= 0.9
+            window_corroborated = (
+                h_window >= self.injection_threshold
+                and (d_result.score > 0.2 or s_result.score > 0.3)
+            )
+
             is_tainted = (
-                h_score >= self.injection_threshold
+                regex_match
                 or d_result.detected
                 or s_result.violation
+                or window_corroborated
             )
 
             if is_tainted:
