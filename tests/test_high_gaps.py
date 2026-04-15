@@ -174,6 +174,82 @@ class TestToolCallRateLimit:
         # After window expires, calls are allowed again
         assert limiter.allow("s1", "t4", at=t1)
 
+    def test_burst_detection(self) -> None:
+        """Many calls in a short burst triggers cooldown."""
+        from datetime import datetime, timezone
+
+        limiter = ToolCallRateLimit(
+            max_calls=100,
+            burst_threshold=5,
+            burst_window=timedelta(seconds=3),
+            cooldown=timedelta(seconds=10),
+        )
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        # 5 calls in quick succession: the 5th triggers burst
+        for i in range(4):
+            allowed, reason = limiter.check("s1", f"t{i}", at=t0)
+            assert allowed, f"call {i} should be allowed: {reason}"
+
+        allowed, reason = limiter.check("s1", "t4", at=t0)
+        assert not allowed
+        assert "burst" in (reason or "")
+
+    def test_cooldown_blocks_during_period(self) -> None:
+        """Calls are blocked during cooldown after burst."""
+        from datetime import datetime, timezone
+
+        limiter = ToolCallRateLimit(
+            max_calls=100,
+            burst_threshold=3,
+            burst_window=timedelta(seconds=2),
+            cooldown=timedelta(seconds=30),
+        )
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        t_during = t0 + timedelta(seconds=10)
+        t_after = t0 + timedelta(seconds=35)
+
+        # Trigger burst
+        for i in range(3):
+            limiter.check("s1", f"t{i}", at=t0)
+
+        # During cooldown: blocked
+        allowed, reason = limiter.check("s1", "t_new", at=t_during)
+        assert not allowed
+        assert "cooldown" in (reason or "")
+
+        # After cooldown: allowed
+        allowed, reason = limiter.check("s1", "t_new", at=t_after)
+        assert allowed
+
+    def test_session_lifetime_limit(self) -> None:
+        """Session lifetime cap blocks after total threshold."""
+        from datetime import datetime, timezone
+
+        limiter = ToolCallRateLimit(
+            max_calls=100,
+            session_lifetime_max=5,
+            burst_threshold=100,  # disable burst for this test
+        )
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        for i in range(5):
+            allowed, _ = limiter.check("s1", f"t{i}", at=t0 + timedelta(seconds=i))
+            assert allowed
+
+        allowed, reason = limiter.check("s1", "t5", at=t0 + timedelta(seconds=6))
+        assert not allowed
+        assert "lifetime" in (reason or "")
+
+    def test_check_returns_reason(self) -> None:
+        """check() returns a human-readable reason on denial."""
+        limiter = ToolCallRateLimit(max_calls=1)
+        limiter.check("s1", "t1")
+        allowed, reason = limiter.check("s1", "t2")
+        assert not allowed
+        assert reason is not None
+        assert "rate limit" in reason
+
 
 # ---------------------------------------------------------------------------
 # Retrieval pattern tracker (PoisonedRAG defense)
