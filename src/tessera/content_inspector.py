@@ -167,30 +167,46 @@ def _inspect_image(output: Any) -> InspectionResult:
             raw = data
 
     if raw:
-        # Binary-level scan (metadata injection, MIME mismatch)
-        mime = None
-        if isinstance(output, dict):
-            mime = output.get("mime_type", output.get("mimeType"))
-        result = scan_binary(raw, declared_mime=mime)
-        if not result.safe:
-            threats.extend(t.detail for t in result.threats)
+        # Deep image analysis: steganography, invisible text, adversarial,
+        # metadata injection (all in one pass)
+        from tessera.scanners.image_inspector import analyze_image
 
-        # Try OCR if available
-        try:
-            import pytesseract
-            from PIL import Image
-            import io
+        analysis = analyze_image(output)
+        metadata["steganography_score"] = analysis.steganography_score
+        metadata["adversarial_score"] = analysis.adversarial_score
 
-            img = Image.open(io.BytesIO(raw))
-            ocr_text = pytesseract.image_to_string(img)
-            if ocr_text.strip():
-                extracted_text = ocr_text
-                metadata["ocr_extracted"] = True
-                metadata["ocr_length"] = len(ocr_text)
-        except ImportError:
-            metadata["ocr_available"] = False
-        except Exception as e:
-            metadata["ocr_error"] = str(e)[:100]
+        if analysis.metadata_threats:
+            threats.extend(analysis.metadata_threats)
+        if analysis.steganography_score > 0.85:
+            threats.append(
+                f"LSB steganography suspected (score={analysis.steganography_score:.2f})"
+            )
+        if analysis.invisible_text:
+            threats.append("invisible/low-contrast text detected in image")
+            extracted_text = analysis.invisible_text
+            metadata["invisible_text_found"] = True
+        if analysis.adversarial_score > 0.7:
+            threats.append(
+                f"adversarial perturbation suspected (score={analysis.adversarial_score:.2f})"
+            )
+
+        # Also try standard OCR if invisible text detection didn't produce text
+        if not extracted_text:
+            try:
+                import pytesseract
+                from PIL import Image
+                import io
+
+                img = Image.open(io.BytesIO(raw))
+                ocr_text = pytesseract.image_to_string(img)
+                if ocr_text.strip():
+                    extracted_text = ocr_text
+                    metadata["ocr_extracted"] = True
+                    metadata["ocr_length"] = len(ocr_text)
+            except ImportError:
+                metadata["ocr_available"] = False
+            except Exception as e:
+                metadata["ocr_error"] = str(e)[:100]
 
     content_hash = hashlib.sha256(raw or str(output).encode()).hexdigest()
     trust = TrustRecommendation.BLOCKED if threats else TrustRecommendation.UNTRUSTED
