@@ -175,3 +175,165 @@ class RAGRetrievalGuard:
                 },
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Retrieval pattern tracker (PoisonedRAG defense)
+# ---------------------------------------------------------------------------
+
+
+class RetrievalPatternTracker:
+    """Detect chunks with suspiciously narrow activation patterns.
+
+    PoisonedRAG (Zou et al., USENIX Security 2025) showed that just 5
+    crafted documents among millions achieve 90% attack success. These
+    adversarial documents are optimized for high similarity to specific
+    target queries, producing a narrow activation pattern: the document
+    is retrieved many times but always for the same 1-2 queries.
+
+    This tracker records which queries retrieve each chunk. Chunks with
+    high retrieval frequency but low query diversity are flagged as
+    potential PoisonedRAG artifacts.
+
+    References:
+    - PoisonedRAG (USENIX Security 2025): 5 docs, 90% ASR
+    - Tan et al.: scoring-based filtering for narrow-activation docs
+    - Prompt Security "Embedded Threat" (2025): poisoned vectors can
+      sit unnoticed for years before activating
+    """
+
+    def __init__(self, min_retrievals: int = 10, max_unique_ratio: float = 0.2) -> None:
+        self._history: dict[str, list[str]] = {}  # chunk_id -> [query_hashes]
+        self._min_retrievals = min_retrievals
+        self._max_unique_ratio = max_unique_ratio
+
+    def record(self, chunk_id: str, query: str) -> None:
+        """Record that a query retrieved a specific chunk."""
+        import hashlib
+        qhash = hashlib.sha256(query.encode()).hexdigest()[:16]
+        if chunk_id not in self._history:
+            self._history[chunk_id] = []
+        self._history[chunk_id].append(qhash)
+
+    def is_suspicious(self, chunk_id: str) -> bool:
+        """Check if a chunk has a narrow activation pattern.
+
+        Returns True if the chunk has been retrieved many times but
+        always for very few unique queries (signature of adversarial
+        documents optimized for specific queries).
+        """
+        history = self._history.get(chunk_id, [])
+        if len(history) < self._min_retrievals:
+            return False
+        unique = len(set(history))
+        ratio = unique / len(history)
+        return ratio <= self._max_unique_ratio
+
+    def get_stats(self, chunk_id: str) -> dict[str, int | float]:
+        """Return retrieval statistics for a chunk."""
+        history = self._history.get(chunk_id, [])
+        total = len(history)
+        unique = len(set(history))
+        return {
+            "total_retrievals": total,
+            "unique_queries": unique,
+            "diversity_ratio": unique / total if total > 0 else 1.0,
+        }
+
+    def clear(self, chunk_id: str | None = None) -> None:
+        """Clear tracking history."""
+        if chunk_id is None:
+            self._history.clear()
+        else:
+            self._history.pop(chunk_id, None)
+
+
+class EmbeddingAnomalyChecker:
+    """Detect anomalous embeddings that may indicate adversarial documents.
+
+    Adversarial RAG documents have embeddings optimized for retrieval,
+    not for content faithfulness. This produces anomalies: unusual
+    magnitude, outlier distance from the corpus centroid, or
+    suspiciously high similarity scores.
+
+    Requires baseline statistics computed from a legitimate corpus.
+    Without baseline stats, only similarity threshold checking is active.
+
+    References:
+    - OWASP LLM08:2025: embedding space manipulation
+    - Amine Raji (2025): embedding anomaly detection reduced
+      PoisonedRAG success from 95% to 20%
+    """
+
+    def __init__(
+        self,
+        max_similarity: float = 0.98,
+        magnitude_threshold: float | None = None,
+        distance_threshold: float | None = None,
+    ) -> None:
+        self._max_similarity = max_similarity
+        self._magnitude_threshold = magnitude_threshold
+        self._distance_threshold = distance_threshold
+        self._centroid: list[float] | None = None
+
+    def set_baseline(
+        self,
+        centroid: list[float],
+        magnitude_p99: float,
+        distance_p95: float,
+    ) -> None:
+        """Set baseline statistics from a legitimate corpus.
+
+        Args:
+            centroid: Mean embedding vector of the corpus.
+            magnitude_p99: 99th percentile of embedding magnitudes.
+            distance_p95: 95th percentile of distances from centroid.
+        """
+        self._centroid = centroid
+        self._magnitude_threshold = magnitude_p99
+        self._distance_threshold = distance_p95
+
+    def check(
+        self,
+        embedding: list[float],
+        similarity_score: float,
+    ) -> list[str]:
+        """Check an embedding for anomalies.
+
+        Args:
+            embedding: The chunk's embedding vector.
+            similarity_score: The retrieval similarity score.
+
+        Returns:
+            List of detected anomaly descriptions. Empty if clean.
+        """
+        anomalies: list[str] = []
+
+        # Suspiciously high similarity
+        if similarity_score > self._max_similarity:
+            anomalies.append(
+                f"suspiciously high similarity ({similarity_score:.3f} > {self._max_similarity})"
+            )
+
+        if self._centroid is None:
+            return anomalies
+
+        # Magnitude check
+        magnitude = sum(x * x for x in embedding) ** 0.5
+        if self._magnitude_threshold and magnitude > self._magnitude_threshold:
+            anomalies.append(
+                f"unusual embedding magnitude ({magnitude:.2f} > {self._magnitude_threshold:.2f})"
+            )
+
+        # Distance from centroid
+        if self._distance_threshold and len(embedding) == len(self._centroid):
+            dist_sq = sum(
+                (a - b) ** 2 for a, b in zip(embedding, self._centroid)
+            )
+            distance = dist_sq ** 0.5
+            if distance > self._distance_threshold:
+                anomalies.append(
+                    f"outlier distance from corpus centroid ({distance:.2f} > {self._distance_threshold:.2f})"
+                )
+
+        return anomalies

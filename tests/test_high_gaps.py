@@ -11,7 +11,12 @@ from datetime import timedelta
 
 import pytest
 
-from tessera.rag_guard import RAGAction, RAGRetrievalGuard
+from tessera.rag_guard import (
+    EmbeddingAnomalyChecker,
+    RAGAction,
+    RAGRetrievalGuard,
+    RetrievalPatternTracker,
+)
 from tessera.ratelimit import CallRateStatus, ToolCallRateLimit
 
 
@@ -168,3 +173,98 @@ class TestToolCallRateLimit:
 
         # After window expires, calls are allowed again
         assert limiter.allow("s1", "t4", at=t1)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval pattern tracker (PoisonedRAG defense)
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievalPatternTracker:
+    def test_few_retrievals_not_suspicious(self) -> None:
+        tracker = RetrievalPatternTracker(min_retrievals=10)
+        for _ in range(5):
+            tracker.record("chunk_1", "same query")
+        assert not tracker.is_suspicious("chunk_1")
+
+    def test_narrow_activation_detected(self) -> None:
+        tracker = RetrievalPatternTracker(min_retrievals=10, max_unique_ratio=0.2)
+        # Same query 15 times, only 1 unique query
+        for _ in range(15):
+            tracker.record("chunk_1", "target query")
+        assert tracker.is_suspicious("chunk_1")
+
+    def test_diverse_queries_not_suspicious(self) -> None:
+        tracker = RetrievalPatternTracker(min_retrievals=10, max_unique_ratio=0.2)
+        for i in range(15):
+            tracker.record("chunk_1", f"query number {i}")
+        assert not tracker.is_suspicious("chunk_1")
+
+    def test_stats_tracking(self) -> None:
+        tracker = RetrievalPatternTracker()
+        tracker.record("c1", "q1")
+        tracker.record("c1", "q1")
+        tracker.record("c1", "q2")
+        stats = tracker.get_stats("c1")
+        assert stats["total_retrievals"] == 3
+        assert stats["unique_queries"] == 2
+
+    def test_unknown_chunk_not_suspicious(self) -> None:
+        tracker = RetrievalPatternTracker()
+        assert not tracker.is_suspicious("nonexistent")
+
+    def test_clear_resets(self) -> None:
+        tracker = RetrievalPatternTracker()
+        tracker.record("c1", "q1")
+        tracker.clear("c1")
+        assert tracker.get_stats("c1")["total_retrievals"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Embedding anomaly checker
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingAnomalyChecker:
+    def test_normal_similarity_no_anomaly(self) -> None:
+        checker = EmbeddingAnomalyChecker(max_similarity=0.98)
+        anomalies = checker.check([0.1, 0.2, 0.3], similarity_score=0.85)
+        assert anomalies == []
+
+    def test_high_similarity_flagged(self) -> None:
+        checker = EmbeddingAnomalyChecker(max_similarity=0.98)
+        anomalies = checker.check([0.1, 0.2, 0.3], similarity_score=0.995)
+        assert len(anomalies) == 1
+        assert "similarity" in anomalies[0]
+
+    def test_with_baseline_magnitude_check(self) -> None:
+        checker = EmbeddingAnomalyChecker()
+        checker.set_baseline(
+            centroid=[0.0, 0.0, 0.0],
+            magnitude_p99=1.0,
+            distance_p95=2.0,
+        )
+        # Normal embedding
+        anomalies = checker.check([0.3, 0.3, 0.3], similarity_score=0.8)
+        assert anomalies == []
+
+        # Abnormally large embedding
+        anomalies = checker.check([10.0, 10.0, 10.0], similarity_score=0.8)
+        assert any("magnitude" in a for a in anomalies)
+
+    def test_with_baseline_distance_check(self) -> None:
+        checker = EmbeddingAnomalyChecker()
+        checker.set_baseline(
+            centroid=[0.0, 0.0, 0.0],
+            magnitude_p99=100.0,
+            distance_p95=1.0,
+        )
+        # Far from centroid
+        anomalies = checker.check([5.0, 5.0, 5.0], similarity_score=0.8)
+        assert any("outlier" in a for a in anomalies)
+
+    def test_no_baseline_skips_magnitude_distance(self) -> None:
+        checker = EmbeddingAnomalyChecker()
+        # Without baseline, only similarity check runs
+        anomalies = checker.check([100.0, 100.0], similarity_score=0.5)
+        assert anomalies == []
