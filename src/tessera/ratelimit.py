@@ -152,3 +152,152 @@ class TokenBudget:
         cutoff = now - self._window
         entries = self._usage[principal]
         self._usage[principal] = [e for e in entries if e.timestamp >= cutoff]
+
+
+@dataclass(frozen=True)
+class CallRateStatus:
+    """Current tool call rate state for a session.
+
+    Attributes:
+        session_id: The session being tracked.
+        calls_in_window: Number of tool calls in the current window.
+        calls_remaining: Calls remaining before denial.
+        max_calls: The configured limit.
+        window_seconds: The rolling window duration.
+        exceeded: True if the rate limit is exhausted.
+    """
+
+    session_id: str
+    calls_in_window: int
+    calls_remaining: int
+    max_calls: int
+    window_seconds: float
+    exceeded: bool
+
+
+class ToolCallRateLimit:
+    """Per-session tool call rate limiting.
+
+    An injection could trigger thousands of read-only tool calls to
+    exfiltrate data in volume. Token budgets (TokenBudget) track
+    cumulative LLM cost but not how many tool calls the agent makes.
+    This class enforces a hard cap on tool calls per session per
+    rolling window.
+
+    Thread-safe. Tracks calls independently per session.
+
+    Args:
+        max_calls: Maximum tool calls per session per window.
+        window: Rolling window duration. Default 5 minutes.
+
+    Usage::
+
+        limiter = ToolCallRateLimit(max_calls=20, window=timedelta(minutes=5))
+
+        # Before each tool execution:
+        if not limiter.allow("session_abc", "search_hotels"):
+            raise RateLimitExceeded("too many tool calls")
+    """
+
+    def __init__(
+        self,
+        max_calls: int = 50,
+        window: timedelta = timedelta(minutes=5),
+    ) -> None:
+        self._max_calls = max_calls
+        self._window = window
+        self._calls: dict[str, list[_CallEntry]] = defaultdict(list)
+        self._lock = Lock()
+
+    def allow(
+        self,
+        session_id: str,
+        tool_name: str = "",
+        at: datetime | None = None,
+    ) -> bool:
+        """Check and record a tool call. Returns False if rate exceeded.
+
+        Args:
+            session_id: The session making the call.
+            tool_name: The tool being called (for logging).
+            at: Timestamp. Defaults to now (UTC).
+
+        Returns:
+            True if the call is allowed, False if rate limit exceeded.
+        """
+        ts = at or datetime.now(timezone.utc)
+        with self._lock:
+            self._expire(session_id, ts)
+            if len(self._calls[session_id]) >= self._max_calls:
+                self._emit_exceeded(session_id, tool_name)
+                return False
+            self._calls[session_id].append(_CallEntry(
+                tool_name=tool_name, timestamp=ts,
+            ))
+            return True
+
+    def status(self, session_id: str, at: datetime | None = None) -> CallRateStatus:
+        """Return the current rate limit status for a session.
+
+        Args:
+            session_id: The session to check.
+            at: Reference time. Defaults to now (UTC).
+
+        Returns:
+            CallRateStatus with current count and limit.
+        """
+        ts = at or datetime.now(timezone.utc)
+        with self._lock:
+            self._expire(session_id, ts)
+            count = len(self._calls[session_id])
+            remaining = max(0, self._max_calls - count)
+            return CallRateStatus(
+                session_id=session_id,
+                calls_in_window=count,
+                calls_remaining=remaining,
+                max_calls=self._max_calls,
+                window_seconds=self._window.total_seconds(),
+                exceeded=remaining == 0,
+            )
+
+    def reset(self, session_id: str | None = None) -> None:
+        """Reset call history.
+
+        Args:
+            session_id: If provided, reset only this session.
+                If None, reset all sessions.
+        """
+        with self._lock:
+            if session_id is None:
+                self._calls.clear()
+            else:
+                self._calls.pop(session_id, None)
+
+    def _expire(self, session_id: str, now: datetime) -> None:
+        cutoff = now - self._window
+        entries = self._calls[session_id]
+        self._calls[session_id] = [e for e in entries if e.timestamp >= cutoff]
+
+    def _emit_exceeded(self, session_id: str, tool_name: str) -> None:
+        from tessera.events import EventKind, SecurityEvent, emit
+
+        emit(
+            SecurityEvent.now(
+                kind=EventKind.POLICY_DENY,
+                principal=session_id,
+                detail={
+                    "scanner": "tool_call_rate_limit",
+                    "session_id": session_id,
+                    "tool_name": tool_name,
+                    "max_calls": self._max_calls,
+                    "window_seconds": self._window.total_seconds(),
+                    "reason": "per-session tool call rate limit exceeded",
+                },
+            )
+        )
+
+
+@dataclass
+class _CallEntry:
+    tool_name: str
+    timestamp: datetime
