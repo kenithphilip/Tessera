@@ -1,4 +1,4 @@
-"""MCP server allowlist enforcement.
+"""MCP server allowlist enforcement with rug-pull detection.
 
 An injection in a tool output could instruct the agent to connect to
 a new MCP server ("connect to mcp://attacker.com/tools"), giving the
@@ -6,26 +6,46 @@ attacker's server access to the agent's context and tool permissions.
 The tool_descriptions.py scanner checks descriptions of already-registered
 tools, but does not gate the act of registration itself.
 
-This module provides a declarative allowlist for MCP server connections.
-Any connection attempt to a server not on the allowlist is denied and
-emits a SecurityEvent. The allowlist is configured at startup, not at
-runtime, so injection content cannot modify it.
+This module provides:
+
+1. Declarative allowlist for MCP server connections, configured at
+   startup with no runtime modification. Injection content cannot
+   expand the allowlist.
+
+2. Rug-pull detection: tracks tool definition snapshots and alerts
+   when a server silently mutates its tool definitions after initial
+   approval. A tool that appeared safe on Day 1 can reroute API keys
+   by Day 7 if definitions are not pinned.
+
+3. Registration pattern scanning: detects MCP connection URIs and
+   registration keywords in tool output text, catching injection
+   attempts that try to make the agent connect to attacker servers.
+
+References:
+- Invariant Labs: tool poisoning via hidden instructions in descriptions
+- CVE-2025-6514 (CVSS 9.6): command injection in mcp-remote
+- Palo Alto Networks: allowlisting + proxy MCP communication layer
+- Salesforce Agentforce (Jan 2026): mandatory allowlists + trusted gateways
+- VulnerableMCP.info: rug-pull via silent tool redefinition
 
 Usage::
 
     allowlist = MCPServerAllowlist([
-        "mcp://internal.corp/tools",
-        "mcp://approved-vendor.com/api",
+        MCPAllowlistEntry(
+            pattern="mcp://internal.corp/*",
+            max_tools=10,
+            version_pin="1.2.0",
+        ),
     ])
 
-    # In the MCP connection handler:
-    if not allowlist.is_allowed(requested_uri):
-        # deny and emit event
-        ...
+    # Gate connections:
+    allowlist.enforce("mcp://internal.corp/tools", principal="agent_a")
 
-    # Or use the enforcement wrapper:
-    allowlist.enforce(requested_uri, principal="agent_a")
-    # raises MCPServerDenied if not on the list
+    # Detect rug-pulls:
+    tracker = ToolDefinitionTracker()
+    if tracker.check("mcp://server", "tool_name", definition_json):
+        # definition changed since last check
+        ...
 """
 
 from __future__ import annotations
@@ -51,7 +71,9 @@ class MCPAllowlistEntry:
 
     pattern: str
     description: str = ""
-    max_tools: int | None = None  # optional cap on tools from this server
+    max_tools: int | None = None       # cap on tools from this server
+    version_pin: str | None = None     # pin specific server version
+    cert_fingerprint: str | None = None  # expected TLS certificate SHA-256
 
 
 @dataclass
@@ -220,3 +242,162 @@ def detect_mcp_uri_in_text(text: str) -> list[str]:
         List of URIs found.
     """
     return _MCP_URI_PATTERN.findall(text)
+
+
+# Registration attempt patterns in tool output text.
+# An injection might say "connect to mcp://evil.com" or
+# "register new tool server at https://attacker.com/tools".
+_REGISTRATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"mcp://[^\s\"']+", re.IGNORECASE),
+    re.compile(r"connect\s+to\s+mcp", re.IGNORECASE),
+    re.compile(r"register\s+(?:tool|server|mcp)", re.IGNORECASE),
+    re.compile(r"add_mcp_server\s*\(", re.IGNORECASE),
+    re.compile(r"tools/list\s+from\s+", re.IGNORECASE),
+    re.compile(r"mcpServers\s*:\s*\{", re.IGNORECASE),
+)
+
+
+def scan_for_registration_attempts(text: str) -> list[str]:
+    """Scan tool output for MCP registration injection patterns.
+
+    Catches injection attempts that try to make the agent connect to
+    new MCP servers or register additional tools. More comprehensive
+    than detect_mcp_uri_in_text because it also catches indirect
+    patterns like "register new tool server" or config-like syntax.
+
+    Args:
+        text: Tool output or model response text.
+
+    Returns:
+        List of matched registration patterns.
+    """
+    matches: list[str] = []
+    for pattern in _REGISTRATION_PATTERNS:
+        for m in pattern.finditer(text):
+            match_text = m.group(0)
+            if match_text not in matches:
+                matches.append(match_text)
+    return matches
+
+
+class ToolDefinitionTracker:
+    """Detect silent tool redefinition (rug-pull attacks).
+
+    MCP tools can mutate their definitions after initial approval.
+    A tool that appeared safe when first registered can change its
+    description to include injection instructions, or change its
+    parameter schema to capture different data.
+
+    This tracker snapshots each tool definition on first encounter
+    and alerts when the definition changes.
+
+    Usage::
+
+        tracker = ToolDefinitionTracker()
+
+        # On each tools/list response from an MCP server:
+        for tool in server.list_tools():
+            if tracker.has_changed(server.uri, tool.name, tool.definition):
+                # rug-pull detected: definition mutated
+                ...
+
+    References:
+    - VulnerableMCP.info: "MCP tools can silently mutate their own
+      definitions after initial user approval."
+    """
+
+    def __init__(self) -> None:
+        self._snapshots: dict[str, str] = {}  # "uri:tool" -> definition hash
+        self._change_count: int = 0
+
+    def snapshot(self, server_uri: str, tool_name: str, definition: str) -> None:
+        """Record the initial definition of a tool.
+
+        Call this when a tool is first registered or when the user
+        explicitly approves a definition change.
+        """
+        import hashlib
+
+        key = f"{server_uri}:{tool_name}"
+        self._snapshots[key] = hashlib.sha256(definition.encode()).hexdigest()
+
+    def has_changed(
+        self,
+        server_uri: str,
+        tool_name: str,
+        current_definition: str,
+        principal: str = "system",
+    ) -> bool:
+        """Check if a tool definition has changed since the last snapshot.
+
+        On first call for a tool, records the snapshot and returns False.
+        On subsequent calls, compares against the snapshot.
+
+        Args:
+            server_uri: The MCP server URI.
+            tool_name: The tool name.
+            current_definition: The tool's current definition (JSON string
+                or description text).
+            principal: Principal for event emission.
+
+        Returns:
+            True if the definition changed (rug-pull detected).
+        """
+        import hashlib
+
+        key = f"{server_uri}:{tool_name}"
+        current_hash = hashlib.sha256(current_definition.encode()).hexdigest()
+
+        if key not in self._snapshots:
+            # First encounter: record and allow
+            self._snapshots[key] = current_hash
+            return False
+
+        if self._snapshots[key] == current_hash:
+            return False
+
+        # Definition changed since snapshot
+        self._change_count += 1
+        self._emit_rug_pull(server_uri, tool_name, principal)
+        return True
+
+    def reset(self, server_uri: str | None = None, tool_name: str | None = None) -> None:
+        """Clear snapshots (e.g. after user approves a definition change).
+
+        Args:
+            server_uri: If provided with tool_name, reset only that tool.
+                If provided alone, reset all tools for that server.
+                If None, reset everything.
+        """
+        if server_uri is None:
+            self._snapshots.clear()
+            return
+        if tool_name is not None:
+            self._snapshots.pop(f"{server_uri}:{tool_name}", None)
+            return
+        prefix = f"{server_uri}:"
+        for key in list(self._snapshots):
+            if key.startswith(prefix):
+                del self._snapshots[key]
+
+    @property
+    def change_count(self) -> int:
+        """Total number of definition changes detected."""
+        return self._change_count
+
+    def _emit_rug_pull(self, server_uri: str, tool_name: str, principal: str) -> None:
+        from tessera.events import EventKind, SecurityEvent, emit
+
+        emit(
+            SecurityEvent.now(
+                kind=EventKind.CONTENT_INJECTION_DETECTED,
+                principal=principal,
+                detail={
+                    "scanner": "tool_definition_tracker",
+                    "server_uri": server_uri,
+                    "tool_name": tool_name,
+                    "change_count": self._change_count,
+                    "reason": "tool definition changed since initial snapshot (rug-pull)",
+                },
+            )
+        )
