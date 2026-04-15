@@ -112,14 +112,37 @@ class ChainedAuditLog:
         # entry_hash, and previous_hash before reaching stdout_sink.
     """
 
-    def __init__(self, inner_sink: Any = None) -> None:
+    def __init__(self, inner_sink: Any = None, enforce_monotonic: bool = True) -> None:
         self._inner = inner_sink
         self._previous_hash: str = "0" * 64
         self._entries: list[dict[str, Any]] = []
+        self._enforce_monotonic = enforce_monotonic
+        self._last_timestamp: str | None = None
+        self._sequence: int = 0
 
     def __call__(self, event: SecurityEvent) -> None:
         enriched = enrich_event(event)
         enriched["previous_hash"] = self._previous_hash
+
+        # Monotonic timestamp enforcement: events must arrive in
+        # non-decreasing timestamp order. An attacker who controls
+        # the clock could replay or reorder events to hide an attack
+        # in the audit log. This check detects that.
+        event_ts = enriched.get("timestamp", event.timestamp)
+        if self._enforce_monotonic and self._last_timestamp is not None:
+            if str(event_ts) < self._last_timestamp:
+                enriched["timestamp_violation"] = {
+                    "event_timestamp": str(event_ts),
+                    "last_timestamp": self._last_timestamp,
+                    "violation": "non-monotonic: event arrived before previous",
+                }
+        self._last_timestamp = str(event_ts)
+
+        # Sequence number: provides ordering even when timestamps
+        # have identical precision. Monotonically increasing, never
+        # reset, not affected by clock manipulation.
+        self._sequence += 1
+        enriched["sequence"] = self._sequence
 
         canonical = json.dumps(enriched, sort_keys=True, separators=(",", ":"))
         entry_hash = hashlib.sha256(canonical.encode()).hexdigest()
@@ -154,4 +177,32 @@ class ChainedAuditLog:
             if computed != stored_hash:
                 return False
             expected_prev = stored_hash
+        return True
+
+    def verify_timestamps(self) -> tuple[bool, list[int]]:
+        """Verify that all entries have monotonically non-decreasing timestamps.
+
+        Returns:
+            Tuple of (all_valid, violation_indices). all_valid is True if
+            no timestamp violations were found. violation_indices lists
+            the sequence numbers of entries that arrived out of order.
+        """
+        violations: list[int] = []
+        for entry in self._entries:
+            if "timestamp_violation" in entry:
+                violations.append(entry.get("sequence", 0))
+        return len(violations) == 0, violations
+
+    def verify_sequences(self) -> bool:
+        """Verify that sequence numbers are contiguous and start at 1.
+
+        Detects deleted or inserted entries. Complements the hash chain
+        (which detects modification) by also detecting omission.
+
+        Returns:
+            True if sequences are 1, 2, 3, ... N with no gaps.
+        """
+        for i, entry in enumerate(self._entries):
+            if entry.get("sequence") != i + 1:
+                return False
         return True
