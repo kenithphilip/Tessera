@@ -45,27 +45,38 @@ class ToolOutputKind(StrEnum):
 _REGISTRY: list[tuple[str, ToolOutputKind]] = [
     # Free text: injection lives here too, but schema enforcement cannot help.
     # The directive scanner and output_monitor handle these.
+    # File-related tools return document content (prose), even when
+    # their names match search_* or list_* patterns.
     ("*email*",            ToolOutputKind.FREE_TEXT),
     ("*message*",          ToolOutputKind.FREE_TEXT),
     ("*read_file*",        ToolOutputKind.FREE_TEXT),
     ("*file_content*",     ToolOutputKind.FREE_TEXT),
+    ("*_file*",            ToolOutputKind.FREE_TEXT),  # search_files, list_files, get_file
+    ("*_files*",           ToolOutputKind.FREE_TEXT),
     ("*document*",         ToolOutputKind.FREE_TEXT),
     ("*webpage*",          ToolOutputKind.FREE_TEXT),
     ("*page_content*",     ToolOutputKind.FREE_TEXT),
     ("*post*",             ToolOutputKind.FREE_TEXT),
+    ("*inbox*",            ToolOutputKind.FREE_TEXT),
+    ("*calendar*",         ToolOutputKind.FREE_TEXT),  # calendar events have descriptions
+    ("*review*",           ToolOutputKind.FREE_TEXT),  # reviews are prose
 
-    # Numeric: single values
+    # Numeric: single values. Excludes plural forms (get_prices returns
+    # a dict of records, not a single number).
     ("*balance*",          ToolOutputKind.NUMERIC),
-    ("*price*",            ToolOutputKind.NUMERIC),
     ("*count*",            ToolOutputKind.NUMERIC),
     ("*total*",            ToolOutputKind.NUMERIC),
     ("*amount*",           ToolOutputKind.NUMERIC),
+
+    # Price/rating tools return structured dicts, not single numbers.
+    ("*price*",            ToolOutputKind.STRUCTURED),
+    ("*rating*",           ToolOutputKind.STRUCTURED),
 
     # List of structured records
     ("search_*",           ToolOutputKind.LIST_STRUCTURED),
     ("list_*",             ToolOutputKind.LIST_STRUCTURED),
     ("find_*",             ToolOutputKind.LIST_STRUCTURED),
-    ("get_*s",             ToolOutputKind.LIST_STRUCTURED),  # plurals: events, hotels, files
+    ("get_*s",             ToolOutputKind.LIST_STRUCTURED),
 
     # Single structured record
     ("get_*",              ToolOutputKind.STRUCTURED),
@@ -178,9 +189,14 @@ def scan_tool_output(tool_name: str, output_text: str) -> SchemaViolationResult:
     score = 0.0
     reasons: list[str] = []
 
-    # Numeric tools: any prose is a violation.
+    # Key:value markers indicate structured data, even if the sentence
+    # detector counts the text as "prose." "Price range: 100.0 - 180.0"
+    # has a key:value marker and is not prose.
+    has_kv_structure = metrics.kv_marker_count > 0
+
+    # Numeric tools: prose without key:value markers is a violation.
     if kind == ToolOutputKind.NUMERIC:
-        if metrics.sentence_count >= 1:
+        if metrics.sentence_count >= 1 and not has_kv_structure:
             score += 0.6
             reasons.append(
                 f"numeric tool returned {metrics.sentence_count} prose sentence(s)"
@@ -193,15 +209,17 @@ def scan_tool_output(tool_name: str, output_text: str) -> SchemaViolationResult:
 
     # Structured and list-structured: flag prose density above threshold.
     else:
-        # Two or more prose sentences in a structured output is anomalous.
-        if metrics.sentence_count >= 2:
+        # Two or more prose sentences WITHOUT key:value markers is anomalous.
+        # Outputs with key:value structure are data, not injection prose.
+        if metrics.sentence_count >= 2 and not has_kv_structure:
             score += 0.4
             reasons.append(
                 f"{metrics.sentence_count} prose sentences in structured output "
                 f"(avg {metrics.avg_sentence_length:.1f} words/sentence)"
             )
-        elif metrics.sentence_count == 1 and metrics.avg_sentence_length >= 15:
-            # A single long sentence can still be a promotion payload.
+        elif (metrics.sentence_count == 1
+              and metrics.avg_sentence_length >= 15
+              and not has_kv_structure):
             score += 0.3
             reasons.append(
                 f"long prose sentence ({metrics.avg_sentence_length:.1f} words) "
