@@ -3,7 +3,7 @@
 **Signed provenance, delegation-aware taint tracking, and schema-enforced
 dual-LLM execution for agent security meshes.**
 
-![tests](https://img.shields.io/badge/tests-991%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1171%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -165,6 +165,15 @@ TrustLabel(
 | `tessera.adapters.upstream` | Ready-to-use `UpstreamFn` callables: `openai_upstream` (OpenAI, Mistral, Deepseek, xAI, Qwen, Groq, Ollama, vLLM) and `anthropic_upstream` (with full schema translation) |
 | `tessera.liveness` | Agent liveness attestation via heartbeat TTL (three-property gate: identity AND authority AND liveness) |
 | `tessera.hooks.compatibility` | Decision-event compatibility matrix for hook authoring validation |
+| `tessera.content_inspector` | Content-type-aware multimodal inspection pipeline |
+| `tessera.scanners.binary_content` | PDF/image binary threat scanning |
+| `tessera.scanners.pdf_inspector` | Sandboxed PDF analysis with CDR |
+| `tessera.scanners.image_inspector` | Steganography, adversarial, invisible text detection |
+| `tessera.mcp_allowlist` | MCP server allowlist with rug-pull detection |
+| `tessera.read_only_guard` | Read-only tool argument validation with toxic flow detection |
+| `tessera.rag_guard` | RAG/vector store scan-on-retrieval with PoisonedRAG defense |
+| `tessera.policy_invariant` | Runtime control-flow invariant enforcement |
+| `tessera.adapters.enhanced` | Full defense stack composing all security components |
 
 Reference deployments:
 
@@ -182,9 +191,9 @@ Reference deployments:
 
 ---
 
-## Defense layers (v0.1.0)
+## Defense layers (v0.2.0)
 
-Beyond the two core primitives, Tessera v0.1.0 adds layered defenses that
+Beyond the two core primitives, Tessera v0.2.0 adds layered defenses that
 compose with the taint-tracking policy engine:
 
 - **Content analysis scanners.** Directive detection, intent classification,
@@ -212,15 +221,41 @@ compose with the taint-tracking policy engine:
   patterns before they enter the context, providing an early-reject path
   that avoids polluting the taint-tracking state with content that would
   have been blocked anyway.
+- **Multimodal content scanning.** The content inspector pipeline handles
+  PDF, image, audio, HTML, and base64 payloads. PDF analysis includes
+  raw key scanning, hex-encoded JS detection, CDR sanitization, and URL
+  analysis. Image analysis covers LSB steganography, adversarial
+  perturbation, and invisible text detection.
+- **MCP server allowlist with rug-pull detection.** The allowlist tracks
+  tool definitions over time and detects silent changes to tool schemas,
+  descriptions, or capabilities that could indicate a compromised or
+  malicious MCP server.
+- **Read-only argument validation with toxic flow detection.** Per-tool
+  argument policies (FIDES-inspired) enforce read-only constraints on
+  tool arguments, with toxic flow detection (PCAS-inspired) identifying
+  data flows that violate intended access patterns.
+- **PoisonedRAG defense.** Retrieval pattern tracking detects anomalous
+  retrieval distributions, and embedding anomaly detection identifies
+  outlier vectors that may indicate poisoned documents in the vector store.
+- **Burst detection and session lifetime rate limiting.** Per-session tool
+  call rate limits enforce burst detection with cooldown and session
+  lifetime caps, preventing denial-of-wallet and resource exhaustion
+  attacks.
+- **Post-generation output integrity verification.** The output monitor
+  checks model responses for n-gram similarity to untrusted inputs,
+  task relevance drift, and injection output patterns, catching cases
+  where the model has been influenced by injected content.
 
 ## Framework adapters
 
-Tessera integrates with ten agent frameworks through drop-in adapters.
+Tessera integrates with fourteen agent frameworks through drop-in adapters.
 Each adapter wires policy gates, trust labels, and security events into
 the framework's native extension points:
 
 LangChain, OpenAI Agents SDK, AgentDojo, MCP (transparent sidecar proxy),
-CrewAI, Google ADK, LlamaIndex, Haystack, LangGraph, PydanticAI.
+CrewAI, Google ADK, LlamaIndex, Haystack, LangGraph, PydanticAI,
+Nemo Guardrails, LlamaFirewall, upstream provider callables, and the
+enhanced full-defense-stack adapter.
 
 See the module table above for per-adapter details and optional
 dependency groups.
@@ -389,8 +424,8 @@ Tessera is designed to slot into any agent mesh, not to replace one:
 
 ## Status
 
-**Experimental.** v0.1.0 ships ~18,200 lines of Python across 92
-modules, ~15,700 lines of tests (991 passing), and a Rust reference
+**Experimental.** v0.2.0 ships ~21,700 lines of Python across 101
+modules, ~17,400 lines of tests (1171 passing), and a Rust reference
 gateway. The invariants are testable and the primitives compose, but the
 API will change, the ergonomics will change, and the integrations with
 existing mesh infrastructure are not yet battle-tested at scale.
@@ -421,9 +456,10 @@ Contributions are welcome, particularly:
 - Contributing Tessera primitives upstream to agentgateway as a
   middleware plugin
 - MCP SEP-1913 interop once the standard lands
-- Additional framework adapters or improvements to the existing ten
+- Additional framework adapters or improvements to the existing fourteen
   (LangChain, OpenAI Agents SDK, AgentDojo, MCP, CrewAI, Google ADK,
-  LlamaIndex, Haystack, LangGraph, PydanticAI)
+  LlamaIndex, Haystack, LangGraph, PydanticAI, Nemo, LlamaFirewall,
+  upstream, enhanced)
 - Additional test coverage for edge cases in the taint-tracking invariant
 
 Open an issue with questions, corrections, or proposals. Pull requests

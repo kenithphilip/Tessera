@@ -91,10 +91,10 @@ tested, and composable. AgentMesh is a proposed architecture with a roadmap.
 
 ## Project state
 
-- **Version:** v0.0.1, published April 2026
-- **Python source:** ~20,200 lines across 57 modules in `src/tessera/`
+- **Version:** v0.2.0, published April 2026
+- **Python source:** ~21,700 lines across 101 modules in `src/tessera/`
 - **Rust gateway:** ~8,200 lines in `rust/tessera-gateway/` (reference data plane)
-- **Python tests:** ~10,000 lines, 513 passing, runtime ~8 seconds
+- **Python tests:** ~17,400 lines, 1171 passing, runtime ~8 seconds
 - **Rust tests:** 45 tokio::test functions in `lib.rs`
 - **Python:** 3.12+ only
 - **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, httpx,
@@ -192,7 +192,7 @@ A is the primary way external readers verify our claims.
 ## Where things live
 
 ```
-src/tessera/           Python primitives library (57 modules including hooks/, xds/, scanners/, risk/, adapters/)
+src/tessera/           Python primitives library (101 modules including hooks/, xds/, scanners/, risk/, adapters/)
 rust/tessera-gateway/  Rust reference data plane
 tests/                 pytest suite (216 tests)
 benchmarks/            microbenchmark suite (python -m benchmarks)
