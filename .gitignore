@@ -17,3 +17,4 @@ htmlcov/
 .vscode/
 .claude/
 rust/tessera-gateway/target/
+benchmarks/agentdojo_live/*.json

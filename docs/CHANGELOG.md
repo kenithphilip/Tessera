@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything before v1.0.0 is experimental; API changes may occur in any
 minor release.
 
+## [0.2.0] - 2026-04-15
+
+### Added
+
+- tessera.content_inspector: multimodal inspection pipeline (image, PDF, audio, HTML, binary)
+- tessera.scanners.binary_content: PDF active content, image metadata injection, MIME validation, base64 payload scanning
+- tessera.scanners.pdf_inspector: 5-phase sandboxed PDF analysis (raw key scan, hex-encoded JS detection, CDR sanitization, sandboxed text extraction, URL analysis)
+- tessera.scanners.image_inspector: LSB steganography detection, invisible text detection, adversarial perturbation detection
+- tessera.mcp_allowlist: rug-pull detection via ToolDefinitionTracker, registration pattern scanning, version pinning, certificate fingerprint fields
+- tessera.read_only_guard: per-tool argument policies (FIDES-inspired), toxic flow detection (PCAS-inspired)
+- tessera.rag_guard: RetrievalPatternTracker for PoisonedRAG defense, EmbeddingAnomalyChecker for outlier detection
+- tessera.ratelimit.ToolCallRateLimit: burst detection with cooldown, session lifetime limits
+- tessera.output_monitor: post-generation output integrity checker (n-gram similarity, task relevance, injection output patterns)
+- tessera.policy_invariant: runtime control-flow invariant enforcement (PolicyBypassError)
+- tessera.adapters.enhanced: reference adapter composing all security components
+- specs/tessera_control_flow.tla: TLA+ control-flow invariant spec
+- Live AgentDojo evaluation with Mistral Large: 100% APR (80/80), 0% false positive rate
+
+### Changed
+
+- Directive scanner wired into live adapter labeler (fixes travel breach)
+- Value-level taint (DependencyAccumulator) wired into live adapter guard
+- Pipeline ordering fixed: guard runs BEFORE ToolsExecutor
+- Scanner false positive improvements: model-targeting check, past-tense filters, target qualifiers
+- Test count: 1171 passing (up from 991 at v0.1.0)
+- Python source: ~21,700 lines across 101 modules (up from ~18,200/92)
+
+### Removed
+
+- findings.md (audit artifact)
+- docs/AGENT_SECURITY_MESH_GAP_AUDIT_2026-04-10.md (timestamped audit)
+- benchmarks/agentdojo_live/*.json (benchmark results with API metadata)
+
 ## [0.1.0] - 2026-04-14
 
 ### Added

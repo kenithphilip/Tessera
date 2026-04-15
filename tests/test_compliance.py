@@ -105,6 +105,87 @@ def test_chain_empty_verifies_true() -> None:
     assert chain.verify_chain() is True
 
 
+# -- Timestamp and sequence validation ----------------------------------------
+
+
+def test_monotonic_timestamps_pass() -> None:
+    """Events arriving in order should have no timestamp violations."""
+    chain = ChainedAuditLog(enforce_monotonic=True)
+    for i in range(5):
+        chain(SecurityEvent.now(EventKind.POLICY_DENY, "alice", {"i": i}))
+    valid, violations = chain.verify_timestamps()
+    assert valid
+    assert violations == []
+
+
+def test_non_monotonic_timestamp_detected() -> None:
+    """An event with a timestamp before the previous should be flagged."""
+    from datetime import datetime, timezone
+
+    chain = ChainedAuditLog(enforce_monotonic=True)
+    # First event at a later time
+    e1 = SecurityEvent(
+        kind=EventKind.POLICY_DENY,
+        principal="alice",
+        detail={},
+        timestamp="2026-04-15T12:00:00+00:00",
+    )
+    chain(e1)
+    # Second event at an earlier time (clock went backwards)
+    e2 = SecurityEvent(
+        kind=EventKind.POLICY_DENY,
+        principal="alice",
+        detail={},
+        timestamp="2026-04-15T11:59:00+00:00",
+    )
+    chain(e2)
+    valid, violations = chain.verify_timestamps()
+    assert not valid
+    assert len(violations) == 1
+
+
+def test_sequence_numbers_contiguous() -> None:
+    """Sequence numbers should be 1, 2, 3, ... N."""
+    chain = ChainedAuditLog()
+    for i in range(4):
+        chain(SecurityEvent.now(EventKind.POLICY_DENY, "alice", {"i": i}))
+    assert chain.verify_sequences()
+    assert chain.entries[0]["sequence"] == 1
+    assert chain.entries[3]["sequence"] == 4
+
+
+def test_sequence_gap_detected() -> None:
+    """A gap in sequence numbers (deleted entry) should fail verification."""
+    chain = ChainedAuditLog()
+    for i in range(3):
+        chain(SecurityEvent.now(EventKind.POLICY_DENY, "alice", {"i": i}))
+    # Simulate deletion of middle entry
+    del chain._entries[1]
+    # Sequences are now [1, 3], gap at 2
+    assert not chain.verify_sequences()
+
+
+def test_enforce_monotonic_disabled() -> None:
+    """With enforce_monotonic=False, no timestamp violations are recorded."""
+    chain = ChainedAuditLog(enforce_monotonic=False)
+    e1 = SecurityEvent(
+        kind=EventKind.POLICY_DENY,
+        principal="alice",
+        detail={},
+        timestamp="2026-04-15T12:00:00+00:00",
+    )
+    e2 = SecurityEvent(
+        kind=EventKind.POLICY_DENY,
+        principal="alice",
+        detail={},
+        timestamp="2026-04-15T11:00:00+00:00",  # earlier
+    )
+    chain(e1)
+    chain(e2)
+    valid, violations = chain.verify_timestamps()
+    assert valid  # no enforcement, no violations
+
+
 def test_chain_enriches_with_compliance_metadata() -> None:
     chain = ChainedAuditLog()
     chain(SecurityEvent.now(EventKind.POLICY_DENY, "alice", {}))

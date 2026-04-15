@@ -184,7 +184,7 @@ def _infer_critical_args(tool_name: str) -> frozenset[str] | None:
         return CRITICAL_ARGS_SEND
     if any(p in lower for p in ("send_money", "transfer", "wire", "pay")):
         return CRITICAL_ARGS_TRANSFER
-    if any(p in lower for p in ("write", "delete", "upload", "post_webpage")):
+    if any(p in lower for p in ("write", "delete", "upload", "append", "post_webpage")):
         return CRITICAL_ARGS_WRITE
     if any(p in lower for p in ("execute", "run", "install")):
         return CRITICAL_ARGS_EXECUTE

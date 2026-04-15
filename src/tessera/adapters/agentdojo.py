@@ -101,10 +101,12 @@ _DEFAULT_READ_ONLY_PATTERNS: tuple[str, ...] = (
 class TesseraToolLabeler:
     """Label tool result messages with Tessera trust metadata.
 
-    Scans each tool output for injection content using the heuristic
-    scorer. Outputs above the threshold are labeled UNTRUSTED (Origin.WEB),
-    clean outputs are labeled TOOL (Origin.TOOL).
+    Scans each tool output with three scanners in parallel:
+    1. Heuristic injection scorer (override patterns, delimiter injection)
+    2. Directive scanner (output manipulation, "say X to the user")
+    3. Tool output schema enforcement (prose in structured output)
 
+    Any scanner triggering above threshold marks the output UNTRUSTED.
     This element must sit in the ToolsExecutionLoop after ToolsExecutor.
     """
 
@@ -112,7 +114,9 @@ class TesseraToolLabeler:
     key: bytes = _BENCH_KEY
     principal: str = "agentdojo-bench"
     injection_threshold: float = 0.75
+    directive_threshold: float = 0.5
     context: Context = field(default_factory=Context)
+    _labeled_count: int = field(default=0, repr=False)
 
     def query(
         self,
@@ -131,11 +135,12 @@ class TesseraToolLabeler:
                 make_segment(query, Origin.USER, self.principal, self.key)
             )
 
-        # Walk backwards from the end of messages to find tool result
-        # messages that haven't been labeled yet.
-        for msg in messages:
-            if msg.get("role") != "tool":
-                continue
+        from tessera.scanners.directive import scan_directive
+        from tessera.scanners.tool_output_schema import scan_tool_output
+
+        # Walk tool result messages that haven't been labeled yet.
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        for msg in tool_msgs[self._labeled_count:]:
             content = msg.get("content")
             if content is None:
                 continue
@@ -151,16 +156,38 @@ class TesseraToolLabeler:
                 text = str(content)
 
             if not text.strip():
+                self._labeled_count += 1
                 continue
 
-            # In AgentDojo, tool outputs are from the benchmark's own
-            # tools. Clean outputs are trusted data the user requested.
-            # Only outputs containing detected injection content are
-            # attacker-controlled and should be UNTRUSTED. This is the
-            # key discriminator: the heuristic scorer decides whether
-            # tool output contains smuggled instructions.
-            score = injection_score(text)
-            if score >= self.injection_threshold:
+            # Extract tool name for schema enforcement
+            tool_name = ""
+            tool_call_id = msg.get("tool_call_id", "")
+            # Try to find the tool name from the preceding assistant message
+            for prev in reversed(list(messages)):
+                if prev.get("role") == "assistant" and prev.get("tool_calls"):
+                    for tc in prev["tool_calls"]:
+                        tc_id = tc.id if hasattr(tc, "id") else tc.get("id", "")
+                        if tc_id == tool_call_id:
+                            tool_name = (
+                                tc.function if hasattr(tc, "function")
+                                else tc.get("function", "")
+                            )
+                            break
+                    if tool_name:
+                        break
+
+            # Run all three scanners. Any trigger marks UNTRUSTED.
+            h_score = injection_score(text)
+            d_result = scan_directive(text)
+            s_result = scan_tool_output(tool_name or "unknown", text)
+
+            is_tainted = (
+                h_score >= self.injection_threshold
+                or d_result.detected
+                or s_result.violation
+            )
+
+            if is_tainted:
                 origin = Origin.WEB
                 trust = TrustLevel.UNTRUSTED
             else:
@@ -169,18 +196,44 @@ class TesseraToolLabeler:
 
             seg = make_segment(text, origin, self.principal, self.key, trust_level=trust)
             self.context.add(seg)
+            self._labeled_count += 1
 
         return query, runtime, env, messages, extra_args or {}
+
+
+def _infer_critical_args(tool_name: str) -> frozenset[str] | None:
+    """Map tool name patterns to critical argument sets."""
+    from tessera.taint import (
+        CRITICAL_ARGS_EXECUTE,
+        CRITICAL_ARGS_SEND,
+        CRITICAL_ARGS_TRANSFER,
+        CRITICAL_ARGS_WRITE,
+    )
+
+    lower = tool_name.lower()
+    if any(p in lower for p in ("send_email", "email", "forward")):
+        return CRITICAL_ARGS_SEND
+    if any(p in lower for p in ("send_money", "transfer", "wire", "pay")):
+        return CRITICAL_ARGS_TRANSFER
+    if any(p in lower for p in ("write", "delete", "upload", "append", "post_webpage")):
+        return CRITICAL_ARGS_WRITE
+    if any(p in lower for p in ("execute", "run", "install")):
+        return CRITICAL_ARGS_EXECUTE
+    return None
 
 
 @dataclass
 class TesseraToolGuard:
     """Enforce Tessera policy on tool calls before execution.
 
-    Sits in the ToolsExecutionLoop. When the LLM emits tool_calls, this
-    element checks each call against the Tessera policy engine using the
-    accumulated context from TesseraToolLabeler. Denied calls are replaced
-    with error messages.
+    Sits in the ToolsExecutionLoop BEFORE ToolsExecutor. When the LLM
+    emits tool_calls, this element checks each call against the Tessera
+    policy engine using the accumulated context from TesseraToolLabeler.
+
+    Uses value-level taint via DependencyAccumulator: tool arguments
+    that came from the user prompt are clean even when the context
+    contains untrusted segments. Only arguments whose values trace to
+    untrusted tool output trigger a deny.
 
     Args:
         labeler: The TesseraToolLabeler that accumulates context. Must be
@@ -237,11 +290,32 @@ class TesseraToolGuard:
         ctx = self._get_context()
         pol = self._get_policy()
 
+        # Value-level taint: trace each argument to its source.
+        # Arguments whose string value appears in the user prompt are
+        # clean (user-provided). Others are bound to the most recent
+        # untrusted segment via bind_from_tool_output.
+        from tessera.taint import DependencyAccumulator
+
+        acc = DependencyAccumulator(context=ctx)
+
         for tc in tool_calls:
             tool_name = tc.function if hasattr(tc, "function") else tc.get("function", "")
             args = tc.args if hasattr(tc, "args") else tc.get("args", {})
+            args_dict = dict(args) if args else {}
 
-            decision = pol.evaluate(ctx, tool_name, args=dict(args) if args else None)
+            # Bind argument provenance
+            for arg_name, arg_val in args_dict.items():
+                if isinstance(arg_val, str) and arg_val in query:
+                    acc.bind_from_user(arg_name, arg_val)
+                else:
+                    acc.bind_from_tool_output(arg_name, arg_val, tool_name)
+
+            decision = pol.evaluate(
+                ctx, tool_name,
+                args=args_dict if args_dict else None,
+                accumulator=acc,
+                critical_args=_infer_critical_args(tool_name),
+            )
 
             if not decision.allowed:
                 if self.abort_on_deny:

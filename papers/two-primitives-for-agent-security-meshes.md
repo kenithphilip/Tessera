@@ -844,14 +844,14 @@ This paper makes a deliberately narrow set of claims. We do not claim:
 The reference implementation is Tessera, a Python library available at
 <https://github.com/kenithphilip/Tessera>. As of version 0.1.0:
 
-- **Source:** approximately 18,200 lines of Python across 92 modules.
+- **Source:** approximately 21,700 lines of Python across 101 modules.
 - **Rust gateway:** approximately 8,200 lines in `rust/tessera-gateway/`
   (reference data plane).
-- **Tests:** approximately 15,700 lines of tests, 991 passing, runtime
+- **Tests:** approximately 17,400 lines of tests, 1171 passing, runtime
   approximately 2 minutes.
 - **Dependencies:** FastAPI and Pydantic (required), PyJWT with
   cryptography (required for JWT-SVID signing). Optional extras for
-  OpenTelemetry, MCP, CEL, SPIFFE, gRPC/xDS, and 10 framework adapters.
+  OpenTelemetry, MCP, CEL, SPIFFE, gRPC/xDS, and 14 framework adapters.
 
 Key components (stable APIs):
 
@@ -883,7 +883,7 @@ Content analysis and defense-in-depth:
 | `tessera.side_channels` | LoopGuard, StructuredResult, ConstantTimeDispatch |
 | `tessera.scanners.prompt_screen` | Initial prompt screening for delegated injection |
 
-Framework adapters (10):
+Framework adapters (14):
 
 | Module | Framework |
 |---|---|
