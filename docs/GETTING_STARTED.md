@@ -305,6 +305,41 @@ Reason: context contains a segment at trust_level=0, below required trust_level=
 
 ---
 
+## LLM guardrail (optional)
+
+For high-sensitivity deployments where deterministic scanners are not
+enough, add an LLM guardrail. It fires only on ambiguous tool outputs
+(files, emails, messages) where heuristics cannot decide:
+
+```python
+import anthropic
+from tessera.guardrail import LLMGuardrail, GuardrailCache
+
+guardrail = LLMGuardrail(
+    client=anthropic.Anthropic(),
+    model="claude-haiku-4-5-20251001",
+    confidence_threshold=0.7,
+    cache=GuardrailCache(),  # avoids duplicate LLM calls
+)
+
+# Pass to any adapter
+handler = TesseraCallbackHandler(
+    policy=policy,
+    signing_key=b"your-key",
+    guardrail=guardrail,  # optional, None by default
+)
+```
+
+The guardrail returns a structured decision (bool + float + category),
+never free-form text. This prevents injection through the guardrail's
+own output. It fails open on API errors (guardrail failures must not
+block legitimate tasks).
+
+Cost: one cheap model call per ambiguous tool output, not per every
+output. Deterministic scanners short-circuit on high-confidence matches.
+
+---
+
 ## Next steps
 
 - Read the [paper](../papers/two-primitives-for-agent-security-meshes.md)

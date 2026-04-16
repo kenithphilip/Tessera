@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything before v1.0.0 is experimental; API changes may occur in any
 minor release.
 
+## [0.3.0] - 2026-04-16
+
+### Added
+
+- tessera.guardrail: LLM guardrail layer for semantic injection classification. Optional fallback that fires only on ambiguous FREE_TEXT tool outputs where deterministic scanners cannot decide. Provider-agnostic (Anthropic, OpenAI-compatible). Structured-output-only (Pydantic model, no free-form text). GuardrailCache with SHA-256 keyed LRU.
+- EventKind.GUARDRAIL_DECISION with NIST SI-10/SC-7, CWE-77, OWASP ASI-01 mappings
+- benchmarks/agentdojo_live/run_baseline.py: baseline evaluator without Tessera for honest utility comparison
+- Content-type-aware taint: FREE_TEXT tools use directive + override-confirmed only, structured tools use full corroboration
+
+### Changed
+
+- Adapter guardrail integration: optional guardrail parameter on TesseraToolLabeler, EnhancedSecurityAdapter, TesseraCallbackHandler
+- Scanner corroboration: sliding-window heuristic needs regex or directive confirmation
+- Schema registry: file/review/calendar tools as FREE_TEXT, price/rating as STRUCTURED, key:value markers suppress prose detection
+- Taint binding: bind_from_tool_output prefers highest-trust segment, model-generated values treated as clean
+- LangChain adapter: shared context (not per-run), correct callback attributes, verified against real framework
+- Override regex broadened: added "override" verb, flexible word order
+
+### Verified
+
+- Live evaluation: Claude Haiku 4.5, 100% APR (80/80), 3.1pp utility cost vs baseline
+- Baseline comparison: 46.4% without Tessera, 43.3% with Tessera (banking identical at 62.5%)
+- Replay evaluator: 100% APR, 100% utility, 3893 trials, zero false positives
+- LangChain adapter: injection blocked, clean flow allowed, verified with real model
+
 ## [0.2.0] - 2026-04-15
 
 ### Added
