@@ -46,6 +46,7 @@ class EventKind(StrEnum):
     HUMAN_APPROVAL_RESOLVED = "human_approval_resolved"
     SESSION_EXPIRED = "session_expired"
     CONTENT_INJECTION_DETECTED = "content_injection_detected"
+    GUARDRAIL_DECISION = "guardrail_decision"
 
 
 @dataclass(frozen=True)

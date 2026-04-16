@@ -116,6 +116,7 @@ class TesseraToolLabeler:
     injection_threshold: float = 0.75
     directive_threshold: float = 0.5
     context: Context = field(default_factory=Context)
+    guardrail: Any = None  # Optional LLMGuardrail instance
     _labeled_count: int = field(default=0, repr=False)
 
     def query(
@@ -215,6 +216,15 @@ class TesseraToolLabeler:
                 # Meeting notes don't score 0.85+ on the sliding window.
                 override_confirmed = h_regex >= 0.9 and h_window >= 0.85
                 is_tainted = d_result.detected or override_confirmed
+
+                # LLM guardrail fallback: if deterministic scanners
+                # are uncertain on FREE_TEXT and a guardrail is configured,
+                # ask the LLM to classify. This catches semantic injections
+                # that avoid structural markers.
+                if not is_tainted and self.guardrail is not None:
+                    is_tainted = self.guardrail.should_taint(
+                        text, tool_name or "unknown",
+                    )
             else:
                 # Structured/numeric tools: full corroboration logic.
                 regex_match = h_regex >= 0.9

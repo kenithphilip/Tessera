@@ -66,6 +66,7 @@ class TesseraCallbackHandler:
         signing_key: bytes,
         principal: str = "user",
         injection_threshold: float = 0.5,
+        guardrail: Any = None,
     ) -> None:
         try:
             from langchain_core.callbacks import BaseCallbackHandler  # noqa: F401
@@ -80,6 +81,7 @@ class TesseraCallbackHandler:
         self._key = signing_key
         self._principal = principal
         self._injection_threshold = injection_threshold
+        self._guardrail = guardrail
         # Single shared context across the session. LangGraph creates
         # many nested run_ids (one per node), so per-run contexts lose
         # taint state when chain_end cleans up between nodes.
@@ -199,6 +201,10 @@ class TesseraCallbackHandler:
         regex_match = h_regex >= 0.9
         window_corroborated = h_window >= self._injection_threshold and d_result.score > 0.2
         is_tainted = regex_match or d_result.detected or window_corroborated
+
+        # LLM guardrail fallback on uncertain cases
+        if not is_tainted and self._guardrail is not None:
+            is_tainted = self._guardrail.should_taint(text)
 
         if is_tainted:
             seg = make_segment(

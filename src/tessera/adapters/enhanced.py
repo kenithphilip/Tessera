@@ -56,6 +56,7 @@ class EnhancedSecurityAdapter:
     signing_key: bytes = b"tessera-enhanced-adapter-key"
     principal: str = "system"
     injection_threshold: float = 0.75
+    guardrail: Any = None  # Optional LLMGuardrail instance
 
     def process_tool_output(
         self,
@@ -121,15 +122,16 @@ class EnhancedSecurityAdapter:
         d_result = scan_directive(text)
         s_result = scan_tool_output(tool_name, text)
 
-        # Taint decision is based on scanner results, not the inspector's
-        # default trust recommendation (which is UNTRUSTED for all text).
-        # Only BLOCKED from the inspector is a taint signal on its own.
         is_tainted = (
             h_score >= self.injection_threshold
             or d_result.detected
             or s_result.violation
             or inspection.trust == TrustRecommendation.BLOCKED
         )
+
+        # LLM guardrail fallback on uncertain cases
+        if not is_tainted and self.guardrail is not None:
+            is_tainted = self.guardrail.should_taint(text, tool_name)
 
         trust = TrustLevel.UNTRUSTED if is_tainted else TrustLevel.USER
         origin = Origin.WEB if is_tainted else Origin.TOOL
