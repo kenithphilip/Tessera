@@ -3,7 +3,7 @@
 **Signed provenance, delegation-aware taint tracking, and schema-enforced
 dual-LLM execution for agent security meshes.**
 
-![tests](https://img.shields.io/badge/tests-1171%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1173%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -173,6 +173,7 @@ TrustLabel(
 | `tessera.read_only_guard` | Read-only tool argument validation with toxic flow detection |
 | `tessera.rag_guard` | RAG/vector store scan-on-retrieval with PoisonedRAG defense |
 | `tessera.policy_invariant` | Runtime control-flow invariant enforcement |
+| `tessera.guardrail` | Optional LLM-based semantic injection classifier with provider-agnostic client, structured-only output, and SHA-256 cached decisions |
 | `tessera.adapters.enhanced` | Full defense stack composing all security components |
 
 Reference deployments:
@@ -241,6 +242,9 @@ compose with the taint-tracking policy engine:
   call rate limits enforce burst detection with cooldown and session
   lifetime caps, preventing denial-of-wallet and resource exhaustion
   attacks.
+- **LLM guardrail.** Optional semantic classification layer for ambiguous
+  tool outputs. Fires only when deterministic scanners are uncertain.
+  Provider-agnostic, structured-output-only, cached.
 - **Post-generation output integrity verification.** The output monitor
   checks model responses for n-gram similarity to untrusted inputs,
   task relevance drift, and injection output patterns, catching cases

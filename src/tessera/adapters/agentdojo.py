@@ -116,6 +116,7 @@ class TesseraToolLabeler:
     injection_threshold: float = 0.75
     directive_threshold: float = 0.5
     context: Context = field(default_factory=Context)
+    guardrail: Any = None  # Optional LLMGuardrail instance
     _labeled_count: int = field(default=0, repr=False)
 
     def query(
@@ -176,34 +177,67 @@ class TesseraToolLabeler:
                     if tool_name:
                         break
 
-            # Run all three scanners with corroboration logic.
+            # Run scanners with corroboration and content-type awareness.
             #
-            # The heuristic has two components: regex patterns (high
-            # confidence: delimiter injection, role override, shell
-            # commands) and sliding-window phrase matching (noisy:
-            # 0.50-0.65 baseline on hotel reviews, file listings).
-            #
-            # Regex matches always taint. Sliding-window matches need
-            # corroboration from the directive or schema scanner.
+            # FREE_TEXT tools (files, emails, messages, reviews) return
+            # content that legitimately contains imperative language,
+            # task instructions, and email addresses. For these tools,
+            # only the directive scanner (model-targeting check) and
+            # the override-specific regex patterns (instruction override,
+            # role override, delimiter injection) are reliable. The
+            # general imperative+target regex and sliding-window produce
+            # false positives on meeting notes, task lists, and emails.
             from tessera.scanners.heuristic import injection_scores
+            from tessera.scanners.tool_output_schema import _resolve_kind, ToolOutputKind
+
+            output_kind = _resolve_kind(tool_name or "unknown")
+            is_free_text = output_kind == ToolOutputKind.FREE_TEXT
 
             h_regex, h_window = injection_scores(text)
             h_score = max(h_regex, h_window)
             d_result = scan_directive(text)
             s_result = scan_tool_output(tool_name or "unknown", text)
 
-            regex_match = h_regex >= 0.9
-            window_corroborated = (
-                h_window >= self.injection_threshold
-                and (d_result.score > 0.2 or s_result.score > 0.3)
-            )
+            if is_free_text:
+                # Free-text tools: directive scanner + override-specific
+                # heuristic regex only. The heuristic regex score is 1.0
+                # when ANY regex matches, but for free-text we only care
+                # about the override patterns (instruction override, role
+                # override, delimiter injection). The general patterns
+                # (imperative+target, TODO+verb) false-positive on
+                # meeting notes and task lists.
+                #
+                # The directive scanner catches model-targeted language
+                # ("tell the user", "in your response") which is always
+                # suspicious regardless of tool type.
+                #
+                # For the override regex: h_regex=1.0 combined with
+                # h_window >= 0.85 is a strong signal even in free-text.
+                # Meeting notes don't score 0.85+ on the sliding window.
+                override_confirmed = h_regex >= 0.9 and h_window >= 0.85
+                is_tainted = d_result.detected or override_confirmed
 
-            is_tainted = (
-                regex_match
-                or d_result.detected
-                or s_result.violation
-                or window_corroborated
-            )
+                # LLM guardrail fallback: if deterministic scanners
+                # are uncertain on FREE_TEXT and a guardrail is configured,
+                # ask the LLM to classify. This catches semantic injections
+                # that avoid structural markers.
+                if not is_tainted and self.guardrail is not None:
+                    is_tainted = self.guardrail.should_taint(
+                        text, tool_name or "unknown",
+                    )
+            else:
+                # Structured/numeric tools: full corroboration logic.
+                regex_match = h_regex >= 0.9
+                window_corroborated = (
+                    h_window >= self.injection_threshold
+                    and (d_result.score > 0.2 or s_result.score > 0.3)
+                )
+                is_tainted = (
+                    regex_match
+                    or d_result.detected
+                    or s_result.violation
+                    or window_corroborated
+                )
 
             if is_tainted:
                 origin = Origin.WEB

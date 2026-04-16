@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-mesh"
-version = "0.2.1"
+version = "0.3.0"
 description = "Signed provenance labels and taint-tracking policy for LLM context windows."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -81,6 +81,12 @@ agentdojo = [
 perplexity = [
     "torch>=2.0",
     "transformers>=4.30",
+]
+guardrail = [
+    "anthropic>=0.30",
+]
+guardrail-openai = [
+    "openai>=1.0",
 ]
 
 [project.scripts]

@@ -31,6 +31,7 @@ NIST_CONTROLS: dict[str, tuple[str, ...]] = {
     EventKind.HUMAN_APPROVAL_RESOLVED: ("AC-6", "AU-12"),
     EventKind.SESSION_EXPIRED: ("AC-12",),
     EventKind.CONTENT_INJECTION_DETECTED: ("SI-10", "SC-7"),
+    EventKind.GUARDRAIL_DECISION: ("SI-10", "SC-7"),
 }
 
 CWE_CODES: dict[str, tuple[str, ...]] = {
@@ -43,6 +44,7 @@ CWE_CODES: dict[str, tuple[str, ...]] = {
     EventKind.DELEGATION_VERIFY_FAILURE: ("CWE-285",),
     EventKind.SECRET_REDACTED: ("CWE-200",),
     EventKind.CONTENT_INJECTION_DETECTED: ("CWE-77", "CWE-20"),
+    EventKind.GUARDRAIL_DECISION: ("CWE-77",),
 }
 
 # OWASP Agentic AI Top 10 taxonomy (Agent Audit ASI-01..ASI-10).
@@ -60,6 +62,7 @@ OWASP_ASI: dict[str, tuple[str, ...]] = {
     EventKind.POLICY_DENY: ("ASI-01",),
     EventKind.WORKER_SCHEMA_VIOLATION: ("ASI-01",),
     EventKind.CONTENT_INJECTION_DETECTED: ("ASI-01", "ASI-07"),
+    EventKind.GUARDRAIL_DECISION: ("ASI-01",),
     EventKind.LABEL_VERIFY_FAILURE: ("ASI-01", "ASI-08"),
     EventKind.IDENTITY_VERIFY_FAILURE: ("ASI-05",),
     EventKind.PROOF_VERIFY_FAILURE: ("ASI-05",),
