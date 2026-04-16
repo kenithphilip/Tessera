@@ -59,11 +59,8 @@ def screen_prompt(
     h_score = injection_score(prompt)
     d_score = directive_score(prompt)
 
-    # Unicode scanner returns a ScanResult with .suspicious and .score
     u_result = scan_unicode_tags(prompt)
-    u_score = u_result.score if hasattr(u_result, "score") else (
-        1.0 if u_result.suspicious else 0.0
-    )
+    u_score = 1.0 if u_result.detected else 0.0
 
     reasons: list[str] = []
     if h_score >= heuristic_threshold:

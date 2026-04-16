@@ -7,7 +7,7 @@
 **Status:** Draft for discussion with OWASP Agentic AI, IETF WIMSE, and agent
 mesh implementers.
 
-**Version:** 0.2, April 2026
+**Version:** 0.3, April 2026
 
 **License:** This paper is licensed under CC BY 4.0. The reference
 implementation referenced herein is licensed under AGPL-3.0-or-later.
@@ -799,6 +799,23 @@ designed to slot into any of them.
 We do not propose a new control plane. The primitives work under any
 control plane, from none (single-process) to Istiod-style distributed.
 
+**AgentMesh: a concrete composition.** The AgentMesh project
+(<https://github.com/kenithphilip/AgentMesh>) is a working composition
+of Tessera with SPIRE, agentgateway, and OpenTelemetry. It packages the
+primitives as a proxy service with 23 HTTP endpoints and 51 integrated
+Tessera modules, providing taint-tracking policy evaluation, content
+scanning, RAG retrieval guard, tool baseline drift detection, provenance
+manifests, SARIF compliance export, and signed evidence bundles. The
+proxy runs as a sidecar alongside any MCP-compatible agent and exposes
+a framework SDK (LangChain, OpenAI Agents, CrewAI, Google ADK) so agent
+code calls the proxy rather than importing Tessera directly.
+
+AgentMesh is infrastructure. Tessera is a library. They are not the
+same project. Tessera provides composable primitives that can be
+embedded in any agent, framework adapter, or mesh proxy. AgentMesh is
+one specific composition that deploys those primitives as a proxy
+service. Other compositions are possible and expected.
+
 ---
 
 ## 7. What we do not claim
@@ -842,16 +859,29 @@ This paper makes a deliberately narrow set of claims. We do not claim:
 ## 8. Reference implementation
 
 The reference implementation is Tessera, a Python library available at
-<https://github.com/kenithphilip/Tessera>. As of version 0.1.0:
+<https://github.com/kenithphilip/Tessera>. As of version 0.3.1:
 
-- **Source:** approximately 21,700 lines of Python across 101 modules.
+- **Source:** approximately 22,000 lines of Python across 94 modules.
 - **Rust gateway:** approximately 8,200 lines in `rust/tessera-gateway/`
   (reference data plane).
-- **Tests:** approximately 17,400 lines of tests, 1171 passing, runtime
-  approximately 2 minutes.
+- **Tests:** approximately 17,400 lines of tests, 1173 passing, runtime
+  approximately 8 seconds.
 - **Dependencies:** FastAPI and Pydantic (required), PyJWT with
   cryptography (required for JWT-SVID signing). Optional extras for
   OpenTelemetry, MCP, CEL, SPIFFE, gRPC/xDS, and 14 framework adapters.
+
+AgentMesh (<https://github.com/kenithphilip/AgentMesh>) is a composition
+layer built on Tessera:
+
+- **Source:** approximately 1,600 lines across 6 modules
+  (`proxy.py`, `identity.py`, `transport.py`, `exports.py`, `client.py`,
+  `sdk/`).
+- **Tests:** 106 passing in approximately 5 seconds.
+- **Tessera integration:** 51 of 94 Tessera modules.
+- **HTTP endpoints:** 23 (policy evaluation, content scanning, RAG guard,
+  provenance, evidence, SARIF export, liveness, xDS distribution).
+- **Framework SDK:** proxy-backed adapters for LangChain, OpenAI Agents,
+  CrewAI, and Google ADK.
 
 Key components (stable APIs):
 
@@ -1104,7 +1134,41 @@ implementation should start with the following tests:
 
 - `benchmarks/memory_poisoning/test_session_rescan.py::TestSessionRescan::test_poisoned_session_blocked_on_rescan`
 
-Total passing tests at the time of writing: 991.
+Total passing tests at the time of writing: 991 (Tessera) + 106
+(AgentMesh).
+
+**AgentMesh proxy integration (github.com/kenithphilip/AgentMesh):**
+
+Core pipeline:
+
+- `tests/test_proxy.py::TestEvaluate::test_denied_tainted`
+- `tests/test_proxy.py::TestEndToEnd::test_full_injection_scenario`
+- `tests/test_proxy.py::TestReadOnlyGuard::test_path_traversal_blocked`
+- `tests/test_proxy.py::TestHumanApproval::test_approval_required_tool_denied`
+
+Production hardening:
+
+- `tests/test_tier2_tier3.py::TestPromptScreening::test_injection_prompt_labeled_untrusted`
+- `tests/test_tier2_tier3.py::TestPIIScanning::test_pii_redacts_email`
+- `tests/test_tier2_tier3.py::TestSecretRedaction::test_secret_redacted_from_tool_output`
+- `tests/test_tier2_tier3.py::TestCanaryTokens::test_canary_leakage_detected`
+- `tests/test_tier2_tier3.py::TestToxicFlow::test_toxic_flow_blocks_sensitive_egress`
+
+Defense-in-depth:
+
+- `tests/test_tier_ab.py::TestScannerExtensions::test_unicode_tags_force_taint`
+- `tests/test_tier_ab.py::TestScannerExtensions::test_intent_scanner_catches_unrequested`
+- `tests/test_tier_ab.py::TestScannerExtensions::test_tool_description_poisoning`
+- `tests/test_tier_ab.py::TestScannerExtensions::test_tool_shadow_detection`
+- `tests/test_tier_ab.py::TestProvenance::test_manifest_with_segments`
+- `tests/test_tier_ab.py::TestEvidence::test_evidence_bundle_after_event`
+
+SDK:
+
+- `tests/test_sdk.py::TestMeshClient::test_evaluate_blocked_after_taint`
+- `tests/test_sdk.py::TestGenericMeshGuard::test_full_flow`
+- `tests/test_sdk.py::TestCrewAIAdapter::test_tool_blocked_after_taint`
+- `tests/test_sdk.py::TestGoogleADKAdapter::test_before_tool_blocks`
 
 ---
 
