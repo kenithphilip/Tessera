@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-mesh"
-version = "0.3.0"
+version = "0.3.1"
 description = "Signed provenance labels and taint-tracking policy for LLM context windows."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -94,6 +94,7 @@ tessera = "tessera.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["agentmesh", "agentmesh.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
