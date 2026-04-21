@@ -1,296 +1,375 @@
-"""Explicit pattern-based deny list for destructive operations.
+"""tessera.destructive_guard: explicit pattern deny for destructive operations.
 
-Complements ``tessera.risk.irreversibility`` which computes a numeric
-score. This module answers a simpler question: is this specific
-command or tool-arg pattern in the known-destructive set?
+Why separate from the irreversibility scorer
+--------------------------------------------
+The scorer returns a float; thresholds are tunable, every decision has
+some epistemic wiggle room. This module returns booleans backed by named
+patterns. An audit entry looks like ``denied: destructive.fs.rm_rf_root``
+instead of ``denied: score=0.87 > 0.85``. That asymmetry is the whole
+point: some actions have no defensible reason to appear in an arg
+string and should never depend on a tunable.
 
-Explicit denials are easier to audit than threshold-based scores.
-Operations teams can point to a specific rule when explaining why a
-call was blocked. Use both: the scorer for nuanced cases, this module
-for the ones you never want to see.
+Matching model
+--------------
+Every pattern is compiled once. ``check(tool_name, args)`` flattens
+args into ``(arg_path, text)`` pairs (e.g. ``headers.x-run``) so audit
+log entries can attribute the match to a specific argument. Patterns
+may be scoped to a tool family via ``applies_to_tools``; leaving that
+empty means "applies to any tool's args", which is the right default
+for string-level invariants like ``rm -rf /``.
 
-References:
-- Sondera sondera-coding-agent-hooks destructive.cedar policy
-  (https://github.com/sondera-ai/sondera-coding-agent-hooks)
+Scope of the rm -rf rule
+------------------------
+``fs.rm_rf_root`` only blocks when the target is terminally root or
+home (``/``, ``/*``, ``~``, ``~/*``, ``$HOME``, ``$HOME/*``). Coding
+agents legitimately need to ``rm -rf node_modules`` or ``dist`` and
+blocking those would be hostile. If you want stricter behavior (e.g.,
+block any ``rm -rf ~/...`` regardless of subpath), pass a custom
+pattern via ``DestructiveGuard(extra=[...])``.
 """
 
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, Sequence
 
 
-class Severity(Enum):
-    """Severity of a destructive operation match.
-
-    BLOCK: always block, no override. Catastrophic and irreversible.
-    WARN: block by default but callers may override with explicit approval.
-    INFO: allow but emit a security event for audit.
-    """
-
-    BLOCK = "block"
-    WARN = "warn"
-    INFO = "info"
+# ---------------------------------------------------------------------------
+# Pattern definitions
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class DestructiveMatch:
-    """A single pattern that fired against the input.
+class DestructivePattern:
+    """A single named destructive pattern.
 
     Attributes:
-        rule_id: Stable identifier for the rule (e.g., "rm-rf-root").
-        severity: Severity level.
+        id: Stable identifier for audit logs (e.g. ``fs.rm_rf_root``).
         description: Human-readable explanation.
-        matched_text: The substring of input that matched.
+        regex: Compiled pattern, applied to flattened arg text.
+        category: Coarse grouping (filesystem, sql, git, iac, host).
+        applies_to_tools: Restrict the rule to specific tools. Empty
+            tuple means "applies to any tool's args".
     """
 
-    rule_id: str
-    severity: Severity
+    id: str
     description: str
-    matched_text: str
+    regex: re.Pattern
+    category: str
+    applies_to_tools: tuple[str, ...] = ()
+
+    def applies(self, tool_name: str) -> bool:
+        if not self.applies_to_tools:
+            return True
+        return tool_name in self.applies_to_tools
 
 
-@dataclass(frozen=True)
-class DestructiveCheckResult:
-    """Result of checking a tool call for destructive patterns.
-
-    Attributes:
-        destructive: True if any rule matched.
-        max_severity: Highest severity among matches, or None if clean.
-        matches: All rules that fired.
-    """
-
-    destructive: bool
-    max_severity: Severity | None
-    matches: tuple[DestructiveMatch, ...]
-
-    @property
-    def should_block(self) -> bool:
-        """True if any match is at BLOCK severity."""
-        return any(m.severity == Severity.BLOCK for m in self.matches)
-
-
-# Each rule: (rule_id, severity, description, regex).
-# Matches are case-insensitive unless the pattern specifies otherwise.
-_RULES: tuple[tuple[str, Severity, str, re.Pattern[str]], ...] = (
-    # Filesystem destruction
-    (
-        "rm-rf-root",
-        Severity.BLOCK,
-        "recursive force-delete of a root or filesystem path",
-        re.compile(r"\brm\s+(-[a-zA-Z]*[rRf][a-zA-Z]*)+\s+(/|~|/\*|/\w+)(\s|$)"),
+_DEFAULT_PATTERNS: tuple[DestructivePattern, ...] = (
+    # ---- filesystem ----
+    DestructivePattern(
+        id="fs.rm_rf_root",
+        description="rm -rf on root or home",
+        regex=re.compile(
+            r"(?<!\S)rm\s+(?:-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)\s+"
+            r"(?:--no-preserve-root\s+)?"
+            r"(?:/|/\*|~|~/\*|\$HOME|\$HOME/\*)"
+            r"(?=\s|$|;|\||&)"
+        ),
+        category="filesystem",
     ),
-    (
-        "rm-rf-generic",
-        Severity.WARN,
-        "recursive force-delete (rm -rf)",
-        re.compile(r"\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\s"),
+    DestructivePattern(
+        id="fs.no_preserve_root",
+        description="rm invoked with --no-preserve-root",
+        regex=re.compile(r"(?<!\S)rm\s+[^|&;]*--no-preserve-root\b"),
+        category="filesystem",
     ),
-    (
-        "shred",
-        Severity.BLOCK,
-        "secure file wipe (shred)",
-        re.compile(r"\bshred\s+-"),
+    DestructivePattern(
+        id="fs.dd_to_disk",
+        description="dd writing to a block device",
+        regex=re.compile(r"(?<!\S)dd\s+[^|&;]*\bof=/dev/(?:sd[a-z]|nvme\d|hd[a-z]|mmcblk\d)"),
+        category="filesystem",
     ),
-    (
-        "dd-of-device",
-        Severity.BLOCK,
-        "dd write to a raw device (disk wipe)",
-        re.compile(r"\bdd\s+(?:[^&|]*\s)?of=/dev/(?:sd[a-z]|nvme|disk\d|xvd)", re.IGNORECASE),
+    DestructivePattern(
+        id="fs.mkfs",
+        description="mkfs invocation (reformat)",
+        regex=re.compile(r"(?<!\S)mkfs(?:\.[a-z0-9]+)?\s+/dev/"),
+        category="filesystem",
     ),
-    (
-        "mkfs",
-        Severity.BLOCK,
-        "filesystem format (mkfs)",
-        re.compile(r"\bmkfs(\.[a-z0-9]+)?\s+/dev/", re.IGNORECASE),
+    DestructivePattern(
+        id="fs.find_delete_broad",
+        description="find with -delete at / or ~",
+        regex=re.compile(r"(?<!\S)find\s+(?:/|~)\s+[^|&;]*\s-delete\b"),
+        category="filesystem",
     ),
-
-    # Git destructive operations
-    (
-        "git-force-push-main",
-        Severity.BLOCK,
-        "force-push to a protected branch (main/master/production)",
-        re.compile(
-            r"\bgit\s+push\s+(?:--force|-f)\b[^&|]*\b(main|master|production|release|prod)\b",
+    DestructivePattern(
+        id="fs.chmod_777_recursive_root",
+        description="chmod -R 777 against /, ~, or /*",
+        regex=re.compile(
+            r"(?<!\S)chmod\s+-R\s+0?777\s+(?:/|~|/\*)(?=\s|$|;|\||&)"
+        ),
+        category="filesystem",
+    ),
+    # ---- shell / host ----
+    DestructivePattern(
+        id="host.forkbomb",
+        description="classic bash fork bomb",
+        regex=re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"),
+        category="host",
+    ),
+    DestructivePattern(
+        id="host.shutdown",
+        description="immediate shutdown/halt/poweroff",
+        regex=re.compile(
+            r"(?<!\S)(?:shutdown\s+(?:-h|-r|/s|/r)\s+(?:now|0|\+0)|"
+            r"halt(?:\s+-p)?|poweroff|init\s+0|init\s+6)\b"
+        ),
+        category="host",
+    ),
+    # ---- SQL ----
+    DestructivePattern(
+        id="sql.drop_database",
+        description="DROP DATABASE / SCHEMA",
+        regex=re.compile(r"\bDROP\s+(?:DATABASE|SCHEMA)\b", re.IGNORECASE),
+        category="sql",
+    ),
+    DestructivePattern(
+        id="sql.drop_table",
+        description="DROP TABLE",
+        regex=re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+        category="sql",
+    ),
+    DestructivePattern(
+        id="sql.truncate",
+        description="TRUNCATE TABLE",
+        regex=re.compile(r"\bTRUNCATE\s+(?:TABLE\s+)?[\w.`\"]+", re.IGNORECASE),
+        category="sql",
+    ),
+    DestructivePattern(
+        id="sql.delete_unscoped",
+        description="DELETE with no WHERE clause",
+        regex=re.compile(
+            r"\bDELETE\s+FROM\s+[\w.`\"]+\s*(?:;|$|--)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        category="sql",
+    ),
+    DestructivePattern(
+        id="sql.delete_tautology",
+        description="DELETE with always-true predicate",
+        regex=re.compile(
+            r"\bDELETE\s+FROM\s+[\w.`\"]+\s+WHERE\s+(?:1\s*=\s*1|true|'a'\s*=\s*'a')",
             re.IGNORECASE,
         ),
+        category="sql",
     ),
-    (
-        "git-force-push-generic",
-        Severity.WARN,
-        "force-push to any branch",
-        re.compile(r"\bgit\s+push\s+(?:--force|-f)\b", re.IGNORECASE),
+    DestructivePattern(
+        id="sql.update_unscoped",
+        description="UPDATE with no WHERE clause",
+        regex=re.compile(
+            r"\bUPDATE\s+[\w.`\"]+\s+SET\s+(?:(?!\bWHERE\b)[^;])+?(?:;|$)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        category="sql",
     ),
-    (
-        "git-reset-hard",
-        Severity.WARN,
-        "hard reset (discards working tree)",
-        re.compile(r"\bgit\s+reset\s+--hard\b", re.IGNORECASE),
+    # ---- git ----
+    DestructivePattern(
+        id="git.push_force_protected",
+        description="force push to main/master/release",
+        regex=re.compile(
+            r"(?<!\S)git\s+push\s+(?:[^|&;]*?\s)?(?:--force(?!-with-lease)|-f)\b"
+            r"[^|&;]*\b(?:main|master|release/|prod)\b"
+        ),
+        category="git",
     ),
-    (
-        "git-clean-force",
-        Severity.WARN,
-        "force-clean untracked files",
-        re.compile(r"\bgit\s+clean\s+(?:-[a-z]*[fF])", re.IGNORECASE),
+    DestructivePattern(
+        id="git.clean_fdx",
+        description="git clean -fdx (wipe ignored+untracked)",
+        regex=re.compile(r"(?<!\S)git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d[a-zA-Z]*x\b"),
+        category="git",
     ),
-    (
-        "git-branch-delete-force",
-        Severity.WARN,
-        "force-delete a branch (git branch -D)",
-        re.compile(r"\bgit\s+branch\s+-D\b", re.IGNORECASE),
+    DestructivePattern(
+        id="git.reset_hard_remote",
+        description="git reset --hard to a remote ref",
+        regex=re.compile(
+            r"(?<!\S)git\s+reset\s+--hard\s+(?:origin|upstream|remote)/\S+"
+        ),
+        category="git",
     ),
-
-    # Database destruction
-    (
-        "drop-database",
-        Severity.BLOCK,
-        "DROP DATABASE statement",
-        re.compile(r"\bdrop\s+database\b", re.IGNORECASE),
+    # ---- cloud / infra ----
+    DestructivePattern(
+        id="iac.terraform_destroy_auto",
+        description="terraform destroy -auto-approve",
+        regex=re.compile(r"(?<!\S)terraform\s+destroy\b[^|&;]*\s-auto-approve\b"),
+        category="iac",
     ),
-    (
-        "drop-table",
-        Severity.WARN,
-        "DROP TABLE statement",
-        re.compile(r"\bdrop\s+table\b", re.IGNORECASE),
+    DestructivePattern(
+        id="iac.k8s_delete_all_force",
+        description="kubectl delete --all --force --grace-period=0",
+        regex=re.compile(
+            r"(?<!\S)kubectl\s+delete\b[^|&;]*\s--all\b[^|&;]*\s--force\b"
+            r"[^|&;]*\s--grace-period\s*=?\s*0"
+        ),
+        category="iac",
     ),
-    (
-        "truncate-table",
-        Severity.WARN,
-        "TRUNCATE TABLE statement",
-        re.compile(r"\btruncate\s+table\b", re.IGNORECASE),
-    ),
-    (
-        "delete-without-where",
-        Severity.WARN,
-        "DELETE without WHERE clause",
-        re.compile(r"\bdelete\s+from\s+\w+\s*(?:;|$)", re.IGNORECASE),
-    ),
-
-    # Infrastructure teardown
-    (
-        "terraform-destroy",
-        Severity.BLOCK,
-        "terraform destroy (tears down infrastructure)",
-        re.compile(r"\bterraform\s+destroy\b", re.IGNORECASE),
-    ),
-    (
-        "docker-system-prune-force",
-        Severity.WARN,
-        "docker system prune with force (removes all unused)",
-        re.compile(r"\bdocker\s+system\s+prune\s+.*(-f|--force|-a)", re.IGNORECASE),
-    ),
-    (
-        "kubectl-delete-all",
-        Severity.BLOCK,
-        "kubectl delete all resources",
-        re.compile(r"\bkubectl\s+delete\s+(?:all|deployment|statefulset|ns|namespace)\s+--all\b", re.IGNORECASE),
-    ),
-
-    # Lock file destruction
-    (
-        "delete-lock-file",
-        Severity.WARN,
-        "deleting a dependency lock file (supply-chain integrity risk)",
-        re.compile(r"\brm\s+(?:-\w*\s+)*(?:\S*/)?(package-lock\.json|yarn\.lock|poetry\.lock|Pipfile\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock|go\.sum)\b"),
-    ),
-
-    # Process management
-    (
-        "kill-9-pid-1",
-        Severity.BLOCK,
-        "SIGKILL to PID 1 (init)",
-        re.compile(r"\bkill\s+-9\s+1\b"),
-    ),
-    (
-        "pkill-everything",
-        Severity.WARN,
-        "pkill or killall with broad target",
-        re.compile(r"\b(pkill|killall)\s+-9\b"),
-    ),
-
-    # Permission / ownership rewrites
-    (
-        "chmod-recursive-000",
-        Severity.BLOCK,
-        "recursive chmod to 000 (lock everyone out)",
-        re.compile(r"\bchmod\s+-R\s+0*(000|400)\s+/"),
-    ),
-    (
-        "chown-recursive-root",
-        Severity.WARN,
-        "recursive chown on root path",
-        re.compile(r"\bchown\s+-R\s+\S+\s+/(?:\s|$)"),
+    DestructivePattern(
+        id="iac.aws_s3_rb_force",
+        description="aws s3 rb --force",
+        regex=re.compile(r"(?<!\S)aws\s+s3\s+rb\s+[^|&;]*--force\b"),
+        category="iac",
     ),
 )
 
 
-def check_destructive(text: str) -> DestructiveCheckResult:
-    """Scan text for destructive operation patterns.
+# ---------------------------------------------------------------------------
+# Guard
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GuardMatch:
+    """A single pattern match attributed to a specific argument path."""
+
+    pattern_id: str
+    category: str
+    description: str
+    matched_text: str
+    arg_path: str  # e.g. "command", "query", "headers.x-run"
+
+
+@dataclass(frozen=True)
+class GuardResult:
+    allowed: bool
+    matches: tuple[GuardMatch, ...] = field(default_factory=tuple)
+    source: str = "tessera.destructive_guard"
+
+    @property
+    def primary_reason(self) -> str:
+        if self.allowed:
+            return ""
+        m = self.matches[0]
+        return f"{m.pattern_id}: {m.description}"
+
+
+class DestructiveGuard:
+    """Match known-destructive patterns against tool arguments.
+
+    Usage::
+
+        guard = DestructiveGuard()
+        result = guard.check("bash.run", {"command": "rm -rf /"})
+        if not result.allowed:
+            return Decision.deny(reason=result.primary_reason, ...)
+
+    Extending::
+
+        guard = DestructiveGuard(extra=[DestructivePattern(...)])
+        guard.register(DestructivePattern(...))
 
     Args:
-        text: A shell command, SQL statement, or tool-arg string.
-
-    Returns:
-        A DestructiveCheckResult with all matches, the max severity,
-        and a ``should_block`` convenience flag.
+        patterns: Replace the default pattern set entirely.
+        extra: Add patterns on top of defaults (or `patterns`).
+        include_defaults: Set False with `patterns=...` for full control.
     """
-    if not text:
-        return DestructiveCheckResult(
-            destructive=False,
-            max_severity=None,
-            matches=(),
-        )
 
-    matches: list[DestructiveMatch] = []
-    for rule_id, severity, description, pattern in _RULES:
-        m = pattern.search(text)
-        if m:
-            matches.append(DestructiveMatch(
-                rule_id=rule_id,
-                severity=severity,
-                description=description,
-                matched_text=m.group(0),
-            ))
+    def __init__(
+        self,
+        patterns: Iterable[DestructivePattern] | None = None,
+        extra: Iterable[DestructivePattern] | None = None,
+        include_defaults: bool = True,
+    ) -> None:
+        base: list[DestructivePattern] = []
+        if include_defaults:
+            base.extend(_DEFAULT_PATTERNS)
+        if patterns is not None:
+            base = list(patterns)
+        if extra:
+            base.extend(extra)
+        self._patterns: tuple[DestructivePattern, ...] = tuple(base)
 
-    if not matches:
-        return DestructiveCheckResult(
-            destructive=False,
-            max_severity=None,
-            matches=(),
-        )
+    def register(self, pattern: DestructivePattern) -> None:
+        self._patterns = self._patterns + (pattern,)
 
-    # Max severity: BLOCK > WARN > INFO
-    order = {Severity.BLOCK: 2, Severity.WARN: 1, Severity.INFO: 0}
-    max_sev = max((m.severity for m in matches), key=lambda s: order[s])
+    def patterns(self) -> tuple[DestructivePattern, ...]:
+        return self._patterns
 
-    return DestructiveCheckResult(
-        destructive=True,
-        max_severity=max_sev,
-        matches=tuple(matches),
-    )
+    def check(
+        self,
+        tool_name: str,
+        args: str | Mapping[str, Any] | Sequence[Any] | None,
+        *,
+        stop_on_first: bool = True,
+    ) -> GuardResult:
+        if args is None:
+            return GuardResult(allowed=True)
+        flattened = list(_flatten_args(args))
+        matches: list[GuardMatch] = []
+
+        for pattern in self._patterns:
+            if not pattern.applies(tool_name):
+                continue
+            for path, value in flattened:
+                m = pattern.regex.search(value)
+                if m is None:
+                    continue
+                matches.append(
+                    GuardMatch(
+                        pattern_id=pattern.id,
+                        category=pattern.category,
+                        description=pattern.description,
+                        matched_text=m.group(0)[:200],
+                        arg_path=path,
+                    )
+                )
+                if stop_on_first:
+                    return GuardResult(allowed=False, matches=tuple(matches))
+
+        if matches:
+            return GuardResult(allowed=False, matches=tuple(matches))
+        return GuardResult(allowed=True)
 
 
-def check_tool_args(args: dict[str, object]) -> DestructiveCheckResult:
-    """Check tool-call arguments for destructive patterns.
+def _flatten_args(
+    args: str | Mapping[str, Any] | Sequence[Any] | Any,
+    prefix: str = "",
+) -> Iterable[tuple[str, str]]:
+    """Yield (arg_path, text) pairs.
 
-    Flattens string-valued arguments and scans the concatenation.
-    Useful when the destructive text is passed as a ``command`` or
-    ``query`` argument rather than the tool name.
-
-    Args:
-        args: Tool-call argument dict.
-
-    Returns:
-        DestructiveCheckResult over all string arg values.
+    Non-string leaves are JSON-serialized so numeric or bool values do
+    not silently slip past pattern matchers that happen to be checking
+    adjacent string tokens.
     """
-    if not args:
-        return DestructiveCheckResult(
-            destructive=False,
-            max_severity=None,
-            matches=(),
-        )
-    combined = "\n".join(
-        str(v) for v in args.values() if isinstance(v, (str, bytes))
-    )
-    return check_destructive(combined)
+    if args is None:
+        return
+    if isinstance(args, str):
+        yield (prefix or "$", args)
+        return
+    if isinstance(args, (bytes, bytearray)):
+        try:
+            yield (prefix or "$", bytes(args).decode("utf-8", errors="replace"))
+        except Exception:
+            return
+        return
+    if isinstance(args, Mapping):
+        for k, v in args.items():
+            child = f"{prefix}.{k}" if prefix else str(k)
+            yield from _flatten_args(v, child)
+        return
+    if isinstance(args, (list, tuple)):
+        for i, v in enumerate(args):
+            child = f"{prefix}[{i}]" if prefix else f"[{i}]"
+            yield from _flatten_args(v, child)
+        return
+    try:
+        yield (prefix or "$", json.dumps(args, default=str))
+    except Exception:
+        yield (prefix or "$", str(args))
+
+
+__all__ = [
+    "DestructivePattern",
+    "GuardMatch",
+    "GuardResult",
+    "DestructiveGuard",
+]

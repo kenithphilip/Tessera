@@ -1,199 +1,212 @@
-"""Tests for tessera.sensitivity: Bell-LaPadula IFC primitive."""
+"""Tests for tessera.sensitivity: classifier, HWM, outbound policy."""
 
 from __future__ import annotations
 
 import pytest
 
 from tessera.sensitivity import (
-    IFCDecision,
-    SensitivityClassification,
-    SensitivityContext,
+    Classification,
+    ClassificationRule,
+    HighWaterMark,
+    InMemoryHWMStore,
+    OutboundDecision,
+    OutboundPolicy,
+    SensitivityClassifier,
     SensitivityLabel,
-    check_outbound,
-    classify,
-    is_outbound_tool,
+    ToolClassification,
 )
 
 
-class TestClassify:
-    def test_empty_is_public(self) -> None:
-        r = classify("")
-        assert r.label == SensitivityLabel.PUBLIC
+class TestSensitivityLabel:
+    def test_lattice_ordering(self) -> None:
+        assert SensitivityLabel.PUBLIC < SensitivityLabel.INTERNAL
+        assert SensitivityLabel.INTERNAL < SensitivityLabel.CONFIDENTIAL
+        assert SensitivityLabel.CONFIDENTIAL < SensitivityLabel.RESTRICTED
 
-    def test_plain_text_is_public(self) -> None:
-        r = classify("The weather in Paris is nice.")
-        assert r.label == SensitivityLabel.PUBLIC
-        assert r.matched_patterns == ()
+    def test_from_str(self) -> None:
+        assert SensitivityLabel.from_str("PUBLIC") is SensitivityLabel.PUBLIC
+        assert SensitivityLabel.from_str(" confidential ") is SensitivityLabel.CONFIDENTIAL
 
-    def test_ssn_is_highly_confidential(self) -> None:
-        r = classify("Employee SSN: 123-45-6789")
-        assert r.label == SensitivityLabel.HIGHLY_CONFIDENTIAL
-        assert "ssn" in r.matched_patterns
+    def test_from_str_unknown_raises(self) -> None:
+        with pytest.raises(ValueError):
+            SensitivityLabel.from_str("SECRET")
 
-    def test_aws_key_is_highly_confidential(self) -> None:
-        r = classify("AWS key: AKIAIOSFODNN7EXAMPLE")
-        assert r.label == SensitivityLabel.HIGHLY_CONFIDENTIAL
-        assert "aws_access_key" in r.matched_patterns
 
-    def test_private_key_is_highly_confidential(self) -> None:
-        r = classify("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...")
-        assert r.label == SensitivityLabel.HIGHLY_CONFIDENTIAL
+class TestClassifier:
+    def test_public_default(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify("hello world").label is SensitivityLabel.PUBLIC
 
-    def test_credit_card_is_highly_confidential(self) -> None:
-        r = classify("Card on file: 4111 1111 1111 1111")
-        assert r.label == SensitivityLabel.HIGHLY_CONFIDENTIAL
+    def test_secret_confidential(self) -> None:
+        c = SensitivityClassifier()
+        r = c.classify("Our key is AKIAIOSFODNN7EXAMPLE, rotate it")
+        assert r.label is SensitivityLabel.CONFIDENTIAL
+        assert "secret.aws_access_key" in r.matched_rule_ids
 
-    def test_password_field_is_confidential(self) -> None:
-        r = classify("username: admin\npassword: hunter2")
-        assert r.label == SensitivityLabel.CONFIDENTIAL
+    def test_pem_key_confidential(self) -> None:
+        c = SensitivityClassifier()
+        blob = "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
+        assert c.classify(blob).label is SensitivityLabel.CONFIDENTIAL
 
-    def test_confidential_marker(self) -> None:
-        r = classify("CONFIDENTIAL: Q4 roadmap discussion")
-        assert r.label == SensitivityLabel.CONFIDENTIAL
+    def test_ssn_restricted(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify("SSN: 123-45-6789").label is SensitivityLabel.RESTRICTED
+
+    def test_credit_card_restricted(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify("card 4111 1111 1111 1111").label is SensitivityLabel.RESTRICTED
+
+    def test_github_token(self) -> None:
+        c = SensitivityClassifier()
+        text = "token = ghp_abcdefghijABCDEFGHIJabcdefghijABCDEF"
+        assert c.classify(text).label is SensitivityLabel.CONFIDENTIAL
+
+    def test_slack_token(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify("slack xoxb-1234567890-abcdefghij").label is SensitivityLabel.CONFIDENTIAL
 
     def test_internal_marker(self) -> None:
-        r = classify("INTERNAL ONLY: team restructuring plans")
-        assert r.label == SensitivityLabel.INTERNAL
+        c = SensitivityClassifier()
+        assert c.classify("INTERNAL ONLY: Q4 plans").label is SensitivityLabel.INTERNAL
 
-    def test_financial_term_is_internal(self) -> None:
-        r = classify("Our ARR grew 40% this quarter")
-        assert r.label == SensitivityLabel.INTERNAL
+    def test_confidential_marker(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify("CONFIDENTIAL: details").label is SensitivityLabel.CONFIDENTIAL
 
-    def test_highest_label_wins(self) -> None:
-        # Text has both a CONFIDENTIAL marker and a HIGHLY_CONFIDENTIAL SSN
-        r = classify("CONFIDENTIAL: John's SSN is 123-45-6789")
-        assert r.label == SensitivityLabel.HIGHLY_CONFIDENTIAL
+    def test_highest_wins(self) -> None:
+        c = SensitivityClassifier()
+        text = "AKIAIOSFODNN7EXAMPLE and SSN 123-45-6789"
+        r = c.classify(text)
+        assert r.label is SensitivityLabel.RESTRICTED
+        assert "secret.aws_access_key" in r.matched_rule_ids
+        assert "pii.ssn" in r.matched_rule_ids
 
+    def test_register_custom_rule(self) -> None:
+        import re
+        c = SensitivityClassifier()
+        c.register(ClassificationRule(
+            id="custom.project_alpha",
+            label=SensitivityLabel.CONFIDENTIAL,
+            pattern=re.compile(r"project-alpha-\d+"),
+            description="internal project codename",
+        ))
+        r = c.classify("see ticket project-alpha-123")
+        assert r.label is SensitivityLabel.CONFIDENTIAL
 
-class TestSensitivityContext:
-    def test_starts_public(self) -> None:
-        ctx = SensitivityContext()
-        assert ctx.max_sensitivity == SensitivityLabel.PUBLIC
+    def test_rules_without_defaults(self) -> None:
+        c = SensitivityClassifier(include_defaults=False)
+        assert c.classify("SSN: 123-45-6789").label is SensitivityLabel.PUBLIC
 
-    def test_observe_raises_label(self) -> None:
-        ctx = SensitivityContext()
-        ctx.observe("Plain public text")
-        assert ctx.max_sensitivity == SensitivityLabel.PUBLIC
-        ctx.observe("SSN: 987-65-4321")
-        assert ctx.max_sensitivity == SensitivityLabel.HIGHLY_CONFIDENTIAL
+    def test_coerce_bytes(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify(b"SSN: 123-45-6789").label is SensitivityLabel.RESTRICTED
 
-    def test_high_water_mark_never_lowers(self) -> None:
-        ctx = SensitivityContext()
-        ctx.observe("SSN: 123-45-6789")
-        assert ctx.max_sensitivity == SensitivityLabel.HIGHLY_CONFIDENTIAL
-        # Adding public content after cannot lower the watermark
-        ctx.observe("The weather is nice.")
-        assert ctx.max_sensitivity == SensitivityLabel.HIGHLY_CONFIDENTIAL
+    def test_coerce_dict(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify({"token": "AKIAIOSFODNN7EXAMPLE"}).label is SensitivityLabel.CONFIDENTIAL
 
-    def test_reset_clears(self) -> None:
-        ctx = SensitivityContext()
-        ctx.observe("AKIAIOSFODNN7EXAMPLE")
-        assert ctx.max_sensitivity == SensitivityLabel.HIGHLY_CONFIDENTIAL
-        ctx.reset()
-        assert ctx.max_sensitivity == SensitivityLabel.PUBLIC
-        assert ctx.classifications == []
-
-    def test_custom_classifier(self) -> None:
-        """Users can plug in their own classifier (e.g., LLM-based)."""
-        def always_internal(text: str) -> SensitivityClassification:
-            return SensitivityClassification(
-                label=SensitivityLabel.INTERNAL,
-                matched_patterns=("custom",),
-                score=0.8,
-            )
-        ctx = SensitivityContext(classifier=always_internal)
-        ctx.observe("anything")
-        assert ctx.max_sensitivity == SensitivityLabel.INTERNAL
+    def test_empty_content_public(self) -> None:
+        c = SensitivityClassifier()
+        assert c.classify("").label is SensitivityLabel.PUBLIC
+        assert c.classify(None).label is SensitivityLabel.PUBLIC
 
 
-class TestIsOutboundTool:
-    def test_send_email_is_outbound(self) -> None:
-        assert is_outbound_tool("send_email")
+class TestHighWaterMark:
+    def test_monotonic(self) -> None:
+        hwm = HighWaterMark()
+        assert hwm.get("t1") is SensitivityLabel.PUBLIC
+        hwm.observe("t1", SensitivityLabel.INTERNAL)
+        hwm.observe("t1", SensitivityLabel.CONFIDENTIAL)
+        hwm.observe("t1", SensitivityLabel.INTERNAL)  # does not lower
+        assert hwm.get("t1") is SensitivityLabel.CONFIDENTIAL
 
-    def test_web_fetch_is_outbound(self) -> None:
-        assert is_outbound_tool("web_fetch")
-        assert is_outbound_tool("fetch_url")
+    def test_observe_returns_current(self) -> None:
+        hwm = HighWaterMark()
+        result = hwm.observe("t1", SensitivityLabel.INTERNAL)
+        assert result is SensitivityLabel.INTERNAL
+        result = hwm.observe("t1", SensitivityLabel.PUBLIC)
+        assert result is SensitivityLabel.INTERNAL  # no lowering
 
-    def test_post_request_is_outbound(self) -> None:
-        assert is_outbound_tool("post_webhook")
-        assert is_outbound_tool("http_post")
+    def test_reset(self) -> None:
+        hwm = HighWaterMark()
+        hwm.observe("t1", SensitivityLabel.RESTRICTED)
+        hwm.reset("t1")
+        assert hwm.get("t1") is SensitivityLabel.PUBLIC
 
-    def test_read_file_is_not_outbound(self) -> None:
-        assert not is_outbound_tool("read_file")
-        assert not is_outbound_tool("list_directory")
+    def test_isolated_per_trajectory(self) -> None:
+        hwm = HighWaterMark()
+        hwm.observe("a", SensitivityLabel.CONFIDENTIAL)
+        assert hwm.get("b") is SensitivityLabel.PUBLIC
 
-    def test_search_is_not_outbound(self) -> None:
-        # search_hotels is a read-only internal tool, not a network egress
-        assert not is_outbound_tool("search_hotels")
+    def test_custom_store(self) -> None:
+        store = InMemoryHWMStore()
+        hwm = HighWaterMark(store=store)
+        hwm.observe("t1", SensitivityLabel.INTERNAL)
+        assert store.get("t1") is SensitivityLabel.INTERNAL
 
 
-class TestCheckOutbound:
-    def test_non_outbound_always_allowed(self) -> None:
-        d = check_outbound("read_file", SensitivityLabel.HIGHLY_CONFIDENTIAL)
-        assert d.allowed
-        assert "not an outbound" in d.reason
-
-    def test_public_outbound_allowed(self) -> None:
-        d = check_outbound("send_email", SensitivityLabel.PUBLIC)
-        assert d.allowed
-
-    def test_internal_outbound_allowed(self) -> None:
-        d = check_outbound("send_email", SensitivityLabel.INTERNAL)
-        assert d.allowed
-
-    def test_confidential_outbound_allowed_without_injection(self) -> None:
-        d = check_outbound("send_email", SensitivityLabel.CONFIDENTIAL)
-        assert d.allowed
-
-    def test_confidential_outbound_blocked_with_injection(self) -> None:
-        d = check_outbound(
-            "send_email",
-            SensitivityLabel.CONFIDENTIAL,
-            has_injection=True,
+class TestOutboundPolicy:
+    def test_inbound_always_ok(self) -> None:
+        p = OutboundPolicy(
+            registry={"fs.read": ToolClassification(outbound=False)},
         )
-        assert not d.allowed
-        assert "injection" in d.reason.lower()
+        d = p.check("fs.read", SensitivityLabel.RESTRICTED)
+        assert d.allowed
+        assert d.hwm is SensitivityLabel.RESTRICTED
 
-    def test_highly_confidential_blocks_all_outbound(self) -> None:
-        d = check_outbound("send_email", SensitivityLabel.HIGHLY_CONFIDENTIAL)
-        assert not d.allowed
-        d = check_outbound("web_fetch", SensitivityLabel.HIGHLY_CONFIDENTIAL)
-        assert not d.allowed
-        d = check_outbound("post_webhook", SensitivityLabel.HIGHLY_CONFIDENTIAL)
-        assert not d.allowed
-
-    def test_highly_confidential_with_injection_still_blocked(self) -> None:
-        # No path through: HC + injection is even more obviously blocked
-        d = check_outbound(
-            "send_email",
-            SensitivityLabel.HIGHLY_CONFIDENTIAL,
-            has_injection=True,
+    def test_outbound_within_envelope_ok(self) -> None:
+        p = OutboundPolicy(
+            registry={
+                "http.post": ToolClassification(
+                    outbound=True, max_sensitivity=SensitivityLabel.INTERNAL,
+                ),
+            },
         )
+        assert p.check("http.post", SensitivityLabel.INTERNAL).allowed
+        assert p.check("http.post", SensitivityLabel.PUBLIC).allowed
+
+    def test_outbound_blocks_above_envelope(self) -> None:
+        p = OutboundPolicy(
+            registry={
+                "http.post": ToolClassification(
+                    outbound=True, max_sensitivity=SensitivityLabel.INTERNAL,
+                ),
+            },
+        )
+        d = p.check("http.post", SensitivityLabel.CONFIDENTIAL)
         assert not d.allowed
+        assert "CONFIDENTIAL" in d.reason
+        assert "INTERNAL" in d.reason
 
+    def test_unknown_tool_default_inbound(self) -> None:
+        p = OutboundPolicy()
+        assert p.check("unknown.tool", SensitivityLabel.CONFIDENTIAL).allowed
 
-class TestFullFlowIntegration:
-    """End-to-end: classify -> track -> gate outbound."""
+    def test_unknown_tool_default_outbound(self) -> None:
+        p = OutboundPolicy(
+            default_outbound=True,
+            default_max_sensitivity=SensitivityLabel.PUBLIC,
+        )
+        assert p.check("unknown.tool", SensitivityLabel.PUBLIC).allowed
+        assert not p.check("unknown.tool", SensitivityLabel.INTERNAL).allowed
 
-    def test_ssn_blocks_subsequent_email(self) -> None:
-        ctx = SensitivityContext()
-        # Agent reads a file containing an SSN
-        ctx.observe("Employee record: SSN 123-45-6789")
-        # Agent then tries to send an email
-        decision = check_outbound("send_email", ctx.max_sensitivity)
-        assert not decision.allowed
-        assert decision.sensitivity == SensitivityLabel.HIGHLY_CONFIDENTIAL
+    def test_register_tool(self) -> None:
+        p = OutboundPolicy()
+        p.register(
+            "email.send",
+            ToolClassification(outbound=True, max_sensitivity=SensitivityLabel.PUBLIC),
+        )
+        assert not p.check("email.send", SensitivityLabel.INTERNAL).allowed
 
-    def test_public_conversation_no_restrictions(self) -> None:
-        ctx = SensitivityContext()
-        ctx.observe("The weather in Paris is nice")
-        ctx.observe("Hotels with good reviews")
-        decision = check_outbound("send_email", ctx.max_sensitivity)
-        assert decision.allowed
-
-    def test_internal_data_allows_outbound(self) -> None:
-        """INTERNAL is below the CONFIDENTIAL threshold for outbound gating."""
-        ctx = SensitivityContext()
-        ctx.observe("INTERNAL: Q4 planning meeting notes")
-        decision = check_outbound("send_email", ctx.max_sensitivity)
-        assert decision.allowed
+    def test_decision_carries_hwm_and_tool_max(self) -> None:
+        p = OutboundPolicy(
+            registry={
+                "http.post": ToolClassification(
+                    outbound=True, max_sensitivity=SensitivityLabel.INTERNAL,
+                ),
+            },
+        )
+        d = p.check("http.post", SensitivityLabel.CONFIDENTIAL)
+        assert d.hwm is SensitivityLabel.CONFIDENTIAL
+        assert d.tool_max is SensitivityLabel.INTERNAL
+        assert d.source == "tessera.sensitivity"
