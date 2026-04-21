@@ -159,6 +159,7 @@ from tessera.signing import (
     LabelVerifier,
     SigningNotAvailable,
 )
+from tessera.ssrf_guard import SSRFCheckResult, SSRFFinding, SSRFGuard
 from tessera.spire import (
     SpireJWKSFetcher,
     SpireJWTSource,
@@ -286,6 +287,9 @@ __all__ = [
     "SpireJWTSource",
     "SpireNotAvailable",
     "SpireProtocolError",
+    "SSRFCheckResult",
+    "SSRFFinding",
+    "SSRFGuard",
     "SignedEvidenceBundle",
     "ResourceRequirement",
     "ResourceRequirementIR",
