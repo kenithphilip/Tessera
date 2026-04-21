@@ -113,6 +113,19 @@ from tessera.quarantine import (
     split_by_trust,
     strict_worker,
 )
+from tessera.replay import (
+    Agreement,
+    Label,
+    LabelStore,
+    PolicyDecision as CandidatePolicyDecision,
+    ReplayCase,
+    ReplayResult,
+    ReplayStats,
+    iter_replay_cases,
+    replay,
+    run_replay,
+    score as score_replay,
+)
 from tessera.compliance import ChainedAuditLog, enrich_event
 from tessera.risk.cooldown import CooldownEscalator
 from tessera.risk.forecaster import SessionRisk, SessionRiskForecaster
@@ -253,6 +266,17 @@ __all__ = [
     "PolicySegmentSummary",
     "PromptProvenanceManifest",
     "QuarantinedExecutor",
+    "Agreement",
+    "CandidatePolicyDecision",
+    "Label",
+    "LabelStore",
+    "ReplayCase",
+    "ReplayResult",
+    "ReplayStats",
+    "iter_replay_cases",
+    "replay",
+    "run_replay",
+    "score_replay",
     "Secret",
     "SecretRegistry",
     "SecurityEvent",
