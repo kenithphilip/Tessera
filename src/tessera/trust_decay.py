@@ -175,6 +175,32 @@ class DecayAwareContext:
         return self._context.segments
 
     @property
+    def principal(self) -> str | None:
+        """Delegate to the wrapped context's principal.
+
+        PolicyInput.from_evaluation needs this field. Decay affects trust
+        levels, not identity, so the underlying value passes through.
+        """
+        return self._context.principal
+
+    @property
+    def max_trust(self) -> TrustLevel:
+        """Delegate to the wrapped context's max_trust.
+
+        Decay can only reduce trust, never raise it, so max_trust is
+        passed through unchanged.
+        """
+        return self._context.max_trust
+
+    @property
+    def effective_readers(self) -> frozenset[str] | None:
+        """Delegate to the wrapped context's effective_readers.
+
+        Readers are a per-segment attribute independent of trust decay.
+        """
+        return self._context.effective_readers
+
+    @property
     def min_trust(self) -> TrustLevel:
         """Minimum effective trust across all segments after decay.
 

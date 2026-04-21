@@ -50,6 +50,16 @@ _PHRASES_WITH_PREP: tuple[str, ...] = tuple(
     for v, a, o, p in product(_VERBS, _ADJECTIVES, _OBJECTS, _PREPOSITIONS)
 )
 
+# Parallel word sets for fast rejection: on clean text no phrase has any
+# word in common with the text, and we can skip SequenceMatcher entirely.
+_PHRASE_WORDS: tuple[frozenset[str], ...] = tuple(
+    frozenset(p.split()) for p in _PHRASES
+)
+
+_PHRASE_WORDS_WITH_PREP: tuple[frozenset[str], ...] = tuple(
+    frozenset(p.split()) for p in _PHRASES_WITH_PREP
+)
+
 _REGEX_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Instruction override (handles "ignore all previous instructions",
     # "disregard prior commands", "forget previous rules", etc.)
@@ -169,10 +179,24 @@ def _word_overlap(a: str, b: str) -> float:
 
 
 def _sliding_window_score(text: str, phrases: tuple[str, ...]) -> float:
-    """Best match score across all phrases using sliding windows."""
+    """Best match score across all phrases using sliding windows.
+
+    Fast-rejects phrases whose words do not appear in the text at all.
+    On clean text, this skips ~100% of phrases without running the O(N^2)
+    SequenceMatcher, turning 300ms scans into sub-millisecond.
+    """
     text_lower = text.lower()
+    text_words = frozenset(text_lower.split())
     best = 0.0
-    for phrase in phrases:
+    # Pick the parallel word-set tuple that matches the phrase tuple.
+    word_sets = (
+        _PHRASE_WORDS_WITH_PREP
+        if phrases is _PHRASES_WITH_PREP
+        else _PHRASE_WORDS
+    )
+    for phrase, phrase_words in zip(phrases, word_sets):
+        if not (phrase_words & text_words):
+            continue
         plen = len(phrase)
         if plen > len(text_lower):
             continue
