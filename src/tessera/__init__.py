@@ -126,6 +126,15 @@ from tessera.replay import (
     run_replay,
     score as score_replay,
 )
+from tessera.policy_builder import (
+    Proposal,
+    ProposalEvidence,
+    ProposalImpact,
+    ProposalKind,
+    analyze as analyze_policy,
+    analyze_and_score as analyze_and_score_policy,
+    score_proposal,
+)
 from tessera.compliance import ChainedAuditLog, enrich_event
 from tessera.risk.cooldown import CooldownEscalator
 from tessera.risk.forecaster import SessionRisk, SessionRiskForecaster
@@ -271,12 +280,19 @@ __all__ = [
     "CandidatePolicyDecision",
     "Label",
     "LabelStore",
+    "Proposal",
+    "ProposalEvidence",
+    "ProposalImpact",
+    "ProposalKind",
     "ReplayCase",
     "ReplayResult",
     "ReplayStats",
+    "analyze_policy",
+    "analyze_and_score_policy",
     "iter_replay_cases",
     "replay",
     "run_replay",
+    "score_proposal",
     "score_replay",
     "Secret",
     "SecretRegistry",
