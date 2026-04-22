@@ -339,12 +339,26 @@ class LLMGuardrail:
         text: str,
         tool_name: str = "unknown",
         user_prompt: str = "",
+        *,
+        redacted: bool = True,
     ) -> GuardrailDecision:
         """Classify tool output for injection content.
 
         Short-circuits through the circuit breaker when open, so the
         caller never pays the provider timeout when the provider is
         unhealthy. See :class:`BreakerConfig` for tuning.
+
+        Args:
+            text: The text to classify. Pass either the redacted form
+                (default in proxy deployments) or the raw form, and set
+                ``redacted`` accordingly so the audit log records which
+                view the judge actually saw.
+            tool_name: Name of the tool whose output this is.
+            user_prompt: Optional user task for context.
+            redacted: Whether ``text`` has had secrets and PII redacted
+                before being passed in. Recorded in the emitted event
+                so operators can correlate misses with the redaction
+                state. Does NOT change classification behavior.
         """
         if self._cache is not None:
             cached = self._cache.get(text, tool_name)
@@ -357,7 +371,10 @@ class LLMGuardrail:
         if skip:
             self._skipped_by_breaker += 1
             decision = self._fallback_decision()
-            self._emit(tool_name, decision, breaker_state=state, skipped=True)
+            self._emit(
+                tool_name, decision,
+                breaker_state=state, skipped=True, redacted=redacted,
+            )
             return decision
 
         self._call_count += 1
@@ -381,7 +398,11 @@ class LLMGuardrail:
 
         # Re-snapshot state for the event so it reflects any transition
         # from the call above (e.g. a probe that just failed).
-        self._emit(tool_name, decision, breaker_state=self._breaker.snapshot().state)
+        self._emit(
+            tool_name, decision,
+            breaker_state=self._breaker.snapshot().state,
+            redacted=redacted,
+        )
         return decision
 
     def should_taint(
@@ -389,9 +410,11 @@ class LLMGuardrail:
         text: str,
         tool_name: str = "unknown",
         user_prompt: str = "",
+        *,
+        redacted: bool = True,
     ) -> bool:
         """Convenience: True if the guardrail says taint with high confidence."""
-        decision = self.evaluate(text, tool_name, user_prompt)
+        decision = self.evaluate(text, tool_name, user_prompt, redacted=redacted)
         return decision.is_injection and decision.confidence >= self._threshold
 
     @property
@@ -494,6 +517,7 @@ class LLMGuardrail:
         *,
         breaker_state: str,
         skipped: bool = False,
+        redacted: bool = True,
     ) -> None:
         """Emit a security event for the guardrail decision."""
         from tessera.events import EventKind, SecurityEvent, emit
@@ -514,6 +538,7 @@ class LLMGuardrail:
                     "skipped_by_breaker": self._skipped_by_breaker,
                     "breaker_state": breaker_state,
                     "breaker_skipped_call": skipped,
+                    "redacted_input": redacted,
                 },
             )
         )

@@ -189,6 +189,63 @@ class TestGuardrailIntegration:
         assert guardrail.stats["cache_hits"] == 0
 
 
+class TestRedactedInputFlag:
+    """The ``redacted`` kwarg surfaces in the emitted event detail.
+
+    Default is True (preserves the prior assumption: the proxy redacts
+    secrets and PII before invoking the judge). Callers that opt out of
+    pre-redaction set redacted=False so the audit log distinguishes
+    "judge saw redacted text" from "judge saw raw text". This is
+    metadata only; the classification path is unchanged.
+    """
+
+    def _captured_events(self):
+        from tessera.events import register_sink, unregister_sink, SecurityEvent
+        captured: list[SecurityEvent] = []
+
+        def sink(event: SecurityEvent) -> None:
+            captured.append(event)
+
+        register_sink(sink)
+        try:
+            yield captured
+        finally:
+            unregister_sink(sink)
+
+    def test_default_records_redacted_true(self) -> None:
+        from tessera.events import register_sink, unregister_sink, SecurityEvent
+        captured: list[SecurityEvent] = []
+        register_sink(captured.append)
+        try:
+            client = _mock_anthropic_client(
+                '{"is_injection": false, "confidence": 0.9, "category": "clean"}'
+            )
+            guardrail = LLMGuardrail(client=client, model="test")
+            guardrail.evaluate("hello", "tool")
+        finally:
+            unregister_sink(captured.append)
+        # Find the guardrail event
+        decisions = [e for e in captured if e.detail.get("scanner") == "llm_guardrail"]
+        assert decisions
+        assert decisions[-1].detail["redacted_input"] is True
+
+    def test_explicit_redacted_false_recorded(self) -> None:
+        from tessera.events import register_sink, unregister_sink, SecurityEvent
+        captured: list[SecurityEvent] = []
+        register_sink(captured.append)
+        try:
+            client = _mock_anthropic_client(
+                '{"is_injection": false, "confidence": 0.9, "category": "clean"}'
+            )
+            guardrail = LLMGuardrail(client=client, model="test")
+            guardrail.should_taint("raw text", "tool", redacted=False)
+        finally:
+            unregister_sink(captured.append)
+        decisions = [e for e in captured if e.detail.get("scanner") == "llm_guardrail"]
+        assert decisions
+        assert decisions[-1].detail["redacted_input"] is False
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker
 # ---------------------------------------------------------------------------
