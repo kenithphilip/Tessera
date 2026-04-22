@@ -1,11 +1,14 @@
 # Contributing to Tessera
 
-Tessera is a draft-for-discussion reference implementation of two
-primitives for agent security meshes. The full position paper is in
+Tessera is a Python library of composable security primitives for LLM
+agent systems. Two load-bearing invariants drive the design (signed
+trust labels with taint tracking, schema-enforced dual-LLM execution),
+documented in
 [`papers/two-primitives-for-agent-security-meshes.md`](papers/two-primitives-for-agent-security-meshes.md).
-Please read it before contributing. The contributions most likely to be
-merged are the ones that sharpen the primitives or extend them without
-weakening the stated invariants.
+Please read the paper before contributing. The contributions most
+likely to be merged are the ones that sharpen the two invariants or
+extend the supporting primitives (audit, replay, policy synthesis,
+SSRF and URL gating, scanners) without weakening the stated invariants.
 
 ## What we want
 

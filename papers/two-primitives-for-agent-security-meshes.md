@@ -7,7 +7,7 @@
 **Status:** Draft for discussion with OWASP Agentic AI, IETF WIMSE, and agent
 mesh implementers.
 
-**Version:** 0.3, April 2026
+**Version:** 0.4, April 2026 (paper); v0.7.0 (reference implementation)
 
 **License:** This paper is licensed under CC BY 4.0. The reference
 implementation referenced herein is licensed under AGPL-3.0-or-later.
@@ -46,10 +46,28 @@ where trust levels decay over time and degrade based on observed
 anomalous behavior. These extensions are described in Sections 3.7
 through 3.10.
 
+In v0.7.0 of the reference implementation, five further supporting
+primitives have landed alongside the two load-bearing invariants:
+persistent hash-chained audit logging (`tessera.audit_log`), decision
+replay against alternate policies (`tessera.replay`), deterministic and
+LLM-driven policy synthesis (`tessera.policy_builder`,
+`tessera.policy_builder_llm`), an SSRF guard with encoded-IP decoding
+and DNS-rebinding defense (`tessera.ssrf_guard`), and a deterministic
+URL allow / deny gate (`tessera.url_rules`). These primitives compose
+with the two invariants but do not replace them: replay reads the audit
+log produced by policy denials, the policy builder scores proposals via
+replay, and the SSRF guard runs as a Scanner under the same protocol as
+the content scanners. The two original invariants remain the
+load-bearing security properties; the supporting primitives add
+durability, replayability, and policy authoring on top.
+
 The reference implementation is open-source and available as a Python
-library of approximately 18,200 lines across 92 modules, with
-approximately 15,700 lines of test coverage and 991 passing tests
-validating the stated invariants.
+library of approximately 26,800 lines across 98 implementation modules,
+with 1409 passing tests validating the stated invariants. AgentMesh, a
+FastAPI proxy that wires the Tessera primitives into a single
+deployable service with 39 HTTP endpoints and 15 SDK adapters (11
+agent-framework adapters and 4 coding-agent hook adapters), ships
+separately as `agentmesh-mesh` on PyPI and depends on `tessera-mesh`.
 
 ---
 
@@ -859,13 +877,13 @@ This paper makes a deliberately narrow set of claims. We do not claim:
 ## 8. Reference implementation
 
 The reference implementation is Tessera, a Python library available at
-<https://github.com/kenithphilip/Tessera>. As of version 0.3.1:
+<https://github.com/kenithphilip/Tessera>. As of version 0.7.0:
 
-- **Source:** approximately 22,000 lines of Python across 94 modules.
+- **Source:** approximately 26,800 lines of Python across 98
+  implementation modules.
 - **Rust gateway:** approximately 8,200 lines in `rust/tessera-gateway/`
   (reference data plane).
-- **Tests:** approximately 17,400 lines of tests, 1173 passing, runtime
-  approximately 8 seconds.
+- **Tests:** 1409 passing, runtime approximately 10 seconds.
 - **Dependencies:** FastAPI and Pydantic (required), PyJWT with
   cryptography (required for JWT-SVID signing). Optional extras for
   OpenTelemetry, MCP, CEL, SPIFFE, gRPC/xDS, and 14 framework adapters.

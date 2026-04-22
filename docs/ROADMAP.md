@@ -1,17 +1,21 @@
 # Roadmap
 
-Tessera is the primitives library for agent security meshes. It provides
-signed provenance, taint-tracking policy, schema-enforced dual-LLM
-execution, delegation, workload identity, and supporting infrastructure.
+Tessera is a Python library of composable security primitives for LLM
+agent systems. Two load-bearing invariants drive the design (signed
+trust labels with taint tracking, schema-enforced dual-LLM execution);
+the library has grown around them to include audit, replay, policy
+synthesis, SSRF and URL gating, scanners, identity, delegation, and
+provenance.
 
-AgentMesh is the larger goal: a full agent security mesh (the Istio for
-LLM agents) that composes Tessera with agentgateway, SPIFFE/SPIRE,
-OPA/Cedar, OpenTelemetry, and framework-specific SDKs. The AgentMesh
-architecture is specified in `docs/AGENT_SECURITY_MESH_V1_SPEC.md`.
+AgentMesh is the deployed mesh built on Tessera: a FastAPI proxy with
+39 HTTP endpoints and 15 SDK adapters that wires the Tessera primitives
+into a single deployable service. AgentMesh ships v0.7.0 on PyPI as
+`agentmesh-mesh`. The architecture is specified in
+`docs/AGENT_SECURITY_MESH_V1_SPEC.md`.
 
-This roadmap covers both. It reflects what has shipped and what we
-believe is worth building next. It is not a commitment. Priorities can
-change based on community feedback, standards work, and real deployment
+This roadmap covers both. It reflects what has shipped and what is
+worth building next. It is not a commitment. Priorities can change
+based on community feedback, standards work, and real deployment
 experience.
 
 ## What has shipped
@@ -103,7 +107,30 @@ Test coverage (current):
 - PolicyIR roundtrip and compile tests
 - Extension hook dispatcher and fail-closed behavior tests
 
-## What is likely next (v0.1, v0.2)
+## What landed in v0.4 through v0.7
+
+These releases shipped without explicit roadmap entries; recording
+them here for completeness. See `docs/CHANGELOG.md` for full release
+notes.
+
+- **v0.4 / v0.5**: sensitivity high-water-mark and trajectory-keyed
+  IFC; `tessera.destructive_guard` named-pattern engine; three
+  Sondera-inspired primitives (`tessera.read_only_guard`,
+  `tessera.policy_invariant`, `tessera.delegation_intent`).
+- **v0.6**: `tessera.scanners.Scanner` protocol unifying the scanner
+  surface; `tessera.scanners.supply_chain` (typosquat / homoglyph /
+  shadow-name detection plus install-command parsing);
+  `tessera.scanners.yara` lazy-import wrapper; coding-agent SDK
+  adapters (Claude Code, Cursor, Copilot, Gemini) in AgentMesh.
+- **v0.7**: `tessera.audit_log` append-only JSONL hash chain with
+  optional truncation seal; `tessera.replay` decision replay with
+  `LabelStore`; deterministic `tessera.policy_builder` and
+  LLM-driven `tessera.policy_builder_llm`; `tessera.ssrf_guard`
+  with encoded-IP decoding; `tessera.url_rules` deterministic
+  allow / deny gate; `LLMGuardrail` circuit breaker;
+  `redacted_input` flag in guardrail event detail.
+
+## What is likely next
 
 Ordered by security payoff per engineering effort.
 

@@ -742,10 +742,18 @@ Properties:
 
 ## Relationship To Tessera
 
-Tessera already implements two primitives that belong inside this architecture:
+Tessera implements the two load-bearing invariants that belong inside this architecture:
 
 - content-bound signed labels on context segments with taint-tracking policy
 - schema-enforced dual-LLM execution for trusted control and untrusted data separation
+
+Around the two invariants, Tessera has grown to include hash-chained
+audit (`tessera.audit_log`), decision replay (`tessera.replay`),
+deterministic and LLM-driven policy synthesis (`tessera.policy_builder`,
+`tessera.policy_builder_llm`), SSRF and URL gating (`tessera.ssrf_guard`,
+`tessera.url_rules`), content scanning, identity, delegation, and
+provenance. These supporting primitives compose with the two invariants
+but do not replace them.
 
 Tessera should remain a portable primitive layer. It should not become a competing mesh control plane. That is already consistent with the current [roadmap](./ROADMAP.md), which explicitly says Tessera should not build a new control plane.
 

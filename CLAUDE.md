@@ -4,14 +4,16 @@ Context file for AI assistants working in the Tessera repository.
 
 ## What this project is
 
-Tessera is a reference implementation of two security primitives for LLM
-agent systems. The primitives are specified in
+Tessera is a Python library of composable security primitives for LLM
+agent systems. Two load-bearing invariants drive the design and are
+specified in
 [`papers/two-primitives-for-agent-security-meshes.md`](papers/two-primitives-for-agent-security-meshes.md).
-That paper is the authoritative specification. This codebase exists to
-prove the primitives are tractable, not to be the production
-implementation of them.
+That paper is the authoritative specification of those two invariants
+and remains the security target the code is held to. The library has
+grown around them since the paper was published; the supporting
+primitives compose with the two invariants but do not replace them.
 
-The two primitives are:
+The two load-bearing invariants are:
 
 1. **Signed trust labels on context segments, with taint tracking at the
    tool-call boundary.** Every chunk of text entering the LLM's context
@@ -27,6 +29,24 @@ The two primitives are:
    contains no free-form string fields. This closes the Worker-to-Planner
    injection channel in Simon Willison's dual-LLM pattern without
    requiring a custom interpreter.
+
+Supporting primitives that compose with the two invariants:
+
+- `tessera.audit_log`: append-only JSONL hash chain. Persistent record
+  of policy decisions; tamper detection without the signing key.
+- `tessera.replay`: re-runs historical decisions against any candidate
+  policy callable. Reads the audit log, scores agreement, surfaces
+  fixed / regressed counts driven by ground-truth labels.
+- `tessera.policy_builder` and `tessera.policy_builder_llm`:
+  deterministic and LLM-driven proposers that emit scored
+  `ToolRequirement` adjustments.
+- `tessera.ssrf_guard`: outbound URL gate with encoded-IP decoding,
+  DNS-rebinding defense, cloud-metadata-specific rule IDs.
+- `tessera.url_rules`: deterministic URL allow / deny tier evaluated
+  before the SSRF guard and scanners.
+
+These do not change the two load-bearing invariants. They add
+durability, replayability, and policy authoring on top.
 
 ## Threat model (narrow on purpose)
 
@@ -76,25 +96,28 @@ security primitive. Do not do that without explicit discussion.
 
 Tessera is the primitives library: signed provenance labels, taint-tracking
 policy, schema-enforced dual-LLM execution, delegation, workload identity,
-and the supporting infrastructure. It is designed to compose with any agent
-mesh, not to be one.
+audit, replay, policy synthesis, scanners, and the supporting
+infrastructure. It is designed to compose with any agent mesh, not to be
+one.
 
-AgentMesh is the larger vision: a full agent security mesh that composes
-Tessera with agentgateway, SPIFFE/SPIRE, OPA/Cedar, OpenTelemetry, and
-framework-specific SDKs. AgentMesh does not exist as a shipped product yet.
-The specifications in `docs/AGENT_SECURITY_MESH_V1_SPEC.md` describe the
-proposed architecture. Tessera is the core library that AgentMesh will be
-built on.
+AgentMesh is the deployed mesh built on Tessera: a FastAPI proxy
+(39 HTTP endpoints) that wires the Tessera primitives into a single
+service, plus 15 SDK adapters (11 frameworks: LangChain, OpenAI Agents,
+CrewAI, Google ADK, LlamaIndex, LangGraph, Haystack, PydanticAI,
+NeMo Guardrails, AgentDojo, generic; 4 coding-agent hooks: Claude Code,
+Cursor, Copilot, Gemini). AgentMesh ships v0.7.0 on PyPI as
+`agentmesh-mesh` and depends on `tessera-mesh>=0.7.0`.
 
-When writing about this project, do not conflate the two. Tessera is real,
-tested, and composable. AgentMesh is a proposed architecture with a roadmap.
+When writing about this project, do not conflate the two. Tessera is the
+library; AgentMesh is the mesh deployment built from it.
 
 ## Project state
 
-- **Version:** v0.3.0, published April 2026
-- **Python source:** ~21,700 lines across 101 modules in `src/tessera/`
+- **Version:** v0.7.0, published April 2026
+- **Python source:** ~26,800 lines across 98 implementation modules in `src/tessera/`
+  (excludes `__init__.py` and protobuf-generated `_pb2*` files)
 - **Rust gateway:** ~8,200 lines in `rust/tessera-gateway/` (reference data plane)
-- **Python tests:** ~17,400 lines, 1173 passing, runtime ~8 seconds
+- **Python tests:** 1409 passing, runtime ~10 seconds
 - **Rust tests:** 45 tokio::test functions in `lib.rs`
 - **Python:** 3.12+ only
 - **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, httpx,
@@ -111,6 +134,12 @@ Stable APIs (unlikely to change before v1.0):
 - `tessera.signing.HMACSigner`, `HMACVerifier`, `JWTSigner`, `JWTVerifier`, `JWKSVerifier`
 - `tessera.events.SecurityEvent`, `register_sink`
 - `tessera.redaction.SecretRegistry`, `redact_nested`
+- `tessera.audit_log.JSONLHashchainSink`, `ChainedRecord`, `ReplayEnvelope`,
+  `make_replay_detail`, `verify_chain`, `iter_records`
+- `tessera.replay.ReplayCase`, `LabelStore`, `iter_replay_cases`,
+  `run_replay`, `score`
+- `tessera.ssrf_guard.SSRFGuard`, `SSRFCheckResult`
+- `tessera.url_rules.URLRulesEngine`, `URLRule`, `URLDecision`
 
 Less stable, expected to change:
 
@@ -130,9 +159,13 @@ Less stable, expected to change:
 - `tessera.xds` gRPC wire format (delta-xDS and ACK/NACK planned for later release)
 - `tessera.scanners` content analysis (heuristic, canary, PII detection)
 - `tessera.risk` session-level risk intelligence (irreversibility, salami, cooldown)
-- `tessera.compliance` NIST/CWE enrichment and hash-chain audit log
+- `tessera.compliance` NIST/CWE enrichment (separate from `tessera.audit_log`'s hash chain)
 - `tessera.ratelimit` token budget enforcement
 - `tessera.mcp.MCPSecurityContext`
+- `tessera.policy_builder` and `tessera.policy_builder_llm` proposal
+  templates (will grow; the underlying scoring path via replay is stable)
+- `tessera.guardrail.LLMGuardrail` breaker tuning surface and event
+  detail shape
 - Security event sink API (will grow as more SIEM integrations land)
 
 ## Development workflow
@@ -192,13 +225,14 @@ A is the primary way external readers verify our claims.
 ## Where things live
 
 ```
-src/tessera/           Python primitives library (101 modules including hooks/, xds/, scanners/, risk/, adapters/)
+src/tessera/           Python primitives library (98 implementation modules
+                       under hooks/, xds/, scanners/, risk/, adapters/)
 rust/tessera-gateway/  Rust reference data plane
-tests/                 pytest suite (216 tests)
+tests/                 pytest suite (1409 passing)
 benchmarks/            microbenchmark suite (python -m benchmarks)
 examples/              runnable demos (offline + real-API)
 deployment/spire/      SPIRE docker-compose reference (not end-to-end tested)
-papers/                position paper, authoritative spec
+papers/                position paper, authoritative spec for the two invariants
 docs/                  architecture, roadmap, changelog, mesh specs
 CLAUDE.md              this file
 SECURITY.md            threat model and disclosure policy
@@ -209,16 +243,21 @@ LICENSE                AGPL-3.0-or-later
 
 ## Memory discipline for AI assistants
 
-- Tessera is the primitives library. AgentMesh is the future mesh product.
-  Do not conflate them. When someone asks "what is Tessera," say it is a
-  composable library of security primitives for agent systems. When someone
-  asks "what is AgentMesh," say it is a proposed architecture for a full
-  agent security mesh, with Tessera as the core library.
-- Do not overclaim Tessera's scope. It has grown beyond the original two
-  primitives (now includes delegation, provenance, identity, A2A, policy
-  backends, evidence), but it is still a library, not a mesh. Pitch it
-  as composable with any existing mesh (agentgateway, Bedrock AgentCore,
-  Microsoft Agent Governance Toolkit).
+- Tessera is the primitives library. AgentMesh is the deployed mesh
+  built from it. Do not conflate them. When someone asks "what is
+  Tessera," say it is a Python library of composable security primitives
+  for LLM agent systems with two load-bearing invariants (signed trust
+  labels with taint tracking, schema-enforced dual-LLM execution) and a
+  growing set of supporting primitives. When someone asks "what is
+  AgentMesh," say it is a FastAPI proxy and SDK adapter layer that wires
+  Tessera into a single deployable service.
+- Do not overclaim Tessera's scope. It has grown well beyond the original
+  two primitives (now includes audit, replay, policy synthesis, SSRF and
+  URL gating, delegation, provenance, identity, A2A, policy backends,
+  evidence), but the two original invariants remain the load-bearing
+  security properties; the rest are supporting primitives that compose
+  with them. Pitch Tessera as composable with any existing mesh
+  (agentgateway, Bedrock AgentCore, Microsoft Agent Governance Toolkit).
 - The Rust gateway (`rust/tessera-gateway/`) is a reference implementation
   proving the primitives port to a production data plane. It is not a
   competitor to agentgateway. The goal is to contribute these primitives

@@ -4,11 +4,15 @@
 
 *Version 2.0, April 2026*
 
-**Status:** Proposed architecture. This document describes what AgentMesh
-will become, not what exists today. Tessera (the core primitives library)
-is real and tested. The SDK, tiered deployment, and framework integrations
-described here are the build target. See `AGENT_SECURITY_MESH_V1_SPEC.md`
-for the current specification.
+**Status:** Architecture spec. AgentMesh ships v0.7.0 on PyPI as
+`agentmesh-mesh`: a FastAPI proxy with 39 HTTP endpoints, 15 SDK
+adapters (11 framework adapters and 4 coding-agent hook adapters), and
+the v0.7.0 supporting primitives (hash-chained audit, decision replay,
+deterministic and LLM-driven policy builder, SSRF guard, URL rules)
+wired through. The full tiered deployment surface and complete
+framework matrix described in this document remain the build target;
+the Tessera primitives that underpin them are real and tested. See
+`AGENT_SECURITY_MESH_V1_SPEC.md` for the current specification.
 
 ---
 

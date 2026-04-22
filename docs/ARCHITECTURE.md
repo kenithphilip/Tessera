@@ -659,7 +659,7 @@ Every security-relevant change must come with a test that pins the
 specific invariant the change affects. The test should fail on the old
 behavior and pass on the new. This is enforced informally in code review.
 
-The test suite is fast (~6 seconds for 216 tests) and should stay fast.
+The test suite is fast (~10 seconds for 1409 tests) and should stay fast.
 Slow tests get less love and are more likely to be skipped under time
 pressure. If a test is slow because it is doing too much, split it.
 

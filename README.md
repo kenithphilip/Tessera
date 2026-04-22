@@ -1,15 +1,14 @@
 # Tessera
 
-**Signed provenance, delegation-aware taint tracking, and schema-enforced
-dual-LLM execution for agent security meshes.**
+**Composable security primitives for LLM agent systems.**
 
-![tests](https://img.shields.io/badge/tests-1173%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1409%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
 
-Tessera is a Python library and sidecar proxy that implements two primitives
-recent agent security surveys identify as unimplemented in production:
+Tessera is a Python library of composable security primitives for LLM
+agent systems. Two load-bearing invariants drive the design:
 
 1. **Signed trust labels on context segments**, with deterministic
    taint tracking at the tool-call boundary. A tool call requiring USER
@@ -22,8 +21,16 @@ recent agent security surveys identify as unimplemented in production:
    validator, closing the convention-based hole in Simon Willison's
    dual-LLM pattern without requiring a custom interpreter.
 
-Both primitives are documented in
-[papers/two-primitives-for-agent-security-meshes.md](papers/two-primitives-for-agent-security-meshes.md).
+The two invariants are documented in
+[papers/two-primitives-for-agent-security-meshes.md](papers/two-primitives-for-agent-security-meshes.md)
+and remain the load-bearing security properties of the library. Around
+them, Tessera has grown to include hash-chained audit logging, decision
+replay, deterministic and LLM-driven policy synthesis, SSRF and URL
+gating, content scanning, identity, delegation, and provenance. Every
+supporting primitive composes with the two invariants: replay reads the
+audit log produced by policy denials, the policy builder scores
+proposals via replay, and the SSRF guard runs as a Scanner under the
+same protocol as the content scanners.
 
 ---
 
@@ -173,7 +180,13 @@ TrustLabel(
 | `tessera.read_only_guard` | Read-only tool argument validation with toxic flow detection |
 | `tessera.rag_guard` | RAG/vector store scan-on-retrieval with PoisonedRAG defense |
 | `tessera.policy_invariant` | Runtime control-flow invariant enforcement |
-| `tessera.guardrail` | Optional LLM-based semantic injection classifier with provider-agnostic client, structured-only output, and SHA-256 cached decisions |
+| `tessera.guardrail` | Optional LLM-based semantic injection classifier with circuit breaker (closed / open / half_open), provider-agnostic client, structured-only output, and SHA-256 cached decisions |
+| `tessera.audit_log` | Append-only JSONL hash-chain audit sink with optional HMAC seal for truncation detection. Each event carries a `prev_hash`; tampering with one event breaks verification for every subsequent event |
+| `tessera.replay` | Re-run historical decisions against any candidate policy callable. `LabelStore` persists ground-truth labels keyed by `(seq, hash)` for stable scoring across chain rewrites |
+| `tessera.policy_builder` | Deterministic policy proposer that reads the audit log, aggregates per-tool counts and labels, and emits scored `ToolRequirement` adjustments via replay |
+| `tessera.policy_builder_llm` | LLM-driven proposer layered on the deterministic baseline. Constrained template set keeps the LLM out of free-form CEL synthesis; reuses the existing scorer |
+| `tessera.ssrf_guard` | Outbound URL gate that decodes encoded IP forms (decimal, hex, octal, IPv4-mapped IPv6) and resolves hostnames before the CIDR check (DNS-rebinding defense). Blocks RFC1918, loopback, link-local, cloud metadata IPs (with vendor-specific rule IDs), and non-http(s) schemes |
+| `tessera.url_rules` | Fast deterministic URL allow / deny gate. Three pattern shapes (exact > prefix > glob), deny-wins-over-allow within a tier, optional method allowlist |
 | `tessera.adapters.enhanced` | Full defense stack composing all security components |
 
 Reference deployments:
@@ -192,10 +205,10 @@ Reference deployments:
 
 ---
 
-## Defense layers (v0.2.0)
+## Defense layers
 
-Beyond the two core primitives, Tessera v0.2.0 adds layered defenses that
-compose with the taint-tracking policy engine:
+Beyond the two load-bearing invariants, Tessera adds layered defenses
+that compose with the taint-tracking policy engine:
 
 - **Content analysis scanners.** Directive detection, intent classification,
   and heuristic scoring identify injected instructions in tool outputs and
@@ -428,17 +441,22 @@ Tessera is designed to slot into any agent mesh, not to replace one:
 
 ## Status
 
-**Experimental.** v0.2.0 ships ~21,700 lines of Python across 101
-modules, ~17,400 lines of tests (1171 passing), and a Rust reference
+**Experimental.** v0.7.0 ships ~26,800 lines of Python across 98
+implementation modules, 1409 passing tests, and a Rust reference
 gateway. The invariants are testable and the primitives compose, but the
 API will change, the ergonomics will change, and the integrations with
 existing mesh infrastructure are not yet battle-tested at scale.
 
 What is stable:
 
-- The core invariant and its test coverage
+- The two load-bearing invariants (`Context.min_trust` drives policy
+  decisions; `WorkerReport` has no free-form string fields) and their
+  test coverage
 - The `TrustLabel` structure (HMAC and JWT-SVID signing modes)
 - The `strict_worker` contract and the safe-by-default `WorkerReport`
+- The hash-chained audit log format (`tessera.audit_log.ChainedRecord`)
+- The replay envelope schema (`tessera.audit_log.ReplayEnvelope` and
+  `make_replay_detail`)
 
 What is likely to change:
 
@@ -465,6 +483,9 @@ Contributions are welcome, particularly:
   LlamaIndex, Haystack, LangGraph, PydanticAI, Nemo, LlamaFirewall,
   upstream, enhanced)
 - Additional test coverage for edge cases in the taint-tracking invariant
+- Layer-2 LLM proposers that produce richer policy edits (CEL rule
+  synthesis, argument-level requirements) on top of the deterministic
+  `tessera.policy_builder` baseline
 
 Open an issue with questions, corrections, or proposals. Pull requests
 should include tests that pin the invariant being added or changed.
