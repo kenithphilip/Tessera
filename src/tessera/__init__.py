@@ -113,6 +113,28 @@ from tessera.quarantine import (
     split_by_trust,
     strict_worker,
 )
+from tessera.replay import (
+    Agreement,
+    Label,
+    LabelStore,
+    PolicyDecision as CandidatePolicyDecision,
+    ReplayCase,
+    ReplayResult,
+    ReplayStats,
+    iter_replay_cases,
+    replay,
+    run_replay,
+    score as score_replay,
+)
+from tessera.policy_builder import (
+    Proposal,
+    ProposalEvidence,
+    ProposalImpact,
+    ProposalKind,
+    analyze as analyze_policy,
+    analyze_and_score as analyze_and_score_policy,
+    score_proposal,
+)
 from tessera.compliance import ChainedAuditLog, enrich_event
 from tessera.risk.cooldown import CooldownEscalator
 from tessera.risk.forecaster import SessionRisk, SessionRiskForecaster
@@ -145,6 +167,15 @@ from tessera.signing import (
     LabelSigner,
     LabelVerifier,
     SigningNotAvailable,
+)
+from tessera.ssrf_guard import SSRFCheckResult, SSRFFinding, SSRFGuard
+from tessera.url_rules import (
+    PatternKind,
+    RuleAction,
+    RuleVerdict,
+    URLDecision,
+    URLRule,
+    URLRulesEngine,
 )
 from tessera.spire import (
     SpireJWKSFetcher,
@@ -253,6 +284,24 @@ __all__ = [
     "PolicySegmentSummary",
     "PromptProvenanceManifest",
     "QuarantinedExecutor",
+    "Agreement",
+    "CandidatePolicyDecision",
+    "Label",
+    "LabelStore",
+    "Proposal",
+    "ProposalEvidence",
+    "ProposalImpact",
+    "ProposalKind",
+    "ReplayCase",
+    "ReplayResult",
+    "ReplayStats",
+    "analyze_policy",
+    "analyze_and_score_policy",
+    "iter_replay_cases",
+    "replay",
+    "run_replay",
+    "score_proposal",
+    "score_replay",
     "Secret",
     "SecretRegistry",
     "SecurityEvent",
@@ -262,6 +311,15 @@ __all__ = [
     "SpireJWTSource",
     "SpireNotAvailable",
     "SpireProtocolError",
+    "PatternKind",
+    "RuleAction",
+    "RuleVerdict",
+    "SSRFCheckResult",
+    "SSRFFinding",
+    "SSRFGuard",
+    "URLDecision",
+    "URLRule",
+    "URLRulesEngine",
     "SignedEvidenceBundle",
     "ResourceRequirement",
     "ResourceRequirementIR",
