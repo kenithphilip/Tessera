@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything before v1.0.0 is experimental; API changes may occur in any
 minor release.
 
+## [0.7.0] - 2026-04-22
+
+### Added
+
+- tessera.audit_log: append-only JSONL hash chain. Each record carries a prev_hash linking it to its predecessor; tampering with any single event breaks verification for every subsequent event without access to the signing key. Optional HMAC seal file detects truncation that an internally-valid chain alone cannot.
+- tessera.audit_log.ReplayEnvelope and make_replay_detail: schema-widening helper for SecurityEvent.detail so audit entries carry enough structure (trajectory_id, tool_name, args, segments, sensitivity_hwm, decision_*) to be replayable against alternate policies.
+- tessera.replay: re-run historical decisions against any candidate policy callable. ReplayCase / ReplayResult / ReplayStats with agreement counts (agreed/disagreed/errored), allow-to-deny and deny-to-allow flip counters, and label-driven fixed/regressed counts. LabelStore persists ground-truth labels keyed by (seq, record_hash) so chain rewrites cannot silently invalidate annotations.
+- tessera.policy_builder: deterministic policy proposer that reads the audit log, aggregates per-tool decision counts and labels, and emits ToolRequirement adjustments (LOOSEN / TIGHTEN by one step on the UNTRUSTED -> TOOL -> USER -> SYSTEM ladder). Both heuristics are label-gated. score_proposal() runs the candidate Policy through tessera.replay and returns ProposalImpact with the full ReplayStats. analyze_and_score() ranks proposals by net_fixes (fixed - regressed) descending.
+- tessera.policy_builder_llm: LLM-driven proposer layered on top of the deterministic baseline. Reuses the same Proposal shape so callers score LLM-generated suggestions through the existing scorer. Constrained template set (tighten / loosen / mark_read_only / register_tool) keeps the LLM out of free-form CEL synthesis. Pydantic-validated structured output, circuit breaker (same shape as tessera.guardrail), graceful fallback to empty list on failure.
+- tessera.ssrf_guard: deny outbound URLs that resolve to private space, loopback, link-local, cloud metadata (AWS / GCP / Azure / OCI / Alibaba), or non-http(s) schemes. Decodes encoded IP forms (decimal, hex, octal, IPv4-mapped IPv6) that bypass naive checks. Resolves hostnames before the CIDR check (DNS-rebinding defense), with an injectable resolver for tests. Cloud metadata IPs get a more specific rule_id than generic CIDR matches. Implements the Scanner protocol so the guard composes with the scanner suite.
+- tessera.url_rules: fast deterministic URL allow / deny gate. Three pattern shapes (exact > prefix > glob) evaluated in tier order; deny-wins-over-allow within a tier. Optional method allowlist per rule. Designed to short-circuit before SSRF and scanners on high-traffic predictable URLs.
+- tessera.guardrail.LLMGuardrail: circuit breaker with closed / open / half_open state machine, BreakerConfig (failure_threshold, open_duration_seconds, open_mode), open-mode choice between PASS_THROUGH (default; deterministic scanners remain authoritative) and DENY (paranoid). Stats exposed via stats / breaker_state for /metrics scraping.
+- tessera.guardrail.LLMGuardrail: redacted=True keyword on evaluate() and should_taint() that surfaces in the GUARDRAIL_DECISION event detail under redacted_input. Pure metadata; no behavior change. Lets operators correlate misses or false positives with the redaction state.
+
+### Changed
+
+- tessera.guardrail: parse failures now raise so the circuit breaker can count them. Previous behavior silently fell back to confidence=0.0, hiding the failure from the breaker.
+
+### Verified
+
+- 1395 passing tests (8 second runtime); the 3 pre-existing failures are environmental (optional adapter packages installed in the dev venv but tests assert "not available").
+- Hash-chain integrity: tamper detection on detail / hash / sequence-gap / truncation (with seal); 4 concurrent writers x 50 events each maintain contiguous monotone seq.
+- SSRFGuard: 35 tests pin every default CIDR, every encoded-IP form, IPv4-mapped IPv6 unwrap, allowlist mode rejecting raw IPs, and resolver failure as fail-closed.
+- Replay: deterministic replay of 5-record audit produces stable ReplayStats; label-driven fixed/regressed counts honor stale-hash invalidation.
+
 ## [0.3.0] - 2026-04-16
 
 ### Added

@@ -169,6 +169,14 @@ from tessera.signing import (
     SigningNotAvailable,
 )
 from tessera.ssrf_guard import SSRFCheckResult, SSRFFinding, SSRFGuard
+from tessera.url_rules import (
+    PatternKind,
+    RuleAction,
+    RuleVerdict,
+    URLDecision,
+    URLRule,
+    URLRulesEngine,
+)
 from tessera.spire import (
     SpireJWKSFetcher,
     SpireJWTSource,
@@ -303,9 +311,15 @@ __all__ = [
     "SpireJWTSource",
     "SpireNotAvailable",
     "SpireProtocolError",
+    "PatternKind",
+    "RuleAction",
+    "RuleVerdict",
     "SSRFCheckResult",
     "SSRFFinding",
     "SSRFGuard",
+    "URLDecision",
+    "URLRule",
+    "URLRulesEngine",
     "SignedEvidenceBundle",
     "ResourceRequirement",
     "ResourceRequirementIR",

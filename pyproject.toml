@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-mesh"
-version = "0.3.0"
+version = "0.7.0"
 description = "Signed provenance labels and taint-tracking policy for LLM context windows."
 requires-python = ">=3.12"
 readme = "README.md"
