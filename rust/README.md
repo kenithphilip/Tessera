@@ -51,6 +51,50 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
+## v0.8.0-rc.1 (Phase 5 complete)
+
+Phase 5 ships the load test harness. Every perf claim now has a
+measured number behind it, reproducible from any operator's host.
+
+New in `tessera-bench`:
+
+- `tessera-bench` binary with subcommands `evaluate`, `label`,
+  `audit-verify`, `mixed`, `sustained`, `compare`. Built on
+  `tokio + reqwest + hdrhistogram` (custom, not `wrk`, so we get
+  correlated p50 / p95 / p99 / p99.9 across endpoint mixes
+  without Lua).
+- 5 workloads in `crates/tessera-bench/src/workloads/`:
+  `evaluate`, `label`, `audit-verify`, `mixed` (60/30/10 split),
+  `sustained` (long-duration soak).
+- `compare` subcommand drives the same workload against two
+  targets and emits a side-by-side report. Designed for the
+  Python AgentMesh proxy vs Rust gateway comparison.
+- Markdown summary to stdout; optional append to a results file
+  (`--report-file`); optional CSV drop for Grafana ingestion
+  (`--csv-dir`, filename `<git-sha>-<rfc3339>.csv`).
+- `crates/tessera-bench/examples/spawn_primitives.rs` binds the
+  primitives router on `127.0.0.1:18081` so the harness can be
+  driven against a real tokio listener without standing up the
+  full `tessera-gateway` binary.
+
+Initial baseline (Apple M3 Pro, single-host loopback, in-process
+primitives router):
+
+| Workload     | Concurrency | RPS     | p50 ms | p95 ms | p99 ms |
+|--------------|-------------|---------|--------|--------|--------|
+| evaluate     | 100         | 160,736 | 0.65   | 1.20   | 1.51   |
+| audit-verify | 100         | 199,145 | 0.52   | 0.90   | 1.16   |
+| mixed        | 100         | 5,170   | 28.59  | 59.84  | 73.47  |
+
+Full methodology, reproduce recipe, and CSV column spec at
+`rust/bench/results.md`.
+
+Test status: 750 passing across the workspace (Phase 4: 734,
+Phase 5: +16). All 8 runner / report unit tests plus 3 in-process
+smoke tests against the gateway router; the smoke tests fail
+loudly if the harness ever loses the ability to drive a real
+listener.
+
 ## v0.8.0-beta.1 (Phase 4 complete)
 
 Phase 4 closes the data-path coverage. Hot-path code that

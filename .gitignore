@@ -19,3 +19,4 @@ htmlcov/
 rust/tessera-gateway/target/
 rust/target/
 benchmarks/agentdojo_live/*.json
+rust/bench/results/

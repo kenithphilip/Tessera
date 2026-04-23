@@ -41,7 +41,9 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(test)]
+use std::time::Duration;
 
 use tessera_core::labels::TrustLevel;
 use tessera_policy::builder::{

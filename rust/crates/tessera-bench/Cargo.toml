@@ -9,17 +9,34 @@ authors.workspace = true
 description = "Microbenchmarks (criterion) and load harness binary for the Tessera Rust workspace."
 publish = false
 
+[lib]
+name = "tessera_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tessera-bench"
+path = "src/main.rs"
+
 [dependencies]
 tessera-core = { path = "../tessera-core" }
 tessera-audit = { path = "../tessera-audit" }
 tessera-policy = { path = "../tessera-policy" }
 tessera-runtime = { path = "../tessera-runtime" }
-serde_json = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
 hdrhistogram = { workspace = true }
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "http2"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+async-trait = { workspace = true }
 tempfile = { workspace = true }
+tessera-gateway = { path = "../tessera-gateway" }
+axum = { workspace = true }
 
 [[bench]]
 name = "policy_eval"
