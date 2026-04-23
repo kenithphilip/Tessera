@@ -36,6 +36,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 tessera-gateway = { path = "../tessera-gateway" }
+tessera-policy = { path = "../tessera-policy", features = ["cel-jit"] }
 axum = { workspace = true }
 simd-json = { workspace = true }
 
@@ -45,6 +46,10 @@ harness = false
 
 [[bench]]
 name = "json_extractor"
+harness = false
+
+[[bench]]
+name = "cel_eval"
 harness = false
 
 [lints]

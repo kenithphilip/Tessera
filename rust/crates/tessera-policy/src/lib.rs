@@ -8,6 +8,8 @@
 
 pub mod builder;
 pub mod cel;
+#[cfg(feature = "cel-jit")]
+pub mod cel_jit;
 pub mod compliance;
 pub mod delegation;
 pub mod delegation_intent;

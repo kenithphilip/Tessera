@@ -119,6 +119,42 @@ baseline above do not move measurably; the per-call latency does.
 
 Run with `cargo bench --bench json_extractor -p tessera-bench`.
 
+## v0.10.0 wave B: CEL evaluator (interpreter vs Cranelift JIT)
+
+`crates/tessera-policy/src/cel.rs` ships a parity port of
+`tessera.cel_engine` via cel-interpreter. `crates/tessera-policy/src/cel_jit.rs`
+adds a `cranelift-jit`-backed `JitCelEvaluator` (gated behind the
+`cel-jit` feature) that compiles the supported CEL subset (int
+comparison + boolean composition + int ident lookup) to native code.
+Anything outside the subset (string ops, args lookup, function
+calls) transparently falls back to the interpreter; the engine
+exposes `jit_count()` and `fallback_count()` for ops visibility.
+
+Microbench (criterion, Apple M3 Pro, single-host, `cargo bench
+--bench cel_eval -p tessera-bench`):
+
+| Workload    | Interpreter | JIT    | Speedup |
+|-------------|-------------|--------|---------|
+| 1 rule      | 3.21 us     | 40 ns  | ~80x    |
+| 5 rules     | 3.36 us     | 53 ns  | ~63x    |
+| 50 rules    | 5.32 us     | 460 ns | ~12x    |
+
+Reading the numbers:
+
+- The JIT pays back enormously on int-only rules. Per-call activation
+  build is ~3 us in the interpreter (HashMap of CelValue boxes); the
+  JIT just loads two i64s from a stack-allocated `JitActivation`.
+- The 50-rule pack still runs the JIT through every rule serially
+  (no chain optimization), so the 460 ns is dominated by the linear
+  walk; even there it is 12x faster than the interpreter.
+- Rules with string ops or args lookups fall back to the interpreter
+  for that rule. The fallback path is identical in cost to running
+  the interpreter directly.
+
+Run with `cargo bench --bench cel_eval -p tessera-bench`. The
+`cel-jit` feature is enabled implicitly because tessera-bench's
+dev-deps include `tessera-policy = { features = ["cel-jit"] }`.
+
 ## Comparison rows
 
 The plan calls for rows comparing:

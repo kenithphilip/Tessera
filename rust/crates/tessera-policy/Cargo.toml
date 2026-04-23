@@ -27,6 +27,27 @@ url = { workspace = true }
 # tessera.cel_engine (Python). Used by Policy::evaluate after the
 # taint-floor check passes; deny-only refinements.
 cel-interpreter = { workspace = true }
+cel-parser = { workspace = true }
+# Optional deps for the cel-jit feature.
+cranelift = { workspace = true, optional = true }
+cranelift-jit = { workspace = true, optional = true }
+cranelift-module = { workspace = true, optional = true }
+cranelift-native = { workspace = true, optional = true }
+
+[features]
+default = []
+# Compile the supported CEL subset (int comparisons + boolean
+# composition) to native code via cranelift-jit. Falls back to the
+# interpreter for any rule containing unsupported AST nodes; tracks
+# fallbacks in JitCelEvaluator::fallback_count() so operators can
+# see what the JIT actually accelerated. Adds ~50 MB of build
+# artifacts; default builds stay lean without it.
+cel-jit = [
+    "dep:cranelift",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-native",
+]
 
 [dev-dependencies]
 tempfile = { workspace = true }
