@@ -25,7 +25,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.8.0-alpha.3"
+version = "0.8.0-beta.1"
 edition = "2021"
 rust-version = "1.80"
 license = "AGPL-3.0-or-later"
@@ -58,6 +58,13 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+# Phase 4 audit-log writer channel.
+crossbeam-channel = "0.5"
+# Phase 4 concurrent session store.
+dashmap = "6"
+# Phase 4 sessions: AES-256-GCM with HKDF key derivation.
+aes-gcm = "0.10"
+hkdf = "0.12"
 # Phase 1 perf wins.
 aho-corasick = "1"
 arc-swap = "1"

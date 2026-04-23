@@ -11,11 +11,22 @@
 //! `Context` across tenants would let user A's web-tainted segments
 //! deny user B's tool calls. Per-session contexts make that
 //! cross-tenant interference structurally impossible.
+//!
+//! Concurrency model: the backing store is a `DashMap`, which stripes
+//! its internal `RwLock` across 16 shards by default. Concurrent reads
+//! to distinct session ids contend only within a shard, not globally.
+//! LRU eviction walks the map via `DashMap::iter()`, which takes a
+//! brief read-lock per shard as it advances; it is O(n) but holds no
+//! global lock. The `next_token` and `evictions` counters are
+//! `AtomicU64` so they never serialize otherwise-independent gets.
+//! The only remaining serialization point is `DashMap::entry()` during
+//! first-time session creation, which is scoped to one shard.
 
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use tessera_core::context::Context;
@@ -49,20 +60,20 @@ struct Entry {
 }
 
 /// Thread-safe per-session [`Context`] store.
+///
+/// Internally backed by `DashMap` so concurrent reads to distinct
+/// sessions scale linearly across cores. See the module docstring for
+/// the full concurrency model.
 pub struct SessionContextStore {
-    inner: Mutex<Inner>,
+    entries: DashMap<String, Entry>,
+    /// Monotonically increasing counter used to assign LRU tokens.
+    next_token: AtomicU64,
+    /// Cumulative count of TTL + LRU + reset evictions.
+    evictions: AtomicU64,
     ttl: Duration,
     max_sessions: usize,
     clock: Box<dyn MonotonicClock>,
     on_evict: Option<EvictCallback>,
-}
-
-struct Inner {
-    entries: HashMap<String, Entry>,
-    /// Monotonically increasing counter used to assign LRU tokens.
-    next_token: u64,
-    /// Cumulative count of TTL + LRU + reset evictions.
-    evictions: u64,
 }
 
 impl SessionContextStore {
@@ -92,47 +103,55 @@ impl SessionContextStore {
             return Err(StoreError::EmptySessionId);
         }
         let now = self.clock.now();
-        let evicted_ids;
-        let ctx;
-        {
-            let mut inner = self.inner.lock();
-            evicted_ids = self.evict_expired_locked(&mut inner, now);
-            inner.next_token += 1;
-            let new_token = inner.next_token;
-            if let Some(entry) = inner.entries.get_mut(session_id) {
-                entry.last_touched = now;
-                entry.lru_token = new_token;
-                ctx = Arc::clone(&entry.context);
-            } else {
-                let entry = Entry {
-                    context: Arc::new(Mutex::new(Context::new())),
-                    last_touched: now,
-                    lru_token: new_token,
-                };
-                ctx = Arc::clone(&entry.context);
-                inner.entries.insert(session_id.to_string(), entry);
-                if self.max_sessions > 0 && inner.entries.len() > self.max_sessions {
-                    if let Some(victim) = self.find_lru_locked(&inner) {
-                        inner.entries.remove(&victim);
-                        inner.evictions += 1;
-                        self.fire_evictions(std::iter::once(victim));
-                    }
+
+        // Lazy TTL sweep before we touch or insert.
+        let expired = self.collect_expired(now);
+        for sid in &expired {
+            if self.entries.remove(sid).is_some() {
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let new_token = self.next_token.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Use DashMap's entry API: takes a shard write-lock only for the
+        // duration of the or_insert_with closure, so concurrent gets for
+        // *different* sessions never block each other across shards.
+        let ctx = {
+            let entry = self.entries.entry(session_id.to_string()).or_insert_with(|| Entry {
+                context: Arc::new(Mutex::new(Context::new())),
+                last_touched: now,
+                lru_token: new_token,
+            });
+            // Update touch time and LRU token whether or not we just created it.
+            // The entry RefMut holds the shard lock here, which is fine.
+            let mut e = entry;
+            e.last_touched = now;
+            e.lru_token = new_token;
+            Arc::clone(&e.context)
+        };
+
+        // LRU cap enforcement after insertion. We may transiently be one
+        // over the cap under heavy concurrent inserts; that is acceptable
+        // and is corrected on the next get.
+        if self.max_sessions > 0 && self.entries.len() > self.max_sessions {
+            if let Some(victim) = self.find_lru() {
+                // Guard: another thread may have removed the victim already.
+                if self.entries.remove(&victim).is_some() {
+                    self.evictions.fetch_add(1, Ordering::Relaxed);
+                    self.fire_evictions(std::iter::once(victim));
                 }
             }
         }
-        // Fire the eviction callback for TTL-expired entries OUTSIDE
-        // the lock so a callback that calls back into the store cannot
-        // deadlock us.
-        self.fire_evictions(evicted_ids);
+
+        self.fire_evictions(expired);
         Ok(ctx)
     }
 
     /// True if the session exists and is not expired. Does not touch.
     pub fn has(&self, session_id: &str) -> bool {
         let now = self.clock.now();
-        let inner = self.inner.lock();
-        inner
-            .entries
+        self.entries
             .get(session_id)
             .map(|e| now.duration_since(e.last_touched) <= self.ttl)
             .unwrap_or(false)
@@ -141,62 +160,59 @@ impl SessionContextStore {
     /// Drop one session. Idempotent. Fires the eviction callback iff
     /// the session existed.
     pub fn reset(&self, session_id: &str) {
-        let existed = {
-            let mut inner = self.inner.lock();
-            let removed = inner.entries.remove(session_id).is_some();
-            if removed {
-                inner.evictions += 1;
-            }
-            removed
-        };
-        if existed {
+        if self.entries.remove(session_id).is_some() {
+            self.evictions.fetch_add(1, Ordering::Relaxed);
             self.fire_evictions(std::iter::once(session_id.to_string()));
         }
     }
 
     /// Drop every session. Fires the callback per session.
     pub fn reset_all(&self) {
-        let ids: Vec<String> = {
-            let mut inner = self.inner.lock();
-            let ids: Vec<String> = inner.entries.keys().cloned().collect();
-            inner.entries.clear();
-            inner.evictions += ids.len() as u64;
-            ids
-        };
+        let ids: Vec<String> = self.entries.iter().map(|r| r.key().clone()).collect();
+        for sid in &ids {
+            self.entries.remove(sid);
+        }
+        self.evictions.fetch_add(ids.len() as u64, Ordering::Relaxed);
         self.fire_evictions(ids);
     }
 
     /// Force a TTL sweep. Returns the count evicted.
     pub fn evict_expired(&self) -> usize {
         let now = self.clock.now();
-        let evicted = {
-            let mut inner = self.inner.lock();
-            self.evict_expired_locked(&mut inner, now)
-        };
-        let count = evicted.len();
-        self.fire_evictions(evicted);
+        let expired = self.collect_expired(now);
+        let mut count = 0usize;
+        for sid in &expired {
+            if self.entries.remove(sid).is_some() {
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+                count += 1;
+            }
+        }
+        self.fire_evictions(expired);
         count
     }
 
     /// Snapshot of currently-active session ids in LRU-to-MRU order.
     pub fn session_ids(&self) -> Vec<String> {
-        let inner = self.inner.lock();
-        let mut pairs: Vec<(&String, &Entry)> = inner.entries.iter().collect();
-        pairs.sort_by_key(|(_, e)| e.lru_token);
-        pairs.into_iter().map(|(k, _)| k.clone()).collect()
+        let mut pairs: Vec<(String, u64)> = self
+            .entries
+            .iter()
+            .map(|r| (r.key().clone(), r.lru_token))
+            .collect();
+        pairs.sort_by_key(|(_, token)| *token);
+        pairs.into_iter().map(|(k, _)| k).collect()
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().entries.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.entries.is_empty()
     }
 
     /// Cumulative LRU + TTL + reset evictions since construction.
     pub fn evictions(&self) -> u64 {
-        self.inner.lock().evictions
+        self.evictions.load(Ordering::Relaxed)
     }
 
     pub fn ttl(&self) -> Duration {
@@ -207,31 +223,29 @@ impl SessionContextStore {
         self.max_sessions
     }
 
-    // -- internal -----------------------------------------------------
+    // -- internal ---------------------------------------------------------
 
-    fn evict_expired_locked(&self, inner: &mut Inner, now: Instant) -> Vec<String> {
-        if inner.entries.is_empty() {
+    /// Collect keys of entries whose age exceeds the TTL. Does not remove
+    /// them; callers are responsible for the actual removal so the shard
+    /// lock from `iter()` is released before we call `remove()`.
+    fn collect_expired(&self, now: Instant) -> Vec<String> {
+        if self.entries.is_empty() {
             return Vec::new();
         }
-        let mut expired: Vec<String> = Vec::new();
-        for (sid, entry) in inner.entries.iter() {
-            if now.duration_since(entry.last_touched) > self.ttl {
-                expired.push(sid.clone());
-            }
-        }
-        for sid in &expired {
-            inner.entries.remove(sid);
-            inner.evictions += 1;
-        }
-        expired
+        self.entries
+            .iter()
+            .filter(|r| now.duration_since(r.last_touched) > self.ttl)
+            .map(|r| r.key().clone())
+            .collect()
     }
 
-    fn find_lru_locked(&self, inner: &Inner) -> Option<String> {
-        inner
-            .entries
+    /// Find the session id with the smallest lru_token (least recently used).
+    /// O(n) over all shards; no global lock is held.
+    fn find_lru(&self) -> Option<String> {
+        self.entries
             .iter()
-            .min_by_key(|(_, e)| e.lru_token)
-            .map(|(k, _)| k.clone())
+            .min_by_key(|r| r.lru_token)
+            .map(|r| r.key().clone())
     }
 
     fn fire_evictions<I: IntoIterator<Item = String>>(&self, ids: I) {
@@ -239,7 +253,6 @@ impl SessionContextStore {
         for sid in ids {
             // Catch panics so a buggy callback never breaks the store.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(&sid)));
-            // Swallow panic: the store cares only about its own state.
             drop(result);
         }
     }
@@ -284,11 +297,9 @@ impl Builder {
     pub fn build(self) -> SessionContextStore {
         assert!(self.ttl_seconds > 0.0, "ttl_seconds must be positive");
         SessionContextStore {
-            inner: Mutex::new(Inner {
-                entries: HashMap::new(),
-                next_token: 0,
-                evictions: 0,
-            }),
+            entries: DashMap::new(),
+            next_token: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
             ttl: Duration::from_secs_f64(self.ttl_seconds),
             max_sessions: self.max_sessions,
             clock: self.clock.unwrap_or_else(|| Box::new(SystemClock)),

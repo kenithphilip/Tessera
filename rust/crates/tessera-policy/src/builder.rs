@@ -415,6 +415,11 @@ mod tests {
             trace_id: None,
         })
         .unwrap();
+        // Force the writer thread to flush so iter_replay_cases sees
+        // the record on the next read. Production callers do not need
+        // this; the writer drains continuously and Drop guarantees a
+        // final flush. Tests that write-then-immediately-read need it.
+        sink.flush().unwrap();
     }
 
     #[test]

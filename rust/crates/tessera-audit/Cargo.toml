@@ -9,6 +9,7 @@ authors.workspace = true
 description = "Append-only JSONL hash-chained audit log with optional truncation seal and cross-language interop with the Python tessera.audit_log module."
 
 [dependencies]
+crossbeam-channel = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 serde = { workspace = true }

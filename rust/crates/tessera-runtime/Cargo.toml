@@ -10,9 +10,23 @@ description = "Async runtime surfaces for Tessera: per-session Context store, se
 
 [dependencies]
 tessera-core = { path = "../tessera-core" }
+tessera-policy = { path = "../tessera-policy" }
+aes-gcm = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+dashmap = { workspace = true }
 parking_lot = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tessera-audit = { path = "../tessera-audit" }

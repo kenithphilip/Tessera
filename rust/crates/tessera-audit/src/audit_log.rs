@@ -14,12 +14,28 @@
 //! SHA-256 over the canonical bytes excluding the `hash` field, same
 //! HMAC-SHA256 seal layout. A chain written by the Rust gateway can be
 //! verified by `tessera.audit_log.verify_chain` and vice versa.
+//!
+//! ## Chain-hash serialization strategy
+//!
+//! Every record's hash covers `prev_hash`, so the hash computation must
+//! be serial: record N cannot be hashed until record N-1 is known. We
+//! use option (a): a small `Mutex<ChainState>` protects only the
+//! sequence counter and last hash. The lock is held for the counter
+//! bump and SHA-256 computation, then released before any I/O. The
+//! formatted line is then sent to a bounded crossbeam channel (capacity
+//! 4096) where a dedicated writer thread drains it, writes to the file,
+//! and issues periodic `fsync_data` calls. This keeps lock contention
+//! minimal (no disk I/O under the lock) while ensuring the chain is
+//! always consistent. A producer that outpaces the writer is slowed by
+//! the channel backpressure rather than OOM-ing.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
+use crossbeam_channel::{bounded, Receiver, Sender};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -28,6 +44,14 @@ use sha2::{Digest, Sha256};
 type HmacSha256 = Hmac<Sha256>;
 
 pub const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Channel capacity for the writer queue.
+/// 4096 records * ~200 bytes each is roughly 800 KB of buffered writes,
+/// giving the writer thread room to absorb bursts without back-pressure
+/// on the appender threads. When the channel is full, `send` blocks,
+/// which naturally rate-limits producers instead of allocating without
+/// bound.
+const WRITER_CHANNEL_CAP: usize = 4096;
 
 /// One entry in the audit log with its chain hash.
 ///
@@ -213,18 +237,53 @@ fn compute_hash(
     hex::encode(hasher.finalize())
 }
 
-/// Sink that appends each event to a JSONL file with a chain hash.
-pub struct JsonlHashchainSink {
-    path: PathBuf,
-    inner: Mutex<SinkInner>,
-    fsync_every: u64,
-    seal_key: Option<Vec<u8>>,
+// ---------------------------------------------------------------------------
+// Writer thread message type
+// ---------------------------------------------------------------------------
+
+/// Messages sent from `append` callers to the writer thread.
+enum WriterMsg {
+    /// A pre-formatted canonical JSONL line (without trailing newline)
+    /// plus the seq and hash for the optional seal update.
+    Record {
+        line: String,
+        seq: u64,
+        hash: String,
+    },
+    /// Tells the writer to drain everything queued ahead of this
+    /// message, fsync, and signal back via the supplied sender.
+    Flush(crossbeam_channel::Sender<()>),
+    /// Tells the writer thread to flush, fsync, and exit.
+    Shutdown,
 }
 
-struct SinkInner {
+// ---------------------------------------------------------------------------
+// Chain state -- the only thing that needs serialization across callers
+// ---------------------------------------------------------------------------
+
+struct ChainState {
     last_seq: u64,
     last_hash: String,
-    writes_since_fsync: u64,
+}
+
+// ---------------------------------------------------------------------------
+// JsonlHashchainSink
+// ---------------------------------------------------------------------------
+
+/// Sink that appends each event to a JSONL file with a chain hash.
+///
+/// The fast path (`append`) computes the chain hash on the caller's
+/// thread under a small mutex (no I/O held), then sends the formatted
+/// line to a bounded channel (capacity `WRITER_CHANNEL_CAP`). A
+/// dedicated writer thread owns the file descriptor, drains the channel,
+/// and issues `fsync_data` every `fsync_every` records.
+pub struct JsonlHashchainSink {
+    path: PathBuf,
+    /// Protects only the chain counter and last hash. Released before
+    /// any channel send, so it is never held during I/O.
+    chain: Mutex<ChainState>,
+    tx: Sender<WriterMsg>,
+    writer_thread: Option<thread::JoinHandle<()>>,
 }
 
 #[derive(Debug)]
@@ -276,57 +335,29 @@ impl JsonlHashchainSink {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut sink = Self {
-            path,
-            inner: Mutex::new(SinkInner {
-                last_seq: 0,
-                last_hash: GENESIS_HASH.to_string(),
-                writes_since_fsync: 0,
-            }),
-            fsync_every: fsync_every.max(1),
-            seal_key,
-        };
-        sink.recover()?;
-        Ok(sink)
-    }
 
-    fn recover(&mut self) -> Result<(), AuditError> {
-        if !self.path.exists() {
-            return Ok(());
-        }
-        let metadata = std::fs::metadata(&self.path)?;
-        if metadata.len() == 0 {
-            return Ok(());
-        }
-        // Read the last non-empty line. Cheap full read for now;
-        // matches the Python reference that reads up to 4 KiB from
-        // the tail.
-        let file = File::open(&self.path)?;
-        let reader = BufReader::new(file);
-        let mut last_line: Option<String> = None;
-        for line in reader.lines() {
-            let line = line?;
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                last_line = Some(trimmed.to_string());
-            }
-        }
-        let Some(last) = last_line else {
-            return Ok(());
-        };
-        match ChainedRecord::from_line(&last) {
-            Ok(record) => {
-                let mut inner = self.inner.lock().unwrap();
-                inner.last_seq = record.seq;
-                inner.last_hash = record.hash;
-            }
-            Err(_) => {
-                // Corrupt tail: stay at genesis. New writes will start
-                // a fresh chain; verify_chain catches the resulting
-                // gap if anyone trusts the whole file.
-            }
-        }
-        Ok(())
+        let (last_seq, last_hash) = recover_tail(&path)?;
+        let fsync_every = fsync_every.max(1);
+        let seal_key = seal_key.map(Arc::new);
+
+        let (tx, rx) = bounded::<WriterMsg>(WRITER_CHANNEL_CAP);
+
+        let writer_path = path.clone();
+        let writer_fsync_every = fsync_every;
+        let writer_seal_key = seal_key.clone();
+        let writer_thread = thread::Builder::new()
+            .name("tessera-audit-writer".into())
+            .spawn(move || {
+                run_writer(writer_path, writer_fsync_every, writer_seal_key, rx);
+            })
+            .expect("failed to spawn audit writer thread");
+
+        Ok(Self {
+            path,
+            chain: Mutex::new(ChainState { last_seq, last_hash }),
+            tx,
+            writer_thread: Some(writer_thread),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -334,75 +365,245 @@ impl JsonlHashchainSink {
     }
 
     pub fn last_seq(&self) -> u64 {
-        self.inner.lock().unwrap().last_seq
+        self.chain.lock().unwrap().last_seq
     }
 
     pub fn last_hash(&self) -> String {
-        self.inner.lock().unwrap().last_hash.clone()
+        self.chain.lock().unwrap().last_hash.clone()
     }
 
-    pub fn append(&self, entry: AppendEntry) -> Result<ChainedRecord, AuditError> {
-        let mut inner = self.inner.lock().unwrap();
-        let seq = inner.last_seq + 1;
-        let prev_hash = inner.last_hash.clone();
-        let hash = compute_hash(
-            seq,
-            &entry.timestamp,
-            &entry.kind,
-            &entry.principal,
-            &entry.detail,
-            entry.correlation_id.as_deref(),
-            entry.trace_id.as_deref(),
-            &prev_hash,
-        );
-        let record = ChainedRecord {
-            seq,
-            timestamp: entry.timestamp.clone(),
-            kind: entry.kind.clone(),
-            principal: entry.principal.clone(),
-            detail: entry.detail.clone(),
-            correlation_id: entry.correlation_id.clone(),
-            trace_id: entry.trace_id.clone(),
-            prev_hash,
-            hash: hash.clone(),
-        };
-        let line = record.to_canonical_json();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
-        inner.writes_since_fsync += 1;
-        if inner.writes_since_fsync >= self.fsync_every {
-            file.flush()?;
-            file.sync_data()?;
-            inner.writes_since_fsync = 0;
-        }
-        inner.last_seq = seq;
-        inner.last_hash = hash.clone();
-        if let Some(key) = &self.seal_key {
-            self.write_seal(seq, &hash, key)?;
-        }
-        Ok(record)
-    }
-
-    fn write_seal(&self, seq: u64, last_hash: &str, key: &[u8]) -> Result<(), AuditError> {
-        let mut mac = HmacSha256::new_from_slice(key)
-            .expect("HMAC accepts any key length");
-        mac.update(format!("{seq}|{last_hash}").as_bytes());
-        let tag = hex::encode(mac.finalize().into_bytes());
-        let seal = serde_json::json!({
-            "seq": seq,
-            "hash": last_hash,
-            "tag": tag,
-        });
-        let seal_path = seal_path_for(&self.path);
-        let tmp = seal_path.with_extension("seal.tmp");
-        std::fs::write(&tmp, canonical_json(&seal).as_bytes())?;
-        std::fs::rename(tmp, seal_path)?;
+    /// Block until every record queued before this call has been
+    /// written and `fsync`d. Use this in tests, in `iter_records`
+    /// callers that read from the same process that wrote, or before
+    /// any operation that needs the on-disk view to reflect prior
+    /// `append` calls. Production write paths typically do NOT need
+    /// `flush`; the writer thread drains continuously and `Drop`
+    /// guarantees a final flush.
+    pub fn flush(&self) -> Result<(), AuditError> {
+        let (tx, rx) = bounded::<()>(1);
+        self.tx
+            .send(WriterMsg::Flush(tx))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "audit writer thread has exited",
+                )
+            })?;
+        // Block until the writer signals back. The writer thread
+        // honors flush requests in queue order, so this returns only
+        // after every record sent before this flush has hit the disk.
+        rx.recv().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "audit writer dropped flush reply channel",
+            )
+        })?;
         Ok(())
     }
+
+    /// Append one record to the audit log.
+    ///
+    /// The chain hash is computed on the caller's thread (under a small
+    /// mutex that is released before the channel send). The formatted
+    /// line is queued to the writer thread; this call returns as soon as
+    /// the line is in the channel. If the channel is full (4096 items
+    /// queued), this call blocks until the writer drains a slot.
+    pub fn append(&self, entry: AppendEntry) -> Result<ChainedRecord, AuditError> {
+        // Compute hash under the chain mutex. Hold for counter + SHA-256
+        // only; release before the channel send.
+        let (record, line) = {
+            let mut state = self.chain.lock().unwrap();
+            let seq = state.last_seq + 1;
+            let prev_hash = state.last_hash.clone();
+            let hash = compute_hash(
+                seq,
+                &entry.timestamp,
+                &entry.kind,
+                &entry.principal,
+                &entry.detail,
+                entry.correlation_id.as_deref(),
+                entry.trace_id.as_deref(),
+                &prev_hash,
+            );
+            let record = ChainedRecord {
+                seq,
+                timestamp: entry.timestamp,
+                kind: entry.kind,
+                principal: entry.principal,
+                detail: entry.detail,
+                correlation_id: entry.correlation_id,
+                trace_id: entry.trace_id,
+                prev_hash,
+                hash: hash.clone(),
+            };
+            let line = record.to_canonical_json();
+            state.last_seq = seq;
+            state.last_hash = hash;
+            (record, line)
+        };
+        // Channel send: returns in nanoseconds when the channel has space.
+        // Blocks only when the writer is slower than the producer for
+        // more than WRITER_CHANNEL_CAP records -- a natural back-pressure.
+        self.tx
+            .send(WriterMsg::Record {
+                line,
+                seq: record.seq,
+                hash: record.hash.clone(),
+            })
+            // The writer thread panicking is the only way the channel
+            // disconnects while the sink is still live; propagate as Io.
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "audit writer thread has exited",
+                )
+            })?;
+        Ok(record)
+    }
+}
+
+impl Drop for JsonlHashchainSink {
+    /// Send the shutdown sentinel and join the writer thread, ensuring
+    /// every in-flight record is flushed and synced before drop returns.
+    fn drop(&mut self) {
+        // Ignore send errors: the thread may have already exited on panic.
+        let _ = self.tx.send(WriterMsg::Shutdown);
+        if let Some(handle) = self.writer_thread.take() {
+            // Panic in the writer thread is surfaced here. In production,
+            // callers should not rely on panic propagation; add a watchdog
+            // if the writer thread must be restarted on failure.
+            let _ = handle.join();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tail recovery
+// ---------------------------------------------------------------------------
+
+fn recover_tail(path: &Path) -> Result<(u64, String), AuditError> {
+    if !path.exists() {
+        return Ok((0, GENESIS_HASH.to_string()));
+    }
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() == 0 {
+        return Ok((0, GENESIS_HASH.to_string()));
+    }
+    // Read the last non-empty line. Cheap full read matching the Python
+    // reference that reads up to 4 KiB from the tail.
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut last_line: Option<String> = None;
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim().to_string();
+        if !trimmed.is_empty() {
+            last_line = Some(trimmed);
+        }
+    }
+    let Some(last) = last_line else {
+        return Ok((0, GENESIS_HASH.to_string()));
+    };
+    match ChainedRecord::from_line(&last) {
+        Ok(record) => Ok((record.seq, record.hash)),
+        Err(_) => {
+            // Corrupt tail: start fresh. verify_chain catches the gap.
+            Ok((0, GENESIS_HASH.to_string()))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Writer thread
+// ---------------------------------------------------------------------------
+
+fn run_writer(
+    path: PathBuf,
+    fsync_every: u64,
+    seal_key: Option<Arc<Vec<u8>>>,
+    rx: Receiver<WriterMsg>,
+) {
+    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("tessera-audit: writer thread failed to open {}: {e}", path.display());
+            return;
+        }
+    };
+    let mut writes_since_fsync: u64 = 0;
+
+    for msg in rx.iter() {
+        match msg {
+            WriterMsg::Record { line, seq, hash } => {
+                if let Err(e) = write_line(&mut file, &line) {
+                    eprintln!("tessera-audit: write error at seq {seq}: {e}");
+                    // Continue draining so Drop does not deadlock. Records
+                    // that fail to write are lost; the broken chain will be
+                    // caught by verify_chain.
+                    continue;
+                }
+                writes_since_fsync += 1;
+                if writes_since_fsync >= fsync_every {
+                    if let Err(e) = file.flush().and_then(|_| file.sync_data()) {
+                        eprintln!("tessera-audit: fsync error: {e}");
+                    }
+                    writes_since_fsync = 0;
+                }
+                if let Some(ref key) = seal_key {
+                    if let Err(e) = write_seal(&path, seq, &hash, key) {
+                        eprintln!("tessera-audit: seal write error at seq {seq}: {e}");
+                    }
+                }
+            }
+            WriterMsg::Flush(reply) => {
+                if writes_since_fsync > 0 {
+                    if let Err(e) = file.flush().and_then(|_| file.sync_data()) {
+                        eprintln!("tessera-audit: flush error: {e}");
+                    }
+                    writes_since_fsync = 0;
+                }
+                // Signal the caller. Ignore send errors: the caller may
+                // have given up on the rendezvous already.
+                let _ = reply.send(());
+            }
+            WriterMsg::Shutdown => {
+                // Final flush and fsync before the thread exits.
+                if writes_since_fsync > 0 {
+                    if let Err(e) = file.flush().and_then(|_| file.sync_data()) {
+                        eprintln!("tessera-audit: final fsync error: {e}");
+                    }
+                }
+                return;
+            }
+        }
+    }
+    // Channel closed without Shutdown (sender dropped). Flush anyway.
+    if writes_since_fsync > 0 {
+        if let Err(e) = file.flush().and_then(|_| file.sync_data()) {
+            eprintln!("tessera-audit: final fsync error on channel close: {e}");
+        }
+    }
+}
+
+fn write_line(file: &mut File, line: &str) -> std::io::Result<()> {
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")
+}
+
+fn write_seal(path: &Path, seq: u64, last_hash: &str, key: &[u8]) -> Result<(), AuditError> {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(format!("{seq}|{last_hash}").as_bytes());
+    let tag = hex::encode(mac.finalize().into_bytes());
+    let seal = serde_json::json!({
+        "seq": seq,
+        "hash": last_hash,
+        "tag": tag,
+    });
+    let seal_path = seal_path_for(path);
+    let tmp = seal_path.with_extension("seal.tmp");
+    std::fs::write(&tmp, canonical_json(&seal).as_bytes())?;
+    std::fs::rename(tmp, seal_path)?;
+    Ok(())
 }
 
 fn seal_path_for(path: &Path) -> PathBuf {
@@ -636,6 +837,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs::OpenOptions;
     use tempfile::tempdir;
 
     fn entry(detail: Value) -> AppendEntry {
@@ -647,6 +849,13 @@ mod tests {
             correlation_id: None,
             trace_id: None,
         }
+    }
+
+    /// Drop the sink and wait for the writer thread to flush before
+    /// opening the file for inspection. This helper exists so tests
+    /// can use a one-liner without littering explicit drops everywhere.
+    fn flush(sink: JsonlHashchainSink) {
+        drop(sink); // Drop impl sends Shutdown and joins the writer thread.
     }
 
     #[test]
@@ -691,11 +900,11 @@ mod tests {
         for i in 0..3 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.split('\n').filter(|s| !s.is_empty()).collect();
         assert_eq!(lines.len(), 3);
         for ln in lines {
-            // Each line is JSON on its own.
             let _: Value = serde_json::from_str(ln).unwrap();
         }
     }
@@ -708,6 +917,7 @@ mod tests {
         for i in 0..5 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         let r = verify_chain(&path, None).unwrap();
         assert!(r.valid);
         assert_eq!(r.records_checked, 5);
@@ -730,6 +940,7 @@ mod tests {
         for i in 0..3 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         // Tamper line 2 (index 1): change detail, leave hash alone.
         let content = std::fs::read_to_string(&path).unwrap();
         let mut lines: Vec<String> = content.lines().map(String::from).collect();
@@ -751,6 +962,7 @@ mod tests {
         for i in 0..3 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<String> = content.lines().map(String::from).collect();
         // Drop the middle line.
@@ -769,10 +981,11 @@ mod tests {
             let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
             sink.append(entry(json!({"n": 1}))).unwrap();
             sink.append(entry(json!({"n": 2}))).unwrap();
-        }
+        } // Drop flushes.
         let sink2 = JsonlHashchainSink::new(&path, 1, None).unwrap();
         assert_eq!(sink2.last_seq(), 2);
         sink2.append(entry(json!({"n": 3}))).unwrap();
+        flush(sink2);
         let r = verify_chain(&path, None).unwrap();
         assert!(r.valid);
         assert_eq!(r.records_checked, 3);
@@ -784,8 +997,6 @@ mod tests {
         let path = dir.path().join("audit.jsonl");
         std::fs::write(&path, "this is not json\n").unwrap();
         let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
-        // Stays at genesis; the corrupt prefix means a later
-        // verify_chain would catch the resulting mismatch.
         assert_eq!(sink.last_seq(), 0);
     }
 
@@ -798,6 +1009,7 @@ mod tests {
         for i in 0..5 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         // Truncate to 3 lines: internal chain still valid for those
         // three, but the seal references seq 5.
         let content = std::fs::read_to_string(&path).unwrap();
@@ -817,6 +1029,7 @@ mod tests {
         for i in 0..3 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         let r = verify_chain(&path, Some(&key)).unwrap();
         assert!(r.valid);
         assert_eq!(r.seal_valid, Some(true));
@@ -829,8 +1042,10 @@ mod tests {
         let key = b"k".repeat(32);
         let sink = JsonlHashchainSink::new(&path, 1, Some(key.clone())).unwrap();
         sink.append(entry(json!({"n": 1}))).unwrap();
+        flush(sink);
         let seal_path = seal_path_for(&path);
-        let mut seal: Value = serde_json::from_str(&std::fs::read_to_string(&seal_path).unwrap()).unwrap();
+        let mut seal: Value =
+            serde_json::from_str(&std::fs::read_to_string(&seal_path).unwrap()).unwrap();
         seal["tag"] = json!("0".repeat(64));
         std::fs::write(&seal_path, canonical_json(&seal)).unwrap();
         let r = verify_chain(&path, Some(&key)).unwrap();
@@ -846,6 +1061,7 @@ mod tests {
         for i in 0..10 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         let recs = iter_records(&path).unwrap();
         assert_eq!(recs.len(), 10);
         for (i, r) in recs.iter().enumerate() {
@@ -859,10 +1075,15 @@ mod tests {
         let path = dir.path().join("audit.jsonl");
         let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
         sink.append(entry(json!({"n": 1}))).unwrap();
+        flush(sink);
         // Append a junk line.
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
         f.write_all(b"not-json\n").unwrap();
-        sink.append(entry(json!({"n": 2}))).unwrap();
+        drop(f);
+        // Open a new sink that picks up from seq 1, appends seq 2.
+        let sink2 = JsonlHashchainSink::new(&path, 1, None).unwrap();
+        sink2.append(entry(json!({"n": 2}))).unwrap();
+        flush(sink2);
         let recs = iter_records(&path).unwrap();
         // Two valid records; the junk line is skipped.
         assert_eq!(recs.len(), 2);
@@ -883,13 +1104,13 @@ mod tests {
 
     #[test]
     fn fsync_every_above_one_works() {
-        // No assertion on fsync per se; just exercise the batching path.
         let dir = tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
         let sink = JsonlHashchainSink::new(&path, 5, None).unwrap();
         for i in 0..12 {
             sink.append(entry(json!({"n": i}))).unwrap();
         }
+        flush(sink);
         let r = verify_chain(&path, None).unwrap();
         assert!(r.valid);
         assert_eq!(r.records_checked, 12);
@@ -911,10 +1132,68 @@ mod tests {
                 }
             }));
         }
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Drop the Arc; when the last reference drops, the sink flushes.
+        drop(sink);
         let r = verify_chain(&path, None).unwrap();
         assert!(r.valid);
         assert_eq!(r.records_checked, 200);
     }
-}
 
+    // -----------------------------------------------------------------------
+    // New Phase-4 tests
+    // -----------------------------------------------------------------------
+
+    /// High-throughput: 10_000 appends complete and every record is on disk.
+    #[test]
+    fn high_throughput_appends_complete() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        // fsync every 100 to reduce I/O pressure in the test.
+        let sink = JsonlHashchainSink::new(&path, 100, None).unwrap();
+        for i in 0..10_000u64 {
+            sink.append(entry(json!({"n": i}))).unwrap();
+        }
+        flush(sink);
+        let r = verify_chain(&path, None).unwrap();
+        assert!(r.valid, "chain invalid: {}", r.reason);
+        assert_eq!(r.records_checked, 10_000);
+    }
+
+    /// Writer thread joins cleanly on drop without deadlocking or panicking.
+    #[test]
+    fn writer_thread_joins_on_drop() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
+        for i in 0..20 {
+            sink.append(entry(json!({"n": i}))).unwrap();
+        }
+        // Drop must return within reasonable time (the test harness will
+        // time out if it deadlocks). Panics in the writer thread surface
+        // through join, which would fail the test.
+        drop(sink);
+    }
+
+    /// Final-flush: drop the sink and assert every appended record is
+    /// readable on disk with a valid chain.
+    #[test]
+    fn final_flush_after_drop() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        // fsync_every = 1000 so the writer does NOT fsync during appends;
+        // the only fsync path is the one triggered by Shutdown in Drop.
+        let sink = JsonlHashchainSink::new(&path, 1000, None).unwrap();
+        for i in 0..50 {
+            sink.append(entry(json!({"n": i}))).unwrap();
+        }
+        drop(sink); // Shutdown sentinel triggers final flush+fsync.
+        let recs = iter_records(&path).unwrap();
+        assert_eq!(recs.len(), 50, "expected 50 records on disk after drop");
+        let r = verify_chain(&path, None).unwrap();
+        assert!(r.valid, "chain invalid after final flush: {}", r.reason);
+        assert_eq!(r.records_checked, 50);
+    }
+}

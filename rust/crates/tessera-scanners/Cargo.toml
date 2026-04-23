@@ -8,8 +8,16 @@ repository.workspace = true
 authors.workspace = true
 description = "Content-aware scanners (heuristic, directive, intent, unicode, canary, tool_shadow, tool_descriptions, prompt_screen, tool_output_schema) ported from tessera.scanners.* in the Python reference."
 
+[features]
+# Enables PyCallbackScanner, which wraps a pyo3::Py<PyAny> callable.
+# Not enabled by default: plain `cargo build` and `cargo test` do not
+# require Python development headers. Enable with `--features pyo3-bridge`.
+pyo3-bridge = ["pyo3"]
+default = []
+
 [dependencies]
 tessera-core = { path = "../tessera-core" }
+pyo3 = { workspace = true, optional = true }
 aho-corasick = { workspace = true }
 base64 = { workspace = true }
 globset = { workspace = true }

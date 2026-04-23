@@ -24,6 +24,11 @@
 //! - `canary`: HMAC-bound canary tokens (cross-language interop)
 
 pub mod binary_content;
+pub mod py_callback;
+
+pub use py_callback::{NoOpScanner, PyScanner, ScannerRegistry, KNOWN_SCANNERS};
+#[cfg(feature = "pyo3-bridge")]
+pub use py_callback::pyo3_bridge::PyCallbackScanner;
 pub mod canary;
 pub mod directive;
 pub mod heuristic;

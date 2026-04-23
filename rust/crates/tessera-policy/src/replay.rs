@@ -480,6 +480,7 @@ mod tests {
             trace_id: None,
         })
         .unwrap();
+        sink.flush().unwrap();
 
         let cases = iter_replay_cases(&path, None, None, None, None).unwrap();
         assert_eq!(cases.len(), 1);

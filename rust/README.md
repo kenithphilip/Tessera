@@ -51,6 +51,67 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
+## v0.8.0-beta.1 (Phase 4 complete)
+
+Phase 4 closes the data-path coverage. Hot-path code that
+previously required Python on the request now runs entirely in
+Rust. The four hard-tier modules and the PyO3 callback bridge for
+ML scanners ship together with three medium perf wins.
+
+New modules in `tessera-runtime`:
+
+| Module        | Tests | Notes                                                                   |
+|---------------|-------|-------------------------------------------------------------------------|
+| `llm_client`  | 5     | `LlmClient` trait + `CannedLlmClient` for tests                         |
+| `guardrail`   | 20    | LLM-based fallback classifier with cache, breaker, ReqwestLlmClient     |
+| `approval`    | 18    | tokio oneshot per pending request + WebhookSigner (HMAC-SHA256)         |
+| `sessions`    | 16    | AES-256-GCM with HKDF key derivation; new wire format                   |
+| `builder_llm` | 14    | LLM-driven policy proposer (constrained templates only)                 |
+
+Plan deviation worth flagging: the plan put `builder_llm` in
+`tessera-policy`, but that creates a `policy -> runtime` cycle (it
+needs `LlmClient` and the breaker, both async-leaning). It moved to
+`tessera-runtime` instead, which preserves the one-way dep
+direction. The deterministic `tessera_policy::builder` is unchanged
+and still the foundation; `builder_llm` layers on top.
+
+PyO3 callback bridge (`tessera-scanners`):
+
+- `PyScanner` trait wraps a host-supplied callable. Scanner names
+  (`promptguard`, `perplexity`, `pdf_inspector`, `image_inspector`,
+  `codeshield`) are exported as `KNOWN_SCANNERS`. The Rust crate
+  ships `NoOpScanner` as the default; the gateway can register
+  Python implementations from a host process via the `pyo3-bridge`
+  feature.
+- The `pyo3-bridge` feature is OFF by default so plain
+  `cargo build` / `cargo test` continue to work without the Python
+  toolchain. Enable with `--features pyo3-bridge` to compile the
+  `PyCallbackScanner` adapter.
+
+Medium perf wins:
+
+- `JsonlHashchainSink` now uses a `crossbeam_channel::bounded(4096)`
+  SPSC channel between `append` (fast path) and a dedicated writer
+  thread that batches `fsync`. Chain-hash computation stays serial
+  under a tiny `Mutex<ChainState>` (only `last_seq + last_hash`).
+  `Drop` sends a shutdown sentinel and joins the writer so every
+  in-flight record is on disk. New `flush()` method blocks until
+  enqueued records are written, useful for tests and write-then-read
+  callers.
+- `SessionContextStore` now uses `DashMap` instead of
+  `parking_lot::Mutex<HashMap>`. Concurrent reads scale across the
+  default 32-shard layout (ncpus * 4); LRU and TTL paths are O(n)
+  but no longer take a global lock.
+- `ReqwestLlmClient::with_defaults` builds a tuned `reqwest::Client`
+  with `pool_max_idle_per_host = 1000`, 30s connect timeout, 60s
+  request timeout, HTTP/2 over ALPN.
+
+Total test count: **734 passing across the workspace** (Phase 3:
+646, Phase 4: +88). Cross-language interop tests from Phase 2
+continue to pass; the SPSC change to the audit log preserves
+byte-for-byte format compatibility (verified by
+`python_audit_interop`).
+
 ## v0.8.0-alpha.3 (Phase 3 complete)
 
 Phase 3 lands the moderate-tier primitives, the four moderate
