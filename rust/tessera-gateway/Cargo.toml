@@ -9,9 +9,12 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "macros"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+glob = "0.3"
 hex = "0.4"
 hmac = "0.12"
 jsonwebtoken = "9"
+parking_lot = "0.12"
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 secrecy = "0.8"
 rustls = { version = "0.23", features = ["ring"] }
@@ -19,8 +22,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 spiffe = { version = "0.12", default-features = false, features = ["workload-api-jwt"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "sync", "time"] }
 tokio-rustls = "0.26"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
+url = "2"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bench]]
+name = "policy_eval"
+path = "benches/policy_eval.rs"
+harness = false

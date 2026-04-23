@@ -1,10 +1,12 @@
-use std::{env, fs, net::SocketAddr, time::Duration};
+use std::{env, fs, net::SocketAddr, sync::Arc, time::Duration};
 
 use serde_json::Value;
 use tokio::net::TcpListener;
 
 use tessera_gateway::{
+    audit_log::JsonlHashchainSink,
     bootstrap_control_plane, build_app_with_state, build_native_tls_server_config, build_state,
+    endpoints::{build_router as build_primitives_router, PrimitivesState},
     spawn_control_plane_sync_loop, GatewayConfig, GatewayConnectInfo, NativeTlsListener,
 };
 
@@ -185,7 +187,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(std::io::Error::other)?;
     spawn_control_plane_sync_loop(state.clone());
-    let app = build_app_with_state(state);
+    let chat_app = build_app_with_state(state);
+
+    // Build the primitives router (new in v0.7.x): trust labels,
+    // taint-tracking policy, per-session contexts, hash-chained audit
+    // log, SSRF guard, URL rules. This sits alongside the chat /
+    // A2A router on the same listener.
+    let primitives_principal =
+        env::var("TESSERA_PRINCIPAL").unwrap_or_else(|_| "tessera-gateway".to_string());
+    let primitives_signing_key = env::var("TESSERA_HMAC_KEY")
+        .ok()
+        .map(String::into_bytes)
+        .unwrap_or_else(|| b"tessera-gateway-default-key-rotate".to_vec());
+    let mut primitives_state =
+        PrimitivesState::with_signing_key(primitives_principal, primitives_signing_key);
+    if let Ok(audit_path) = env::var("TESSERA_AUDIT_LOG_PATH") {
+        let fsync_every = env::var("TESSERA_AUDIT_LOG_FSYNC_EVERY")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1);
+        let seal_key = env::var("TESSERA_AUDIT_LOG_SEAL_KEY")
+            .ok()
+            .map(String::into_bytes);
+        primitives_state.audit_seal_key = seal_key.clone();
+        primitives_state.audit_sink = Some(Arc::new(
+            JsonlHashchainSink::new(&audit_path, fsync_every, seal_key)
+                .map_err(std::io::Error::other)?,
+        ));
+    }
+    let primitives_router = build_primitives_router(Arc::new(primitives_state));
+    let app = chat_app.merge(primitives_router);
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = TcpListener::bind(addr).await?;

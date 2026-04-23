@@ -20,6 +20,20 @@ use std::{
 
 pub mod filters;
 
+// New primitives ported from the Python reference (v0.7.x). Each
+// module is independent of the rest of `lib.rs`; the existing chat
+// mediation, A2A, SPIFFE, TLS, and control-plane code below stays
+// untouched. Modules are added in dependency order, each fully
+// implemented and tested before the next.
+pub mod labels;
+pub mod context;
+pub mod policy;
+pub mod session_context;
+pub mod audit_log;
+pub mod ssrf_guard;
+pub mod url_rules;
+pub mod endpoints;
+
 use axum::{
     extract::connect_info::Connected,
     extract::{connect_info::ConnectInfo, Extension, OriginalUri, Request, State},
