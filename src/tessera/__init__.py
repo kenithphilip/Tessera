@@ -147,6 +147,7 @@ from tessera.hooks.dispatcher import (
 )
 from tessera.redaction import Secret, SecretRegistry, redact_nested
 from tessera.registry import ToolRegistry
+from tessera.session_context import SessionContextStore
 from tessera.ratelimit import BudgetStatus, TokenBudget
 from tessera.scanners.canary import CanaryGuard
 from tessera.scanners.heuristic import injection_score
@@ -305,6 +306,7 @@ __all__ = [
     "Secret",
     "SecretRegistry",
     "SecurityEvent",
+    "SessionContextStore",
     "SigningNotAvailable",
     "SignedControlPlaneDocument",
     "SpireJWKSFetcher",

@@ -113,11 +113,11 @@ library; AgentMesh is the mesh deployment built from it.
 
 ## Project state
 
-- **Version:** v0.7.0, published April 2026
+- **Version:** v0.7.1, published April 2026
 - **Python source:** ~26,800 lines across 98 implementation modules in `src/tessera/`
   (excludes `__init__.py` and protobuf-generated `_pb2*` files)
 - **Rust gateway:** ~8,200 lines in `rust/tessera-gateway/` (reference data plane)
-- **Python tests:** 1409 passing, runtime ~10 seconds
+- **Python tests:** 1433 passing, runtime ~10 seconds
 - **Rust tests:** 45 tokio::test functions in `lib.rs`
 - **Python:** 3.12+ only
 - **Dependencies:** FastAPI, Pydantic, PyJWT with cryptography, httpx,
@@ -140,6 +140,8 @@ Stable APIs (unlikely to change before v1.0):
   `run_replay`, `score`
 - `tessera.ssrf_guard.SSRFGuard`, `SSRFCheckResult`
 - `tessera.url_rules.URLRulesEngine`, `URLRule`, `URLDecision`
+- `tessera.session_context.SessionContextStore` (per-session Context
+  store with TTL and LRU eviction; the multi-tenant primitive)
 
 Less stable, expected to change:
 

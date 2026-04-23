@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Everything before v1.0.0 is experimental; API changes may occur in any
 minor release.
 
+## [0.7.1] - 2026-04-23
+
+### Added
+
+- `tessera.session_context.SessionContextStore`: thread-safe per-session
+  Context store with TTL and LRU eviction. Each session id gets its own
+  Context; the store enforces a configurable inactivity TTL and a
+  bounded session count, evicting the LRU when the cap is hit. Optional
+  `on_evict` callback fires for both TTL and LRU evictions so callers
+  can tear down adjacent per-session state in lockstep.
+
+The store exists to fix a multi-tenant isolation bug in any caller that
+shared one Context across users (notably AgentMesh v0.7.0). The
+taint-tracking invariant runs `min_trust` over every segment of the
+context, so a single shared Context lets one user's web-tainted
+segments deny another user's tool calls. With per-session Contexts,
+that cross-tenant interference cannot happen.
+
+### Verified
+
+- 1433 passing tests; same 2 pre-existing environmental failures as
+  v0.7.0 (optional adapter packages installed in the dev venv but
+  tests assert "not available").
+- 23 new tests in `test_session_context.py` covering basic access,
+  cross-session isolation, TTL eviction, LRU eviction, eviction
+  callbacks, concurrent access, and inspection helpers.
+
 ## [0.7.0] - 2026-04-22
 
 ### Added
