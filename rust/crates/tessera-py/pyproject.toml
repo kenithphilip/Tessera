@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tessera-rs"
+version = "0.8.0a3"
+description = "Pure-Rust implementations of the Tessera security primitives, exposed via PyO3."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+authors = [
+    { name = "Kenith Philip" },
+]
+keywords = ["tessera", "agent-security", "prompt-injection", "rust", "security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/kenithphilip/Tessera"
+Repository = "https://github.com/kenithphilip/Tessera"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "tessera_rs._native"
+python-source = "python"

@@ -51,6 +51,68 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
+## v0.8.0-alpha.3 (Phase 3 complete)
+
+Phase 3 lands the moderate-tier primitives, the four moderate
+scanners, and the first PyO3 wheel.
+
+New in `tessera-policy`:
+
+| Module     | Tests | Notes                                                                     |
+|------------|-------|---------------------------------------------------------------------------|
+| `replay`   | 19    | replays audit history against a candidate `PolicyFn` callable             |
+| `builder`  | 11    | analyzes audit history, proposes ToolRequirement edits, scores via replay |
+| `sarif`    | 10    | Agent Audit SARIF correlation against runtime events                      |
+
+`ReplayEnvelope` was added to `tessera-audit` so audit consumers
+have one canonical type for the `detail["replay"]` payload.
+
+New in `tessera-runtime`:
+
+| Module       | Tests | Notes                                                |
+|--------------|-------|------------------------------------------------------|
+| `sarif_sink` | 10    | thread-safe `SecurityEvent` collector that emits SARIF 2.1.0 |
+
+New in `tessera-scanners`:
+
+| Module           | Tests | Notes                                                 |
+|------------------|-------|-------------------------------------------------------|
+| `pii`            | 16    | regex-only PII detector (Presidio backend deferred)   |
+| `binary_content` | 23    | magic-byte + encoding pattern detection (9 categories)|
+| `rag`            | 18    | RAG retrieval guard, pattern tracker, anomaly checker |
+| `supply_chain`   | 25    | typosquat + confusables + lockfile + install patterns |
+
+Shared types added to `tessera-scanners` for the structured
+scanners: `Severity`, `ScanFinding`, `ScanResult`, `combine`.
+
+First PyO3 wheel (`tessera-py`):
+
+- Distribution name `tessera-rs` on PyPI.
+- Import name `tessera_rs` (underscore keeps it disjoint from the
+  existing `tessera` Python package).
+- Surface in alpha.3: `tessera_rs.policy.Policy`,
+  `tessera_rs.context.Context`, `tessera_rs.scanners.injection_score`,
+  `tessera_rs.scanners.scan_unicode_tags`,
+  `tessera_rs.audit.canonical_json`, `JsonlHashchainSink`,
+  `make_replay_detail`, `tessera_rs.ssrf.SsrfGuard`,
+  `tessera_rs.url_rules.UrlRulesEngine`.
+- Build: `maturin develop` from `crates/tessera-py/`. The crate is
+  a workspace member but excluded from `default-members` because
+  the cdylib needs Python at link time; `cargo build` and
+  `cargo test --workspace` continue to work without the Python
+  toolchain.
+- CI: `.github/workflows/wheels.yml` builds wheels for cp310 /
+  cp311 / cp312 across manylinux2014 (x86_64, aarch64), macOS
+  (x86_64, aarch64), and Windows (x64). TestPyPI publishes on
+  every merge to main; PyPI publishes on tag push (gated by the
+  `pypi` GitHub Environment, which requires manual approval per
+  the plan's release cadence).
+
+Total test count: **646 passing across the workspace** (Phase 2:
+514, Phase 3: +132). The Python interop tests from Phase 2 still
+verify byte-for-byte wire-format compatibility for evidence,
+provenance, delegation, and canary.
+
 ## v0.8.0-alpha.2 (Phase 2 complete)
 
 Phase 2 ports the trivial-tier primitives and scanners. All eight

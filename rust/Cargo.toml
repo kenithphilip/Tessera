@@ -8,12 +8,24 @@ members = [
     "crates/tessera-runtime",
     "crates/tessera-gateway",
     "crates/tessera-bench",
-    # crates/tessera-py is added in Phase 3 once the wheel infrastructure
-    # lands; building it requires maturin and is opt-in.
+    "crates/tessera-py",
+]
+# Default to building everything except the PyO3 wheel: that crate
+# links a Python extension and fails plain `cargo build` without the
+# Python development headers. Build it explicitly via `maturin
+# develop` or `maturin build` from `crates/tessera-py`.
+default-members = [
+    "crates/tessera-core",
+    "crates/tessera-scanners",
+    "crates/tessera-audit",
+    "crates/tessera-policy",
+    "crates/tessera-runtime",
+    "crates/tessera-gateway",
+    "crates/tessera-bench",
 ]
 
 [workspace.package]
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 edition = "2021"
 rust-version = "1.80"
 license = "AGPL-3.0-or-later"
@@ -59,6 +71,8 @@ tempfile = "3"
 # Phase 5 bench harness.
 hdrhistogram = "7"
 clap = { version = "4", features = ["derive"] }
+# Phase 3 PyO3 wheel.
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]
 lto = "thin"

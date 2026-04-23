@@ -11,3 +11,8 @@ description = "Async runtime surfaces for Tessera: per-session Context store, se
 [dependencies]
 tessera-core = { path = "../tessera-core" }
 parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

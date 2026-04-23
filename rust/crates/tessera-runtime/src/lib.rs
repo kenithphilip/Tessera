@@ -3,8 +3,10 @@
 //!
 //! [`Context`]: tessera_core::context::Context
 
+pub mod sarif_sink;
 pub mod session_context;
 
+pub use sarif_sink::{SarifEventBuilder, SarifSink};
 pub use session_context::{
     Builder as SessionContextStoreBuilder, EvictCallback, MonotonicClock, SessionContextStore,
     StoreError, SystemClock,

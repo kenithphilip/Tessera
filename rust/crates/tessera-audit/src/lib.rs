@@ -8,5 +8,5 @@ pub mod audit_log;
 
 pub use audit_log::{
     canonical_json, iter_records, verify_chain, AppendEntry, AuditError, ChainedRecord,
-    JsonlHashchainSink, VerificationResult, GENESIS_HASH,
+    JsonlHashchainSink, ReplayEnvelope, VerificationResult, GENESIS_HASH,
 };

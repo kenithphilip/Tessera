@@ -6,6 +6,7 @@
 //! mcp_baseline, and policy_builder. Phase 3 adds rag_guard and
 //! the SARIF surfaces; Phase 4 adds policy_builder_llm.
 
+pub mod builder;
 pub mod compliance;
 pub mod delegation;
 pub mod delegation_intent;
@@ -14,10 +15,16 @@ pub mod mcp_baseline;
 pub mod policy;
 pub mod provenance;
 pub mod ratelimit;
+pub mod replay;
+pub mod sarif;
 pub mod sensitivity;
 pub mod ssrf_guard;
 pub mod url_rules;
 
+pub use builder::{
+    analyze, analyze_and_score, apply_proposal, candidate_for, score_proposal, Proposal,
+    ProposalEvidence, ProposalImpact, ProposalKind,
+};
 pub use compliance::{
     cwe_codes, enrich_event, known_event_kinds, nist_controls, owasp_asi, ChainedAuditLog,
     GENESIS_PREVIOUS_HASH,
@@ -36,6 +43,11 @@ pub use provenance::{
     ContextSegmentEnvelope, ManifestSegmentRef, PromptProvenanceManifest,
 };
 pub use ratelimit::{BudgetStatus, CallRateStatus, TokenBudget, ToolCallRateLimit};
+pub use replay::{
+    iter_replay_cases, replay, run_replay, score as score_replay, Agreement, FallibleFn, Label,
+    LabelStore, PolicyDecision, ReplayCase, ReplayResult, ReplayStats,
+};
+pub use sarif::{CorrelatedFinding, SarifCorrelator, StaticFinding};
 pub use sensitivity::{
     default_rules as sensitivity_default_rules, Classification, ClassificationRule, HighWaterMark,
     HwmStore, InMemoryHwmStore, OutboundDecision, OutboundPolicy, RuleKind, SensitivityClassifier,

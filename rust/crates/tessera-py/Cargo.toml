@@ -1,0 +1,24 @@
+[package]
+name = "tessera-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "PyO3 bindings for the Tessera Rust workspace. Distributed on PyPI as `tessera-rs`; imports as `tessera_rs` to stay disjoint from the existing `tessera` Python package."
+publish = false
+
+[lib]
+name = "tessera_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tessera-core = { path = "../tessera-core" }
+tessera-audit = { path = "../tessera-audit" }
+tessera-policy = { path = "../tessera-policy" }
+tessera-scanners = { path = "../tessera-scanners" }
+tessera-runtime = { path = "../tessera-runtime" }
+pyo3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

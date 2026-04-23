@@ -50,6 +50,58 @@ pub struct ChainedRecord {
     pub hash: String,
 }
 
+/// The information needed to re-evaluate a decision against a new
+/// policy. Embed in `SecurityEvent.detail["replay"]` when the
+/// evaluator wants the decision to be replayable. Mirrors
+/// `tessera.audit_log.ReplayEnvelope`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ReplayEnvelope {
+    pub trajectory_id: String,
+    pub tool_name: String,
+    pub args: Map<String, Value>,
+    #[serde(default)]
+    pub user_prompt: String,
+    #[serde(default)]
+    pub segments: Vec<Value>,
+    #[serde(default = "default_sensitivity_hwm")]
+    pub sensitivity_hwm: String,
+    #[serde(default = "default_decision_allowed")]
+    pub decision_allowed: bool,
+    #[serde(default)]
+    pub decision_source: String,
+    #[serde(default)]
+    pub decision_reason: String,
+}
+
+fn default_sensitivity_hwm() -> String {
+    "PUBLIC".to_string()
+}
+
+fn default_decision_allowed() -> bool {
+    true
+}
+
+impl ReplayEnvelope {
+    /// Reconstruct an envelope from a `detail["replay"]` JSON object.
+    /// Returns `None` if the value is missing required fields or the
+    /// wrong shape; callers should skip silently.
+    pub fn from_detail(detail: &Value) -> Option<Self> {
+        let payload = detail.get("replay")?;
+        serde_json::from_value(payload.clone()).ok()
+    }
+
+    /// Build a `detail` JSON value that embeds this envelope under the
+    /// `replay` key. `extra` is merged at the top level.
+    pub fn to_detail(&self, extra: Map<String, Value>) -> Value {
+        let mut base = extra;
+        base.insert(
+            "replay".to_string(),
+            serde_json::to_value(self).expect("ReplayEnvelope serializes"),
+        );
+        Value::Object(base)
+    }
+}
+
 impl ChainedRecord {
     /// Canonical JSON line for writing to disk. Sorted keys, no
     /// whitespace, trailing newline appended by the caller.
