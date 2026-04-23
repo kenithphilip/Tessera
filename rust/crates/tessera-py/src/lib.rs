@@ -23,6 +23,8 @@
 //! from tessera_rs.url_rules import UrlRulesEngine
 //! ```
 
+use std::collections::HashMap;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -31,6 +33,9 @@ use serde_json::Value;
 use tessera_audit::{canonical_json, AppendEntry, JsonlHashchainSink, ReplayEnvelope};
 use tessera_core::context::{make_segment as core_make_segment, Context as CoreContext};
 use tessera_core::labels::{HmacSigner, Origin, TrustLevel};
+use tessera_policy::cel::{
+    CelAction, CelContext, CelDecision, CelPolicyEngine, CelRule,
+};
 use tessera_policy::{Policy as PolicyImpl, ResourceRequirement, SsrfGuard as SsrfGuardImpl,
                      UrlRule as UrlRuleImpl, UrlRulesEngine as UrlRulesEngineImpl, RuleAction,
                      PatternKind};
@@ -128,6 +133,17 @@ impl PyJsonlHashchainSink {
 /// Build the `replay` detail dict from envelope fields. Matches
 /// Python's `tessera.audit_log.make_replay_detail`.
 #[pyfunction]
+#[pyo3(signature = (
+    trajectory_id,
+    tool_name,
+    args_json,
+    user_prompt=None,
+    segments_json=None,
+    sensitivity_hwm=None,
+    decision_allowed=None,
+    decision_source=None,
+    decision_reason=None,
+))]
 fn make_replay_detail(
     py: Python<'_>,
     trajectory_id: &str,
@@ -243,14 +259,211 @@ impl PyPolicy {
 
     fn evaluate(&self, py: Python<'_>, context: &PyContext, tool_name: &str) -> PyObject {
         let decision = self.inner.evaluate(&context.inner, tool_name);
-        let dict = PyDict::new_bound(py);
-        let _ = dict.set_item("allowed", matches!(decision.kind, tessera_policy::DecisionKind::Allow));
-        let _ = dict.set_item("reason", &decision.reason);
-        let _ = dict.set_item("tool", &decision.tool);
-        let _ = dict.set_item("required_trust", decision.required_trust.as_int());
-        let _ = dict.set_item("observed_trust", decision.observed_trust.as_int());
-        dict.into()
+        decision_dict(py, &decision)
     }
+
+    /// Evaluate with the optional CEL deny-rule layer.
+    ///
+    /// Mirrors `tessera.policy.Policy.evaluate(ctx, tool, args, ...)`.
+    /// When no CEL engine is installed via `set_cel_engine`, this is
+    /// equivalent to `evaluate(context, tool_name)`.
+    #[pyo3(signature = (
+        context,
+        tool_name,
+        args=None,
+        principal="",
+        delegation_subject=None,
+        delegation_actions=None,
+    ))]
+    fn evaluate_with_cel(
+        &self,
+        py: Python<'_>,
+        context: &PyContext,
+        tool_name: &str,
+        args: Option<HashMap<String, String>>,
+        principal: &str,
+        delegation_subject: Option<String>,
+        delegation_actions: Option<Vec<String>>,
+    ) -> PyObject {
+        let args = args.unwrap_or_default();
+        let actions = delegation_actions.unwrap_or_default();
+        let decision = self.inner.evaluate_with_cel(
+            &context.inner,
+            tool_name,
+            &args,
+            principal,
+            delegation_subject.as_deref(),
+            &actions,
+        );
+        decision_dict(py, &decision)
+    }
+
+    /// Install a CEL deny-rule engine. Mirrors Python
+    /// `Policy.cel_engine = engine`. Pass `None` to clear.
+    #[pyo3(signature = (engine=None))]
+    fn set_cel_engine(&mut self, engine: Option<&PyCelPolicyEngine>) {
+        match engine {
+            Some(e) => self.inner.set_cel_engine(e.inner.clone()),
+            None => self.inner.clear_cel_engine(),
+        }
+    }
+}
+
+fn decision_dict(py: Python<'_>, decision: &tessera_policy::policy::Decision) -> PyObject {
+    let dict = PyDict::new_bound(py);
+    let _ = dict.set_item(
+        "allowed",
+        matches!(decision.kind, tessera_policy::DecisionKind::Allow),
+    );
+    let _ = dict.set_item(
+        "kind",
+        match decision.kind {
+            tessera_policy::DecisionKind::Allow => "allow",
+            tessera_policy::DecisionKind::Deny => "deny",
+            tessera_policy::DecisionKind::RequireApproval => "require_approval",
+        },
+    );
+    let _ = dict.set_item("reason", decision.reason.as_ref());
+    let _ = dict.set_item("tool", &decision.tool);
+    let _ = dict.set_item("required_trust", decision.required_trust.as_int());
+    let _ = dict.set_item("observed_trust", decision.observed_trust.as_int());
+    dict.into()
+}
+
+// ---- CEL deny rules ------------------------------------------------------
+
+/// One CEL deny rule. Mirrors `tessera_policy::cel::CelRule`.
+#[pyclass(name = "CelRule", module = "tessera_rs.cel")]
+#[derive(Clone)]
+struct PyCelRule {
+    inner: CelRule,
+}
+
+#[pymethods]
+impl PyCelRule {
+    #[new]
+    #[pyo3(signature = (name, expression, action, message))]
+    fn new(name: &str, expression: &str, action: &str, message: &str) -> PyResult<Self> {
+        let action = parse_cel_action(action)?;
+        Ok(Self {
+            inner: CelRule::new(name, expression, action, message),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    #[getter]
+    fn expression(&self) -> &str {
+        &self.inner.expression
+    }
+
+    #[getter]
+    fn action(&self) -> &'static str {
+        self.inner.action.as_str()
+    }
+
+    #[getter]
+    fn message(&self) -> &str {
+        &self.inner.message
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CelRule(name={:?}, expression={:?}, action={:?}, message={:?})",
+            self.inner.name, self.inner.expression, self.inner.action.as_str(),
+            self.inner.message
+        )
+    }
+}
+
+fn parse_cel_action(s: &str) -> PyResult<CelAction> {
+    match s.to_ascii_lowercase().as_str() {
+        "deny" => Ok(CelAction::Deny),
+        "require_approval" => Ok(CelAction::RequireApproval),
+        other => Err(PyValueError::new_err(format!(
+            "unknown CEL action {other:?}; expected \"deny\" or \"require_approval\""
+        ))),
+    }
+}
+
+/// CEL evaluator engine. Mirrors
+/// `tessera_policy::cel::CelPolicyEngine`. Compiled once; evaluate
+/// many.
+#[pyclass(name = "CelPolicyEngine", module = "tessera_rs.cel")]
+struct PyCelPolicyEngine {
+    inner: std::sync::Arc<CelPolicyEngine>,
+}
+
+#[pymethods]
+impl PyCelPolicyEngine {
+    #[new]
+    fn new(rules: Vec<PyCelRule>) -> PyResult<Self> {
+        let engine = CelPolicyEngine::new(rules.into_iter().map(|r| r.inner))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: std::sync::Arc::new(engine),
+        })
+    }
+
+    fn rule_count(&self) -> usize {
+        self.inner.rule_count()
+    }
+
+    /// Return the rules in registration order. AgentMesh
+    /// (`proxy._policy.cel_engine._rules`) introspects this list to
+    /// surface the active policy on `/v1/policy`.
+    fn rules(&self) -> Vec<PyCelRule> {
+        self.inner.rules().cloned().map(|r| PyCelRule { inner: r }).collect()
+    }
+
+    /// Evaluate against a context dict. Returns a dict
+    /// `{rule_name, action, message}` when a rule fires, or `None`
+    /// when no rule matches.
+    #[pyo3(signature = (
+        tool,
+        principal,
+        min_trust,
+        segment_count,
+        args=None,
+        delegation_subject=None,
+        delegation_actions=None,
+    ))]
+    fn evaluate(
+        &self,
+        py: Python<'_>,
+        tool: &str,
+        principal: &str,
+        min_trust: i64,
+        segment_count: i64,
+        args: Option<HashMap<String, String>>,
+        delegation_subject: Option<String>,
+        delegation_actions: Option<Vec<String>>,
+    ) -> PyObject {
+        let ctx = CelContext {
+            tool: tool.to_owned(),
+            args: args.unwrap_or_default(),
+            min_trust,
+            principal: principal.to_owned(),
+            segment_count,
+            delegation_subject,
+            delegation_actions: delegation_actions.unwrap_or_default(),
+        };
+        match self.inner.evaluate(&ctx) {
+            Some(d) => decision_to_dict(py, &d).into(),
+            None => py.None(),
+        }
+    }
+}
+
+fn decision_to_dict<'py>(py: Python<'py>, d: &CelDecision) -> Bound<'py, PyDict> {
+    let dict = PyDict::new_bound(py);
+    let _ = dict.set_item("rule_name", &d.rule_name);
+    let _ = dict.set_item("action", d.action.as_str());
+    let _ = dict.set_item("message", &d.message);
+    dict
 }
 
 // ---- SSRF guard ----------------------------------------------------------
@@ -369,6 +582,8 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJsonlHashchainSink>()?;
     m.add_class::<PyContext>()?;
     m.add_class::<PyPolicy>()?;
+    m.add_class::<PyCelRule>()?;
+    m.add_class::<PyCelPolicyEngine>()?;
     m.add_class::<PySsrfGuard>()?;
     m.add_class::<PyUrlRulesEngine>()?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
