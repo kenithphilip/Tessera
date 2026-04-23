@@ -1,0 +1,13 @@
+[package]
+name = "tessera-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Async runtime surfaces for Tessera: per-session Context store, sessions, approval, guardrail, SARIF event sink. Phases 4 will populate the LLM-call surfaces."
+
+[dependencies]
+tessera-core = { path = "../tessera-core" }
+parking_lot = { workspace = true }

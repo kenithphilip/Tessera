@@ -1,0 +1,13 @@
+[package]
+name = "tessera-scanners"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Content-aware scanners (heuristic, directive, intent, unicode, canary, supply_chain, ...) implementing the tessera Scanner protocol."
+
+[dependencies]
+tessera-core = { path = "../tessera-core" }
+serde = { workspace = true }

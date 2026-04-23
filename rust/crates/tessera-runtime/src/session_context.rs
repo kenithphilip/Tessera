@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-use crate::context::Context;
+use tessera_core::context::Context;
 
 /// Eviction callback. Receives the session id about to be dropped.
 /// Exceptions inside the callback are caught and logged-suppressed by
@@ -353,12 +353,12 @@ mod tests {
         let a = s.get("alice").unwrap();
         let b = s.get("bob").unwrap();
         assert!(!Arc::ptr_eq(&a, &b));
-        a.lock().add(crate::context::LabeledSegment::new(
+        a.lock().add(tessera_core::context::LabeledSegment::new(
             "alice-only",
-            crate::labels::TrustLabel::with_nonce(
-                crate::labels::Origin::User,
+            tessera_core::labels::TrustLabel::with_nonce(
+                tessera_core::labels::Origin::User,
                 "alice",
-                crate::labels::TrustLevel::User,
+                tessera_core::labels::TrustLevel::User,
                 "n",
                 None,
             ),
@@ -561,8 +561,8 @@ mod tests {
 
     #[test]
     fn concurrent_writers_to_distinct_sessions_isolate() {
-        use crate::context::LabeledSegment;
-        use crate::labels::{Origin, TrustLabel, TrustLevel};
+        use tessera_core::context::LabeledSegment;
+        use tessera_core::labels::{Origin, TrustLabel, TrustLevel};
         use std::thread;
 
         let s = Arc::new(SessionContextStore::new(60.0, 0));

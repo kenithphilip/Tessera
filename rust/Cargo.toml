@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tessera-core",
+    "crates/tessera-scanners",
+    "crates/tessera-audit",
+    "crates/tessera-policy",
+    "crates/tessera-runtime",
+    "crates/tessera-gateway",
+    "crates/tessera-bench",
+    # crates/tessera-py is added in Phase 3 once the wheel infrastructure
+    # lands; building it requires maturin and is opt-in.
+]
+
+[workspace.package]
+version = "0.8.0-alpha.1"
+edition = "2021"
+rust-version = "1.80"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/kenithphilip/Tessera"
+authors = ["Kenith Philip"]
+
+[workspace.dependencies]
+# Shared dependency versions. Crates pin via `workspace = true` so
+# bumping a version is a one-line change at the root.
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json", "macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+glob = "0.3"
+hex = "0.4"
+hmac = "0.12"
+jsonwebtoken = "9"
+parking_lot = "0.12"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+secrecy = "0.8"
+rustls = { version = "0.23", features = ["ring"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+spiffe = { version = "0.12", default-features = false, features = ["workload-api-jwt"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "sync", "time"] }
+tokio-rustls = "0.26"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+# Phase 1 perf wins.
+arc-swap = "1"
+mimalloc = { version = "0.1", default-features = false }
+simd-json = "0.13"
+# Phase 1 internal use.
+tempfile = "3"
+# Phase 5 bench harness.
+hdrhistogram = "7"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+strip = "debuginfo"
+
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"

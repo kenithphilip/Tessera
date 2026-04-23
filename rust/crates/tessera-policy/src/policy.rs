@@ -19,8 +19,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::context::Context;
-use crate::labels::TrustLevel;
+use tessera_core::context::Context;
+use tessera_core::labels::TrustLevel;
 
 /// Categories of resource subject to policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -192,8 +192,8 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{make_segment, Context};
-    use crate::labels::{HmacSigner, Origin};
+    use tessera_core::context::{make_segment, Context};
+    use tessera_core::labels::{HmacSigner, Origin};
 
     const KEY: &[u8] = b"test-policy-32bytes!!!!!!!!!!!!!";
 

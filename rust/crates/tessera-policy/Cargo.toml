@@ -1,0 +1,15 @@
+[package]
+name = "tessera-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Tessera policy engine: taint-tracking ToolRequirement evaluation, SSRF guard, URL rules. Phase 2 will add sensitivity, ratelimit, evidence, provenance, delegation, compliance, replay, and policy_builder."
+
+[dependencies]
+tessera-core = { path = "../tessera-core" }
+glob = { workspace = true }
+serde = { workspace = true }
+url = { workspace = true }

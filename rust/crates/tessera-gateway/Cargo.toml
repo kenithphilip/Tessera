@@ -1,0 +1,47 @@
+[package]
+name = "tessera-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Tessera gateway: axum HTTP service that wires the Tessera primitives (labels, context, policy, session_context, audit, ssrf_guard, url_rules) into a deployable proxy. Includes the legacy chat-mediation, A2A JSON-RPC, SPIFFE, and native TLS surfaces."
+publish = false
+
+[dependencies]
+# Workspace crates: the primitives this gateway exposes.
+tessera-core = { path = "../tessera-core" }
+tessera-audit = { path = "../tessera-audit" }
+tessera-policy = { path = "../tessera-policy" }
+tessera-runtime = { path = "../tessera-runtime" }
+
+# Network and serialization.
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+jsonwebtoken = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+secrecy = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+spiffe = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+# Phase 1 perf wins.
+arc-swap = { workspace = true }
+mimalloc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -140,6 +140,7 @@ impl UrlDecision {
 
 /// URL rules engine. Build with [`UrlRulesEngine::new`] and call
 /// [`UrlRulesEngine::evaluate`] per request.
+#[derive(Clone, Debug)]
 pub struct UrlRulesEngine {
     exact: Vec<UrlRule>,
     prefix: Vec<UrlRule>,

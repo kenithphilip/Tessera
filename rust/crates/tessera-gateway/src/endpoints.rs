@@ -36,25 +36,31 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::audit_log::{verify_chain, AppendEntry, JsonlHashchainSink};
-use crate::context::make_segment;
-use crate::labels::{HmacSigner, HmacVerifier, Origin, TrustLevel};
-use crate::policy::{DecisionKind, Policy};
-use crate::session_context::SessionContextStore;
-use crate::ssrf_guard::SsrfGuard;
-use crate::url_rules::{RuleVerdict, UrlRulesEngine};
+use tessera_audit::audit_log::{verify_chain, AppendEntry, JsonlHashchainSink};
+use tessera_core::context::make_segment;
+use tessera_core::labels::{HmacSigner, HmacVerifier, Origin, TrustLevel};
+use tessera_policy::policy::{DecisionKind, Policy};
+use tessera_policy::ssrf_guard::SsrfGuard;
+use tessera_policy::url_rules::{RuleVerdict, UrlRulesEngine};
+use tessera_runtime::session_context::SessionContextStore;
 
 /// Shared state for the primitives router.
+///
+/// `policy` and `url_rules` use [`arc_swap::ArcSwap`] for wait-free
+/// reads on the request hot path. Updates are still serialized (an
+/// `ArcSwap` swap is atomic, but writers must rebuild the whole
+/// inner value), which matches our access pattern: read-heavy with
+/// rare config-driven updates.
 pub struct PrimitivesState {
     pub principal: String,
     pub signer: HmacSigner,
     pub verifier: HmacVerifier,
-    pub policy: parking_lot::RwLock<Policy>,
+    pub policy: arc_swap::ArcSwap<Policy>,
     pub contexts: Arc<SessionContextStore>,
     pub audit_sink: Option<Arc<JsonlHashchainSink>>,
     pub audit_seal_key: Option<Vec<u8>>,
     pub ssrf_guard: SsrfGuard,
-    pub url_rules: parking_lot::RwLock<UrlRulesEngine>,
+    pub url_rules: arc_swap::ArcSwap<UrlRulesEngine>,
 }
 
 impl PrimitivesState {
@@ -66,13 +72,29 @@ impl PrimitivesState {
             principal: principal.into(),
             signer: HmacSigner::new(signing_key.clone()),
             verifier: HmacVerifier::new(signing_key),
-            policy: parking_lot::RwLock::new(Policy::new()),
+            policy: arc_swap::ArcSwap::from_pointee(Policy::new()),
             contexts: Arc::new(SessionContextStore::new(3600.0, 10_000)),
             audit_sink: None,
             audit_seal_key: None,
             ssrf_guard: SsrfGuard::with_defaults(),
-            url_rules: parking_lot::RwLock::new(UrlRulesEngine::default()),
+            url_rules: arc_swap::ArcSwap::from_pointee(UrlRulesEngine::default()),
         }
+    }
+
+    /// Atomic read-clone-mutate-store helper for the `policy` ArcSwap.
+    /// Reads are wait-free; writes are rare config updates, so the
+    /// clone is acceptable.
+    pub fn update_policy<F: FnOnce(&mut Policy)>(&self, f: F) {
+        let mut next = (**self.policy.load()).clone();
+        f(&mut next);
+        self.policy.store(Arc::new(next));
+    }
+
+    /// Same pattern for the URL rules engine.
+    pub fn update_url_rules<F: FnOnce(&mut UrlRulesEngine)>(&self, f: F) {
+        let mut next = (**self.url_rules.load()).clone();
+        f(&mut next);
+        self.url_rules.store(Arc::new(next));
     }
 }
 
@@ -148,8 +170,8 @@ async fn healthz(State(state): State<Arc<PrimitivesState>>) -> impl IntoResponse
         "session_evictions": state.contexts.evictions(),
         "session_ttl_seconds": state.contexts.ttl().as_secs_f64(),
         "session_max": state.contexts.max_sessions(),
-        "policy_requirements": state.policy.read().requirements_count(),
-        "url_rules": state.url_rules.read().rule_count(),
+        "policy_requirements": state.policy.load().requirements_count(),
+        "url_rules": state.url_rules.load().rule_count(),
         "audit_log_configured": state.audit_sink.is_some(),
     }))
 }
@@ -225,7 +247,7 @@ async fn evaluate(
         let g = ctx_arc.lock();
         g.clone()
     };
-    let policy = state.policy.read();
+    let policy = state.policy.load();
     let decision = policy.evaluate(&snapshot, &body.tool_name);
     let allowed = decision.allowed();
     let observed = decision.observed_trust.as_int();
@@ -373,7 +395,7 @@ async fn url_rules_check(
     State(state): State<Arc<PrimitivesState>>,
     Json(body): Json<UrlRulesCheckBody>,
 ) -> impl IntoResponse {
-    let engine = state.url_rules.read();
+    let engine = state.url_rules.load();
     let decision = engine.evaluate(&body.url, &body.method);
     Json(json!({
         "configured": engine.rule_count() > 0,
@@ -447,7 +469,7 @@ mod tests {
     #[tokio::test]
     async fn evaluate_denies_when_session_tainted() {
         let s = state();
-        s.policy.write().require_tool("send_email", TrustLevel::User);
+        s.update_policy(|p| p.require_tool("send_email", TrustLevel::User));
         // Add a Web (Untrusted) segment to alice's context.
         let ctx = s.contexts.get("alice").unwrap();
         let segment = make_segment(
@@ -477,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn evaluate_isolates_sessions() {
         let s = state();
-        s.policy.write().require_tool("send_email", TrustLevel::User);
+        s.update_policy(|p| p.require_tool("send_email", TrustLevel::User));
         // Taint alice. Bob stays clean.
         let ctx = s.contexts.get("alice").unwrap();
         ctx.lock().add(make_segment("evil", Origin::Web, "alice", &s.signer, None));
@@ -583,14 +605,16 @@ mod tests {
 
     #[tokio::test]
     async fn url_rules_check_returns_deny_for_matching_rule() {
-        use crate::url_rules::{PatternKind, RuleAction, UrlRule};
+        use tessera_policy::url_rules::{PatternKind, RuleAction, UrlRule};
         let s = state();
-        s.url_rules.write().add(
-            UrlRule::new("github.admin.deny", "https://api.github.com/admin/")
-                .kind(PatternKind::Prefix)
-                .action(RuleAction::Deny)
-                .description("block admin"),
-        );
+        s.update_url_rules(|e| {
+            e.add(
+                UrlRule::new("github.admin.deny", "https://api.github.com/admin/")
+                    .kind(PatternKind::Prefix)
+                    .action(RuleAction::Deny)
+                    .description("block admin"),
+            );
+        });
         let app = build_router(s);
         let resp = app
             .oneshot(
@@ -671,7 +695,7 @@ mod tests {
             b"test-endpoints-32bytes!!!!!!!!!!".to_vec(),
         );
         s.audit_sink = Some(Arc::new(JsonlHashchainSink::new(&path, 1, None).unwrap()));
-        s.policy.write().require_tool("send_email", TrustLevel::User);
+        s.update_policy(|p| p.require_tool("send_email", TrustLevel::User));
         // Taint a session.
         let ctx = s.contexts.get("alice").unwrap();
         ctx.lock().add(make_segment("evil", Origin::Web, "alice", &s.signer, None));

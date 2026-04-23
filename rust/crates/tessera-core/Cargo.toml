@@ -1,0 +1,16 @@
+[package]
+name = "tessera-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core Tessera primitives: signed trust labels and labeled context with min_trust taint tracking."
+
+[dependencies]
+base64 = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }

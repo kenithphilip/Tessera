@@ -20,18 +20,17 @@ use std::{
 
 pub mod filters;
 
-// New primitives ported from the Python reference (v0.7.x). Each
-// module is independent of the rest of `lib.rs`; the existing chat
-// mediation, A2A, SPIFFE, TLS, and control-plane code below stays
-// untouched. Modules are added in dependency order, each fully
-// implemented and tested before the next.
-pub mod labels;
-pub mod context;
-pub mod policy;
-pub mod session_context;
-pub mod audit_log;
-pub mod ssrf_guard;
-pub mod url_rules;
+// New primitives live in sibling workspace crates (v0.8.x). The
+// gateway re-exports them under their original `tessera_gateway::X`
+// paths so downstream embedders keep working without source changes.
+pub use tessera_audit::audit_log;
+pub use tessera_core::context;
+pub use tessera_core::labels;
+pub use tessera_policy::policy;
+pub use tessera_policy::ssrf_guard;
+pub use tessera_policy::url_rules;
+pub use tessera_runtime::session_context;
+
 pub mod endpoints;
 
 use axum::{
@@ -1258,10 +1257,17 @@ pub fn build_native_tls_server_config(
         }
         None => WebPkiClientVerifier::no_client_auth(),
     };
-    let server_config = ServerConfig::builder()
+    let mut server_config = ServerConfig::builder()
         .with_client_cert_verifier(client_verifier)
         .with_single_cert(cert_chain, private_key)
         .map_err(|error| error.to_string())?;
+    // Advertise HTTP/2 first, then HTTP/1.1 as fallback. axum::serve
+    // is built on hyper-util's auto::Builder, which negotiates the
+    // wire protocol from the ALPN choice transparently. Multiplexing
+    // matters here: a single TLS handshake amortizes across many
+    // request streams, which is the realistic shape of agent traffic
+    // (chatty, low-payload, parallel).
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(server_config))
 }
 
@@ -5101,6 +5107,28 @@ hADvwH1m3FRUySyFRbtdBA==
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["kind"], "policy_deny");
         assert_eq!(events[0]["principal"], "alice");
+    }
+
+    #[test]
+    fn native_tls_config_advertises_h2_then_http11() {
+        // Pin ALPN ordering. axum::serve relies on hyper-util's auto
+        // detection: if h2 is missing here, every connection silently
+        // falls back to HTTP/1.1 and we lose multiplexing without a
+        // failing test ever firing. The order matters too -- rustls
+        // picks the server's first ALPN entry that the client also
+        // advertises, so h2 must come before http/1.1.
+        let config = build_native_tls_server_config(
+            SERVER_CERT_PEM.as_bytes(),
+            SERVER_KEY_PEM.as_bytes(),
+            Some(CA_CERT_PEM.as_bytes()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+            "TLS server config must advertise h2 first for HTTP/2 multiplexing"
+        );
     }
 
     #[test]

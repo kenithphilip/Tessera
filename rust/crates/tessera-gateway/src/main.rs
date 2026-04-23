@@ -3,6 +3,13 @@ use std::{env, fs, net::SocketAddr, sync::Arc, time::Duration};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
+// mimalloc as the global allocator. Drop-in win for tail latency
+// under high concurrency: less fragmentation, better cache locality.
+// `#[global_allocator]` must live in the crate that produces the
+// final binary (the gateway), not in a library crate.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use tessera_gateway::{
     audit_log::JsonlHashchainSink,
     bootstrap_control_plane, build_app_with_state, build_native_tls_server_config, build_state,
