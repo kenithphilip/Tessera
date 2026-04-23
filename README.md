@@ -193,8 +193,12 @@ Reference deployments:
 
 - [`deployment/spire/`](deployment/spire/): SPIRE docker-compose with
   workload registration walkthrough
-- [`rust/tessera-gateway/`](rust/tessera-gateway/): Rust data plane with native
-  TLS transport identity, chat mediation, and A2A enforcement
+- [`rust/`](rust/): Cargo workspace with the Rust data-plane port
+  (`tessera-core`, `tessera-scanners`, `tessera-audit`, `tessera-policy`,
+  `tessera-runtime`, `tessera-gateway`, `tessera-bench`) and a PyO3
+  wheel `tessera-rs` published to PyPI for adapter authors who want
+  the fast path without leaving Python. Workspace at v0.9.0-alpha.1,
+  PyPI wheel at 0.9.0a1, all 757 tests green.
 - [`examples/injection_blocked.py`](examples/injection_blocked.py):
   minimal offline demo
 - [`examples/quarantine_demo.py`](examples/quarantine_demo.py):
@@ -411,9 +415,21 @@ enterprise scale.
 
 The AgentMesh architecture is proposed in
 [docs/AGENT_SECURITY_MESH_V1_SPEC.md](docs/AGENT_SECURITY_MESH_V1_SPEC.md).
-Tessera is the core library that AgentMesh is built on. The Rust gateway
-in [`rust/tessera-gateway/`](rust/tessera-gateway/) is a reference
-implementation for contributing primitives upstream to agentgateway.
+Tessera is the core library that AgentMesh is built on. The Rust
+workspace in [`rust/`](rust/) is a reference data-plane implementation
+of the load-bearing primitives, packaged as a Cargo workspace and as
+the [`tessera-rs`](https://pypi.org/project/tessera-rs/) PyO3 wheel
+on PyPI so Python adapter authors can opt into the fast path for hot
+primitives (policy evaluation, scanners, audit chain, canonical JSON)
+without reimplementing them.
+
+```bash
+pip install tessera-rs            # latest stable, 0.8.0
+pip install tessera-rs==0.9.0a1   # prerelease with OTel-native spans
+```
+
+See [`rust/crates/tessera-py/MIGRATION.md`](rust/crates/tessera-py/MIGRATION.md)
+for the Python `tessera` to `tessera_rs` import map.
 
 ---
 
