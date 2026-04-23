@@ -51,33 +51,55 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
-## v0.8.0-alpha.1 (Phase 1 complete)
+## v0.8.0-alpha.2 (Phase 2 complete)
 
-What landed:
+Phase 2 ports the trivial-tier primitives and scanners. All eight
+primitives in `tessera-policy` and all nine scanners in
+`tessera-scanners` are now pure-Rust with byte-for-byte
+cross-language interop on every wire-format primitive.
 
-- Workspace split into 7 crates (8th `tessera-py` reserved for
-  Phase 3) with one-way dependencies and a single shared release
-  profile.
-- mimalloc as the global allocator in the gateway binary
-  (`#[global_allocator]` in `tessera-gateway/src/main.rs`).
-- `arc-swap` on the hot-path policy and URL-rules state
-  (`PrimitivesState.policy`, `PrimitivesState.url_rules`). Reads are
-  now wait-free; writes go through `update_policy` /
-  `update_url_rules` helpers that clone, mutate, and atomically
-  swap.
-- HTTP/2 ALPN advertised on the native TLS listener
-  (`build_native_tls_server_config`). Pinned by a regression test
-  (`native_tls_config_advertises_h2_then_http11`).
-- Criterion microbench harness in `tessera-bench` with checked-in
-  baseline numbers at `bench/baseline.md`.
-- simd-json vetted on aarch64; integration deferred to Phase 4
-  alongside a custom axum body extractor (see
-  `bench/simd-json-spike.md` for why it isn't on the critical path
-  yet).
+Primitives ported (`tessera-policy`):
 
-Test status: 176 passing across the workspace
-(19 audit + 24 core + 58 policy + 3 interop + 54 gateway + 18
-runtime, plus crate-internal totals).
+| Module             | Tests | Mirrors Python                    | Wire format                           |
+|--------------------|-------|-----------------------------------|---------------------------------------|
+| `compliance`       | 24    | `tessera.compliance`              | NIST/CWE/OWASP tables + chained log   |
+| `delegation_intent`| 12    | `tessera.delegation_intent`       | regex prompt detection                |
+| `mcp_baseline`     | 14    | `tessera.mcp_baseline`            | SHA-256 tool snapshot, JSON I/O       |
+| `sensitivity`      | 32    | `tessera.sensitivity`             | IFC HWM, classifier rules             |
+| `ratelimit`        | 18    | `tessera.ratelimit`               | sliding-window TokenBudget + rate     |
+| `evidence`         | 12    | `tessera.evidence`                | HMAC-SHA256 over canonical JSON       |
+| `provenance`       | 14    | `tessera.provenance`              | HMAC-SHA256 over canonical JSON       |
+| `delegation`       | 13    | `tessera.delegation`              | HMAC-SHA256 + scope narrowing         |
+
+Scanners ported (`tessera-scanners`):
+
+| Module               | Tests | Mirrors Python                      | Tech                          |
+|----------------------|-------|-------------------------------------|-------------------------------|
+| `unicode`            | 9     | `tessera.scanners.unicode`          | tag-block detection           |
+| `tool_shadow`        | 14    | `tessera.scanners.tool_shadow`      | strsim Levenshtein            |
+| `directive`          | 29    | `tessera.scanners.directive`        | regex (13 patterns)           |
+| `heuristic`          | varies| `tessera.scanners.heuristic`        | aho-corasick + RegexSet       |
+| `intent`             | 17    | `tessera.scanners.intent`           | regex + cross-check           |
+| `tool_descriptions`  | 27    | `tessera.scanners.tool_descriptions`| regex categories              |
+| `tool_output_schema` | 27    | `tessera.scanners.tool_output_schema`| globset                      |
+| `prompt_screen`      | 10    | `tessera.scanners.prompt_screen`    | composes the above            |
+| `canary`             | 14    | `tessera.scanners.canary`           | hex tokens (no HMAC binding)  |
+
+Cross-language interop (Rust ↔ Python both ways):
+
+- `tests/python_evidence_interop.rs` (3 tests): Rust signs, Python verifies; Python signs, Rust verifies; identical SHA-256 digest.
+- `tests/python_provenance_interop.rs` (3 tests): same pattern for `ContextSegmentEnvelope` and `PromptProvenanceManifest`.
+- `tests/python_delegation_interop.rs` (2 tests): same pattern for `DelegationToken`.
+- `tests/python_canary_interop.rs` (4 tests): format compatibility (`[CANARY:hex]` and `[ref:hex]`).
+
+Total test count: **514 passing across the workspace** (Phase 1: 176, Phase 2: +338). Cross-language audit-log interop from v0.7.x still passes unchanged.
+
+Phase 1 deliverables that carry forward unchanged:
+- 7-crate workspace with one-way deps
+- mimalloc global allocator
+- ArcSwap on hot-path policy / URL-rules state
+- HTTP/2 ALPN on TLS listener
+- criterion microbench harness with checked-in baseline
 
 ## Running the suite
 

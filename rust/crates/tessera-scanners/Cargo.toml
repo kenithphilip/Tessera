@@ -6,8 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Content-aware scanners (heuristic, directive, intent, unicode, canary, supply_chain, ...) implementing the tessera Scanner protocol."
+description = "Content-aware scanners (heuristic, directive, intent, unicode, canary, tool_shadow, tool_descriptions, prompt_screen, tool_output_schema) ported from tessera.scanners.* in the Python reference."
 
 [dependencies]
 tessera-core = { path = "../tessera-core" }
+aho-corasick = { workspace = true }
+base64 = { workspace = true }
+globset = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+strsim = { workspace = true }

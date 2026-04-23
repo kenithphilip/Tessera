@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.0-alpha.1"
+version = "0.8.0-alpha.2"
 edition = "2021"
 rust-version = "1.80"
 license = "AGPL-3.0-or-later"
@@ -26,7 +26,7 @@ authors = ["Kenith Philip"]
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "macros"] }
 base64 = "0.22"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 glob = "0.3"
 hex = "0.4"
 hmac = "0.12"
@@ -47,9 +47,13 @@ tower-http = { version = "0.6", features = ["trace"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 # Phase 1 perf wins.
+aho-corasick = "1"
 arc-swap = "1"
+globset = "0.4"
 mimalloc = { version = "0.1", default-features = false }
+regex = "1"
 simd-json = "0.13"
+strsim = "0.11"
 # Phase 1 internal use.
 tempfile = "3"
 # Phase 5 bench harness.
