@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tessera-rs"
-version = "0.8.0a3"
+version = "0.8.0"
 description = "Pure-Rust implementations of the Tessera security primitives, exposed via PyO3."
 readme = "README.md"
 requires-python = ">=3.10"

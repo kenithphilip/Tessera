@@ -61,6 +61,15 @@ Compare against another target (e.g. the Python AgentMesh proxy):
     --python-label "python-0.7.x"
 ```
 
+## PGO build
+
+Profile-guided-optimization builds use the script at
+`rust/scripts/pgo-build.sh`. Two-stage workflow: instrument with
+`cargo-pgo`, drive `tessera-bench mixed` for the configured
+duration, merge with `llvm-profdata`, recompile. Re-run the
+baseline below against the optimized binary to capture the PGO row
+in the comparison table.
+
 ## v0.8.0-beta.1 baseline (Apple M3 Pro, single-host loopback)
 
 | Workload     | Concurrency | Duration | Successes | Failures | RPS     | p50 ms | p95 ms | p99 ms | p99.9 ms | max ms |

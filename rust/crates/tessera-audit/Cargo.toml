@@ -12,6 +12,7 @@ description = "Append-only JSONL hash-chained audit log with optional truncation
 crossbeam-channel = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+memmap2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

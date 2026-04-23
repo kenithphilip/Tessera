@@ -15,6 +15,7 @@
 //! registered with the policy fall back to `default_required_trust`
 //! (`TrustLevel::User` by default).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -40,10 +41,18 @@ pub enum DecisionKind {
 }
 
 /// The output of [`Policy::evaluate`].
+///
+/// `reason` is a `Cow<'static, str>` so the hot allow/deny paths
+/// can return a borrowed static string without allocating. Numeric
+/// detail (`required_trust`, `observed_trust`) lives in dedicated
+/// fields rather than being embedded in `reason`, so callers that
+/// want a structured view do not have to parse a string. Custom
+/// reasons (delegation, scanner verdicts, OPA backends) use
+/// `Cow::Owned` and pay one allocation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Decision {
     pub kind: DecisionKind,
-    pub reason: String,
+    pub reason: Cow<'static, str>,
     pub tool: String,
     pub required_trust: TrustLevel,
     pub observed_trust: TrustLevel,
@@ -52,6 +61,38 @@ pub struct Decision {
 impl Decision {
     pub fn allowed(&self) -> bool {
         matches!(self.kind, DecisionKind::Allow)
+    }
+
+    /// Convenience: the reason as a borrowed `&str`. Same data as
+    /// `decision.reason.as_ref()`, just with a friendlier name for
+    /// callers that don't want to think about Cow.
+    pub fn reason_str(&self) -> &str {
+        &self.reason
+    }
+
+    /// Format a long-form, human-readable reason that includes the
+    /// trust-level numbers. Allocates; only use when displaying to
+    /// an operator or writing a log line.
+    pub fn formatted_reason(&self) -> String {
+        match self.kind {
+            DecisionKind::Allow => format!(
+                "{} (min_trust={}, required={})",
+                self.reason,
+                self.observed_trust.as_int(),
+                self.required_trust.as_int(),
+            ),
+            DecisionKind::Deny => format!(
+                "{} (min_trust={} below required {} for tool {:?})",
+                self.reason,
+                self.observed_trust.as_int(),
+                self.required_trust.as_int(),
+                self.tool,
+            ),
+            DecisionKind::RequireApproval => format!(
+                "{} (tool {:?})",
+                self.reason, self.tool
+            ),
+        }
     }
 }
 
@@ -161,13 +202,13 @@ impl Policy {
         let observed = context.min_trust();
 
         if observed >= required {
+            // Hot path: allocate only the `tool` string. The reason
+            // is a Cow::Borrowed(&'static str) so this avoids the
+            // intermediate format!() temporary the v0.7.x code paid
+            // on every evaluate.
             Decision {
                 kind: DecisionKind::Allow,
-                reason: format!(
-                    "min_trust({}) >= required({})",
-                    observed.as_int(),
-                    required.as_int()
-                ),
+                reason: Cow::Borrowed("min_trust meets required floor"),
                 tool: name.to_string(),
                 required_trust: required,
                 observed_trust: observed,
@@ -175,12 +216,7 @@ impl Policy {
         } else {
             Decision {
                 kind: DecisionKind::Deny,
-                reason: format!(
-                    "context contains a segment at trust_level={}, below required {} for tool {:?}",
-                    observed.as_int(),
-                    required.as_int(),
-                    name
-                ),
+                reason: Cow::Borrowed("context taint below required floor"),
                 tool: name.to_string(),
                 required_trust: required,
                 observed_trust: observed,

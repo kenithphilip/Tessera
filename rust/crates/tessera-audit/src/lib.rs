@@ -7,6 +7,6 @@
 pub mod audit_log;
 
 pub use audit_log::{
-    canonical_json, iter_records, verify_chain, AppendEntry, AuditError, ChainedRecord,
-    JsonlHashchainSink, ReplayEnvelope, VerificationResult, GENESIS_HASH,
+    canonical_json, iter_records, verify_chain, verify_chain_mmap, AppendEntry, AuditError,
+    ChainedRecord, JsonlHashchainSink, ReplayEnvelope, VerificationResult, GENESIS_HASH,
 };

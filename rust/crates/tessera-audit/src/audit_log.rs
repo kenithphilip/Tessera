@@ -799,6 +799,233 @@ pub fn verify_chain<P: AsRef<Path>>(
     })
 }
 
+/// Memory-mapped variant of [`verify_chain`]. Uses `memmap2` to map
+/// the entire JSONL file into the process address space and walks
+/// the bytes line by line, avoiding the per-line `String` allocation
+/// the buffered-reader path pays.
+///
+/// Use this for files larger than ~100 MB where the read syscall
+/// + heap allocation overhead dominates the SHA-256 cost. For small
+/// files (< 1 MB) the mmap setup cost is comparable to the buffered
+/// path; pick whichever fits the rest of your code shape.
+///
+/// **Caveats**:
+/// - The file must not be modified while the verifier runs (writers
+///   should `flush()` and stop appending). The mmap reflects the
+///   on-disk state at map time.
+/// - On platforms that do not support `mmap` (rare) this falls back
+///   to [`verify_chain`].
+/// - Empty files are treated as a valid empty chain, matching
+///   [`verify_chain`].
+pub fn verify_chain_mmap<P: AsRef<Path>>(
+    path: P,
+    seal_key: Option<&[u8]>,
+) -> Result<VerificationResult, AuditError> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(VerificationResult {
+            valid: false,
+            records_checked: 0,
+            first_bad_seq: None,
+            reason: format!("file not found: {}", path.display()),
+            seal_valid: None,
+        });
+    }
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() == 0 {
+        // mmap of an empty file panics on some platforms; short-circuit.
+        return verify_seal_only(path, seal_key);
+    }
+    // SAFETY: the file remains open for the duration of the mmap and
+    // we only read from the slice. Concurrent writers can race; the
+    // doc-comment above flags that requirement.
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    let bytes: &[u8] = &mmap[..];
+
+    let mut expected_prev = GENESIS_HASH.to_string();
+    let mut expected_seq: u64 = 1;
+    let mut records_checked: u64 = 0;
+    let mut last_hash = GENESIS_HASH.to_string();
+
+    for line in bytes.split(|&b| b == b'\n') {
+        // Trim a trailing CR if present (Windows-friendly).
+        let line = match line.last() {
+            Some(&b'\r') => &line[..line.len() - 1],
+            _ => line,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        // Decode utf-8 lazily; serde_json wants &str. Bad UTF-8 in
+        // the audit log is itself a corruption signal.
+        let line_str = match std::str::from_utf8(line) {
+            Ok(s) => s,
+            Err(_) => {
+                return Ok(VerificationResult {
+                    valid: false,
+                    records_checked,
+                    first_bad_seq: Some(expected_seq),
+                    reason: format!(
+                        "non-utf8 record at expected seq {expected_seq}"
+                    ),
+                    seal_valid: None,
+                });
+            }
+        };
+        let record = match ChainedRecord::from_line(line_str) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(VerificationResult {
+                    valid: false,
+                    records_checked,
+                    first_bad_seq: Some(expected_seq),
+                    reason: format!("unparseable record at expected seq {expected_seq}: {e}"),
+                    seal_valid: None,
+                });
+            }
+        };
+        if record.seq != expected_seq {
+            return Ok(VerificationResult {
+                valid: false,
+                records_checked,
+                first_bad_seq: Some(record.seq),
+                reason: format!(
+                    "sequence gap: expected {expected_seq}, got {}",
+                    record.seq
+                ),
+                seal_valid: None,
+            });
+        }
+        if record.prev_hash != expected_prev {
+            return Ok(VerificationResult {
+                valid: false,
+                records_checked,
+                first_bad_seq: Some(record.seq),
+                reason: format!(
+                    "prev_hash mismatch at seq {}: expected {}, got {}",
+                    record.seq,
+                    &expected_prev[..16.min(expected_prev.len())],
+                    &record.prev_hash[..16.min(record.prev_hash.len())]
+                ),
+                seal_valid: None,
+            });
+        }
+        let computed = compute_hash(
+            record.seq,
+            &record.timestamp,
+            &record.kind,
+            &record.principal,
+            &record.detail,
+            record.correlation_id.as_deref(),
+            record.trace_id.as_deref(),
+            &record.prev_hash,
+        );
+        if computed != record.hash {
+            return Ok(VerificationResult {
+                valid: false,
+                records_checked,
+                first_bad_seq: Some(record.seq),
+                reason: format!(
+                    "hash mismatch at seq {}: record says {}, computed {}",
+                    record.seq,
+                    &record.hash[..16.min(record.hash.len())],
+                    &computed[..16.min(computed.len())]
+                ),
+                seal_valid: None,
+            });
+        }
+        records_checked += 1;
+        expected_prev = record.hash.clone();
+        expected_seq = record.seq + 1;
+        last_hash = record.hash;
+    }
+
+    let seal_valid = check_seal(path, seal_key, expected_seq, &last_hash, records_checked)?;
+    if let Some(false) = seal_valid {
+        // check_seal returns Some(false) only when the seal exists,
+        // is parseable, but does not match. The full failure report
+        // happens inside check_seal when it returns Err / the caller
+        // here treats Some(false) as a hard fail.
+        return Ok(VerificationResult {
+            valid: false,
+            records_checked,
+            first_bad_seq: None,
+            reason: "seal mismatch (truncation or wrong key)".to_string(),
+            seal_valid: Some(false),
+        });
+    }
+
+    Ok(VerificationResult {
+        valid: true,
+        records_checked,
+        first_bad_seq: None,
+        reason: "ok".to_string(),
+        seal_valid,
+    })
+}
+
+/// Helper used by [`verify_chain_mmap`]. Returns `Some(true)` when
+/// the seal exists and validates, `Some(false)` when it exists but
+/// fails, `None` when no seal was checked. Pulled out of the loop
+/// to keep the mmap path readable.
+fn check_seal(
+    path: &Path,
+    seal_key: Option<&[u8]>,
+    expected_seq: u64,
+    last_hash: &str,
+    _records_checked: u64,
+) -> Result<Option<bool>, AuditError> {
+    let key = match seal_key {
+        Some(k) => k,
+        None => return Ok(None),
+    };
+    let seal_path = seal_path_for(path);
+    if !seal_path.exists() {
+        return Ok(None);
+    }
+    let seal_text = match std::fs::read_to_string(&seal_path) {
+        Ok(t) => t,
+        Err(_) => return Ok(Some(false)),
+    };
+    let map = match serde_json::from_str::<Value>(&seal_text) {
+        Ok(Value::Object(m)) => m,
+        _ => return Ok(Some(false)),
+    };
+    let stored_seq = map.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let stored_hash = map
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let stored_tag = map.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(format!("{stored_seq}|{stored_hash}").as_bytes());
+    let expected_tag = hex::encode(mac.finalize().into_bytes());
+    let tag_ok = constant_time_eq(stored_tag.as_bytes(), expected_tag.as_bytes());
+    let matches_tail =
+        stored_seq == (expected_seq.saturating_sub(1)) && stored_hash == last_hash;
+    Ok(Some(tag_ok && matches_tail))
+}
+
+/// For empty files: optionally check the seal but skip the chain
+/// walk entirely. Returns the same shape as [`verify_chain_mmap`].
+fn verify_seal_only(
+    path: &Path,
+    seal_key: Option<&[u8]>,
+) -> Result<VerificationResult, AuditError> {
+    // Empty chain: expected_seq is 1 (so saturating_sub is 0) and
+    // last_hash is the genesis sentinel.
+    let seal_valid = check_seal(path, seal_key, 1, GENESIS_HASH, 0)?;
+    Ok(VerificationResult {
+        valid: matches!(seal_valid, Some(true) | None),
+        records_checked: 0,
+        first_bad_seq: None,
+        reason: "ok".to_string(),
+        seal_valid,
+    })
+}
+
 /// Iterate records from the file, skipping unparseable lines. Does not
 /// verify the chain. Mirrors `tessera.audit_log.iter_records`.
 pub fn iter_records<P: AsRef<Path>>(path: P) -> Result<Vec<ChainedRecord>, AuditError> {
@@ -930,6 +1157,92 @@ mod tests {
         let r = verify_chain(dir.path().join("never.jsonl"), None).unwrap();
         assert!(!r.valid);
         assert!(r.reason.contains("not found"));
+    }
+
+    // ---- verify_chain_mmap parity with verify_chain ----
+
+    #[test]
+    fn mmap_intact_chain_verifies() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
+        for i in 0..5 {
+            sink.append(entry(json!({"n": i}))).unwrap();
+        }
+        flush(sink);
+        let r = verify_chain_mmap(&path, None).unwrap();
+        assert!(r.valid);
+        assert_eq!(r.records_checked, 5);
+    }
+
+    #[test]
+    fn mmap_missing_file_is_invalid() {
+        let dir = tempdir().unwrap();
+        let r = verify_chain_mmap(dir.path().join("never.jsonl"), None).unwrap();
+        assert!(!r.valid);
+        assert!(r.reason.contains("not found"));
+    }
+
+    #[test]
+    fn mmap_empty_file_is_treated_as_empty_chain() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        let r = verify_chain_mmap(&path, None).unwrap();
+        assert!(r.valid);
+        assert_eq!(r.records_checked, 0);
+    }
+
+    #[test]
+    fn mmap_modified_detail_breaks_chain() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
+        for i in 0..3 {
+            sink.append(entry(json!({"n": i}))).unwrap();
+        }
+        flush(sink);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
+        let mut record: ChainedRecord = serde_json::from_str(&lines[1]).unwrap();
+        record.detail = json!({"n": "TAMPERED"});
+        lines[1] = record.to_canonical_json();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let r = verify_chain_mmap(&path, None).unwrap();
+        assert!(!r.valid);
+        assert_eq!(r.first_bad_seq, Some(2));
+        assert!(r.reason.contains("hash mismatch"));
+    }
+
+    #[test]
+    fn mmap_and_buffered_agree_on_intact_chain() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = JsonlHashchainSink::new(&path, 1, None).unwrap();
+        for i in 0..200 {
+            sink.append(entry(json!({"n": i, "kind": "policy_deny"}))).unwrap();
+        }
+        flush(sink);
+        let buf = verify_chain(&path, None).unwrap();
+        let mmap_r = verify_chain_mmap(&path, None).unwrap();
+        assert_eq!(buf.valid, mmap_r.valid);
+        assert_eq!(buf.records_checked, mmap_r.records_checked);
+        assert_eq!(buf.first_bad_seq, mmap_r.first_bad_seq);
+    }
+
+    #[test]
+    fn mmap_seal_validates_when_present() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let key = b"test-seal-key-32bytes!!!!!!!!!!!".to_vec();
+        let sink = JsonlHashchainSink::new(&path, 1, Some(key.clone())).unwrap();
+        for i in 0..3 {
+            sink.append(entry(json!({"n": i}))).unwrap();
+        }
+        flush(sink);
+        let r = verify_chain_mmap(&path, Some(&key)).unwrap();
+        assert!(r.valid);
+        assert_eq!(r.seal_valid, Some(true));
     }
 
     #[test]

@@ -76,7 +76,7 @@ impl PendingApproval {
                     DecisionKind::Deny => "deny".to_string(),
                     DecisionKind::RequireApproval => "require_approval".to_string(),
                 },
-                reason: self.decision.reason.clone(),
+                reason: self.decision.reason.clone().into_owned(),
                 tool: self.decision.tool.clone(),
                 required_trust: self.decision.required_trust.as_int(),
                 observed_trust: self.decision.observed_trust.as_int(),
@@ -100,7 +100,7 @@ impl PendingApproval {
             .ok_or_else(|| format!("bad observed_trust: {}", s.decision.observed_trust))?;
         let decision = Decision {
             kind,
-            reason: s.decision.reason,
+            reason: std::borrow::Cow::Owned(s.decision.reason),
             tool: s.decision.tool,
             required_trust: required,
             observed_trust: observed,
@@ -299,7 +299,7 @@ impl SessionStore {
         };
         Ok(Decision {
             kind,
-            reason: resolved_reason,
+            reason: std::borrow::Cow::Owned(resolved_reason),
             tool: approval.tool,
             required_trust: approval.decision.required_trust,
             observed_trust: approval.decision.observed_trust,

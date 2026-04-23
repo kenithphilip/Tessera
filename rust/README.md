@@ -51,6 +51,61 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
+## v0.8.0 (Phase 6 complete, final release)
+
+Phase 6 lands the heavier perf wins, the migration guide, and the
+PGO build script. With this release the workspace is feature
+complete for the original 8-phase port plan; Phase 7 picks up
+OpenTelemetry-native tracing and housekeeping.
+
+Heavier perf wins:
+
+- **Zero-alloc Decision.reason on the allow path.**
+  `Decision.reason` is now `Cow<'static, str>` instead of `String`.
+  The hot allow / deny paths return `Cow::Borrowed("min_trust meets
+  required floor")` without allocating, paying only the existing
+  `tool: String` clone. Numeric detail (required_trust,
+  observed_trust) was already in dedicated fields, so no
+  information is lost. `Decision::formatted_reason()` builds the
+  long-form when an operator wants it. JSON serialization is
+  unchanged (Cow flattens to a string transparently).
+- **`verify_chain_mmap` for files > 100 MB.** New API in
+  `tessera_audit`: walk the audit log via `memmap2::Mmap` instead
+  of `BufReader::lines()`. Saves the per-line `String` allocation
+  and the read syscall overhead the buffered path pays. Falls back
+  to the existing `verify_chain` semantics for empty files. Six
+  new dedicated tests pin parity with the buffered path on intact,
+  tampered, missing, and sealed chains.
+- **PGO build script** at `rust/scripts/pgo-build.sh`: instrument
+  the gateway with `cargo-pgo`, drive `tessera-bench mixed` for a
+  configurable duration, merge profiles with `llvm-profdata`, and
+  recompile. Idempotent; defaults match the bench results.md
+  reproduce recipe.
+
+PyO3 wheel:
+
+- Bumped `tessera-rs` to `0.8.0` (was `0.8.0a3`).
+- Migration guide at `crates/tessera-py/MIGRATION.md`. Goal: one
+  paragraph unblocks 80% of Python adapter authors, with
+  side-by-side import maps and the API differences flagged
+  explicitly.
+- The `wheels.yml` GitHub Actions workflow publishes to PyPI on
+  tag push; `v0.8.0` triggers the publish. The `pypi` GitHub
+  Environment gates the publish for manual approval, which gives
+  the operator a chance to inspect the wheels before they go out.
+
+Test status: **756 passing across the workspace** (Phase 5: 750,
+Phase 6: +6 from `verify_chain_mmap` parity tests). All
+cross-language interop from Phase 2 still passes; the Cow change
+to `Decision.reason` is invisible to JSON serializers and string
+consumers.
+
+Phase 5 carryover: the comparison rows for the Python AgentMesh
+proxy and the Rust v0.7.x baseline are still pending in
+`rust/bench/results.md`. They are an operations task: stand up
+both targets, run `tessera-bench compare`, append the rows to the
+results file. The harness is ready.
+
 ## v0.8.0-rc.1 (Phase 5 complete)
 
 Phase 5 ships the load test harness. Every perf claim now has a

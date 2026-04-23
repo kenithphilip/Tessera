@@ -326,7 +326,7 @@ pub fn candidate_for(policy: Policy, signing_key: Vec<u8>) -> Box<FallibleFn> {
         let decision = policy.evaluate(&ctx, &envelope.tool_name);
         Ok(PolicyDecision {
             allowed: decision.kind == DecisionKind::Allow,
-            reason: decision.reason,
+            reason: decision.reason.into_owned(),
             source: "tessera.policy_builder.candidate".to_string(),
             metadata: serde_json::Value::Null,
         })
