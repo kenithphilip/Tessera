@@ -25,7 +25,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0-alpha.1"
 edition = "2021"
 rust-version = "1.80"
 license = "AGPL-3.0-or-later"
@@ -67,6 +67,13 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 # Phase 6 mmap audit verifier.
 memmap2 = "0.9"
+# Phase 7 OpenTelemetry-native tracing (behind the gateway's `otel` feature).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-opentelemetry = "0.27"
+opentelemetry = "0.26"
+opentelemetry_sdk = { version = "0.26", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic"] }
 # Phase 1 perf wins.
 aho-corasick = "1"
 arc-swap = "1"
@@ -82,6 +89,23 @@ hdrhistogram = "7"
 clap = { version = "4", features = ["derive"] }
 # Phase 3 PyO3 wheel.
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+
+[workspace.lints.rust]
+# Standard hygiene. Crate-level overrides go in each crate's
+# [lints.rust] block when a deliberate exception is needed.
+unsafe_code = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+# Lints that catch real bugs and have no false positives in this
+# codebase. Pedantic / nursery groups stay off; they would gate on
+# stylistic preferences the workspace does not enforce.
+explicit_iter_loop = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+str_to_string = "warn"
 
 [profile.release]
 lto = "thin"

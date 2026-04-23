@@ -41,3 +41,6 @@ axum = { workspace = true }
 [[bench]]
 name = "policy_eval"
 harness = false
+
+[lints]
+workspace = true

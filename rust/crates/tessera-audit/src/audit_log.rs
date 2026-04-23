@@ -252,7 +252,7 @@ enum WriterMsg {
     },
     /// Tells the writer to drain everything queued ahead of this
     /// message, fsync, and signal back via the supplied sender.
-    Flush(crossbeam_channel::Sender<()>),
+    Flush(Sender<()>),
     /// Tells the writer thread to flush, fsync, and exit.
     Shutdown,
 }
@@ -840,6 +840,7 @@ pub fn verify_chain_mmap<P: AsRef<Path>>(
     // SAFETY: the file remains open for the duration of the mmap and
     // we only read from the slice. Concurrent writers can race; the
     // doc-comment above flags that requirement.
+    #[allow(unsafe_code)]
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let bytes: &[u8] = &mmap[..];
 

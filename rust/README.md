@@ -51,6 +51,43 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
+## v0.9.0-alpha.1 (Phase 7 in flight: OTel + housekeeping)
+
+Phase 7 of the original 8-phase plan opens the v0.9.0 line with
+OpenTelemetry-native spans and the workspace housekeeping pass.
+
+OpenTelemetry-native spans:
+
+- New `tessera-gateway` `otel` feature wires `tower_http::trace`
+  spans through to an OTLP gRPC exporter via `tracing-opentelemetry`
+  + `opentelemetry-otlp`. Default build stays transport-free and
+  config-free (plain `tracing-subscriber` over `RUST_LOG`).
+- New `tessera_gateway::telemetry::init_tracing()` is the single
+  entry point for both paths. Idempotent via `Once`, so it is safe
+  to call from `main` and from integration tests.
+- Operators configure with the standard OTel env vars:
+  `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4317`),
+  `OTEL_SERVICE_NAME` (default `tessera-gateway`), and the rest of
+  the OTel SDK env-var matrix.
+
+Workspace housekeeping:
+
+- [workspace.lints.rust] and [workspace.lints.clippy] tables
+  normalize lint config. Every crate inherits via
+  `[lints] workspace = true`. Zero warnings in the default build.
+- Per-crate READMEs landed for `tessera-core`, `tessera-audit`,
+  `tessera-policy`, `tessera-runtime`, `tessera-scanners`,
+  `tessera-bench` (`tessera-gateway` and `tessera-py` already had
+  them).
+- `rust/ROADMAP.md` captures shipped / in-flight / deferred /
+  out-of-scope items, including Cranelift CEL JIT, simd-json,
+  comparison rows for the bench harness, and the kernel-bypass
+  options the plan rejected for v0.8.x / v0.9.x.
+
+Test status: **757 passing across the workspace** (Phase 6: 756,
+Phase 7: +1 for the telemetry idempotency test). Zero warnings.
+Cross-language interop from Phase 2 and earlier still passes.
+
 ## v0.8.0 (Phase 6 complete, final release)
 
 Phase 6 lands the heavier perf wins, the migration guide, and the

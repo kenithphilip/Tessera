@@ -30,3 +30,6 @@ tokio = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tessera-audit = { path = "../tessera-audit" }
+
+[lints]
+workspace = true

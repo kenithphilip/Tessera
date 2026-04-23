@@ -19,6 +19,7 @@ use std::{
 };
 
 pub mod filters;
+pub mod telemetry;
 
 // New primitives live in sibling workspace crates (v0.8.x). The
 // gateway re-exports them under their original `tessera_gateway::X`
@@ -111,6 +112,7 @@ impl SecurityEvent {
 
 type EventSink = Arc<dyn Fn(SecurityEvent) + Send + Sync>;
 
+#[allow(unused_qualifications)]
 static EVENT_SINKS: std::sync::OnceLock<Mutex<Vec<EventSink>>> = std::sync::OnceLock::new();
 static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
 
@@ -753,12 +755,14 @@ impl GatewayConfig {
 
 /// Watches a file path and reloads the secret when it changes.
 /// Designed for credential rotation without gateway restarts.
+#[allow(unused_qualifications)]
 pub struct SecretWatcher {
     path: std::path::PathBuf,
     last_modified: std::sync::Mutex<Option<std::time::SystemTime>>,
     current: std::sync::RwLock<Secret<Vec<u8>>>,
 }
 
+#[allow(unused_qualifications)]
 impl SecretWatcher {
     pub fn new(path: impl Into<std::path::PathBuf>, initial: Vec<u8>) -> Self {
         let path = path.into();
