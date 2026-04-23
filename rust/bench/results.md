@@ -93,6 +93,32 @@ Reading the numbers:
 - Failures are 0 across the board. The harness successfully
   exhausts the loopback path before the gateway saturates.
 
+## v0.10.0 wave A: SIMD-accelerated body parsing
+
+`SimdJson<T>` axum extractor introduced in
+`crates/tessera-gateway/src/simd_extractor.rs` swaps `serde_json`
+for `simd_json` on 6 production handlers (4 in `endpoints.rs`, 2
+in `lib.rs`). Falls back to `serde_json` on parse error so behavior
+on edge bodies stays identical.
+
+Microbench (criterion, Apple M3 Pro, single-host loopback):
+
+| Body size | Parser     | Time      | Throughput   | Delta       |
+|-----------|------------|-----------|--------------|-------------|
+| 4 KB      | serde_json | 19.06 us  | 183 MiB/s    | baseline    |
+| 4 KB      | simd_json  | 17.55 us  | 199 MiB/s    | -8% time    |
+| 64 KB     | serde_json | 378.49 us | 145 MiB/s    | baseline    |
+| 64 KB     | simd_json  | 362.05 us | 151 MiB/s    | -4% time    |
+
+Delta is small at these sizes because the cost is dominated by
+allocator + UTF-8 validation; simd_json's main wins are at larger
+nested-object payloads (tens of KB and up). On the loopback bench
+the JSON parser is not the bottleneck (allocator + DashMap shard
+contention is), so the gateway-level RPS numbers in the v0.8.0
+baseline above do not move measurably; the per-call latency does.
+
+Run with `cargo bench --bench json_extractor -p tessera-bench`.
+
 ## Comparison rows
 
 The plan calls for rows comparing:

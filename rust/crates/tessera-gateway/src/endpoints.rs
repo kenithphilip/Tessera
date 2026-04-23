@@ -44,6 +44,8 @@ use tessera_policy::ssrf_guard::SsrfGuard;
 use tessera_policy::url_rules::{RuleVerdict, UrlRulesEngine};
 use tessera_runtime::session_context::SessionContextStore;
 
+use crate::simd_extractor::SimdJson;
+
 /// Shared state for the primitives router.
 ///
 /// `policy` and `url_rules` use [`arc_swap::ArcSwap`] for wait-free
@@ -237,7 +239,7 @@ async fn reset(
 
 async fn evaluate(
     State(state): State<Arc<PrimitivesState>>,
-    Json(body): Json<EvaluateBody>,
+    SimdJson(body): SimdJson<EvaluateBody>,
 ) -> impl IntoResponse {
     let ctx_arc = match state.contexts.get(&body.session_id) {
         Ok(c) => c,
@@ -289,7 +291,7 @@ async fn evaluate(
 
 async fn label(
     State(state): State<Arc<PrimitivesState>>,
-    Json(body): Json<LabelBody>,
+    SimdJson(body): SimdJson<LabelBody>,
 ) -> impl IntoResponse {
     // The Rust gateway intentionally does NOT run the Python scanner
     // suite here (that's where the largest behavior delta with
@@ -375,7 +377,7 @@ async fn audit_verify(State(state): State<Arc<PrimitivesState>>) -> impl IntoRes
 
 async fn ssrf_check(
     State(state): State<Arc<PrimitivesState>>,
-    Json(body): Json<SsrfCheckBody>,
+    SimdJson(body): SimdJson<SsrfCheckBody>,
 ) -> impl IntoResponse {
     let decision = state.ssrf_guard.check_url(&body.url);
     Json(json!({
@@ -393,7 +395,7 @@ async fn ssrf_check(
 
 async fn url_rules_check(
     State(state): State<Arc<PrimitivesState>>,
-    Json(body): Json<UrlRulesCheckBody>,
+    SimdJson(body): SimdJson<UrlRulesCheckBody>,
 ) -> impl IntoResponse {
     let engine = state.url_rules.load();
     let decision = engine.evaluate(&body.url, &body.method);

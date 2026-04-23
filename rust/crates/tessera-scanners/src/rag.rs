@@ -348,6 +348,24 @@ impl EmbeddingAnomalyChecker {
         self.distance_threshold = Some(distance_p95);
     }
 
+    /// Convenience: compute a baseline from `corpus` and install it.
+    ///
+    /// Equivalent to `set_baseline(b.centroid, b.magnitude_p99,
+    /// b.distance_p95)` after `compute_baseline(corpus)`. Returns the
+    /// computed [`Baseline`] so callers can persist or log it.
+    pub fn set_baseline_from_corpus(
+        &mut self,
+        corpus: &[Vec<f64>],
+    ) -> Result<Baseline, BaselineError> {
+        let baseline = compute_baseline(corpus)?;
+        self.set_baseline(
+            baseline.centroid.clone(),
+            baseline.magnitude_p99,
+            baseline.distance_p95,
+        );
+        Ok(baseline)
+    }
+
     /// Check `embedding` for anomalies given its retrieval `similarity_score`.
     ///
     /// Returns a list of human-readable anomaly descriptions (empty when
@@ -399,6 +417,147 @@ impl EmbeddingAnomalyChecker {
 
         anomalies
     }
+}
+
+// ---------------------------------------------------------------------------
+// Baseline computation
+// ---------------------------------------------------------------------------
+
+/// Baseline statistics computed from a corpus of legitimate embeddings.
+///
+/// Pass to [`EmbeddingAnomalyChecker::set_baseline`] (via the convenience
+/// [`EmbeddingAnomalyChecker::set_baseline_from_corpus`]) to enable
+/// magnitude and distance anomaly checks. Mirrors the Python
+/// `tessera.rag_guard.compute_baseline` return shape.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Baseline {
+    /// Element-wise mean of every embedding in the corpus.
+    pub centroid: Vec<f64>,
+    /// 99th-percentile L2 norm of corpus embeddings (nearest-rank).
+    pub magnitude_p99: f64,
+    /// 95th-percentile Euclidean distance from centroid (nearest-rank).
+    pub distance_p95: f64,
+}
+
+/// Reasons [`compute_baseline`] can fail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BaselineError {
+    /// Corpus must contain at least one embedding.
+    EmptyCorpus,
+    /// Every embedding must have the same dimensionality. The first
+    /// embedding's length is the reference; the variant carries the
+    /// (expected, actual, index) tuple of the first violating row.
+    DimensionMismatch {
+        expected: usize,
+        actual: usize,
+        index: usize,
+    },
+    /// At least one embedding contains a NaN coordinate; cannot be
+    /// reliably ordered for percentile computation.
+    ContainsNaN { index: usize },
+}
+
+impl std::fmt::Display for BaselineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyCorpus => write!(f, "corpus must not be empty"),
+            Self::DimensionMismatch {
+                expected,
+                actual,
+                index,
+            } => write!(
+                f,
+                "embedding at index {index} has dimension {actual}, expected {expected}"
+            ),
+            Self::ContainsNaN { index } => {
+                write!(f, "embedding at index {index} contains NaN")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BaselineError {}
+
+/// Compute baseline statistics from a corpus of legitimate embeddings.
+///
+/// `corpus` must be non-empty, all rows must have the same dimension,
+/// and no entry may be NaN. Percentiles use nearest-rank ordering
+/// (`((n - 1) * pct) / 100`); on a 100-element corpus this puts the
+/// p99 at index 99 and the p95 at index 95. The Python reference
+/// uses the same nearest-rank rule, so the cross-language interop
+/// test pins both sides byte-for-byte.
+///
+/// Returns a [`Baseline`] suitable for
+/// [`EmbeddingAnomalyChecker::set_baseline`].
+pub fn compute_baseline(corpus: &[Vec<f64>]) -> Result<Baseline, BaselineError> {
+    if corpus.is_empty() {
+        return Err(BaselineError::EmptyCorpus);
+    }
+
+    let dim = corpus[0].len();
+    for (idx, row) in corpus.iter().enumerate() {
+        if row.len() != dim {
+            return Err(BaselineError::DimensionMismatch {
+                expected: dim,
+                actual: row.len(),
+                index: idx,
+            });
+        }
+        if row.iter().any(|x| x.is_nan()) {
+            return Err(BaselineError::ContainsNaN { index: idx });
+        }
+    }
+
+    // Centroid: element-wise arithmetic mean.
+    let n = corpus.len() as f64;
+    let mut centroid = vec![0.0_f64; dim];
+    for row in corpus {
+        for (i, x) in row.iter().enumerate() {
+            centroid[i] += x;
+        }
+    }
+    for slot in &mut centroid {
+        *slot /= n;
+    }
+
+    // Per-row magnitude (L2 norm) and distance to centroid (Euclidean).
+    let mut magnitudes: Vec<f64> = corpus
+        .iter()
+        .map(|row| row.iter().map(|x| x * x).sum::<f64>().sqrt())
+        .collect();
+    let mut distances: Vec<f64> = corpus
+        .iter()
+        .map(|row| {
+            row.iter()
+                .zip(centroid.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .collect();
+
+    // Sort with total_cmp so NaN handling is well-defined (we already
+    // rejected NaN inputs above; total_cmp also handles negative zero
+    // identically across runs, which matters for cross-language parity).
+    magnitudes.sort_by(f64::total_cmp);
+    distances.sort_by(f64::total_cmp);
+
+    let magnitude_p99 = magnitudes[nearest_rank_index(magnitudes.len(), 99)];
+    let distance_p95 = distances[nearest_rank_index(distances.len(), 95)];
+
+    Ok(Baseline {
+        centroid,
+        magnitude_p99,
+        distance_p95,
+    })
+}
+
+/// Nearest-rank percentile index. `n >= 1` enforced by the caller via
+/// the empty-corpus check. For `n == 1` returns 0 (the only element).
+fn nearest_rank_index(n: usize, percentile: usize) -> usize {
+    debug_assert!(n >= 1);
+    debug_assert!(percentile <= 100);
+    ((n - 1) * percentile) / 100
 }
 
 // ---------------------------------------------------------------------------
@@ -600,5 +759,86 @@ mod tests {
         // Huge vector but no baseline: only similarity check runs.
         let anomalies = checker.check(&[100.0, 100.0], 0.5);
         assert!(anomalies.is_empty());
+    }
+
+    // ---- Baseline computation tests ---------------------------------------
+
+    #[test]
+    fn compute_baseline_known_two_dim_corpus() {
+        // Three orthonormal-ish vectors so the math is hand-checkable.
+        let corpus = vec![
+            vec![1.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 1.0],
+        ];
+        let b = compute_baseline(&corpus).unwrap();
+        // Centroid: ((1+0+1)/3, (0+1+1)/3) = (0.6666..., 0.6666...)
+        assert!((b.centroid[0] - 2.0 / 3.0).abs() < 1e-12);
+        assert!((b.centroid[1] - 2.0 / 3.0).abs() < 1e-12);
+        // Magnitudes (sorted): 1.0, 1.0, sqrt(2) = 1.414...
+        // p99 nearest-rank on n=3: index = ((3-1)*99)/100 = 1, so 1.0.
+        assert!((b.magnitude_p99 - 1.0).abs() < 1e-12);
+        // Distances from (2/3, 2/3): two equal, one different.
+        // p95 on n=3: index = ((3-1)*95)/100 = 1, middle value.
+        assert!(b.distance_p95 > 0.0);
+    }
+
+    #[test]
+    fn compute_baseline_rejects_empty_corpus() {
+        let corpus: Vec<Vec<f64>> = vec![];
+        let err = compute_baseline(&corpus).unwrap_err();
+        assert_eq!(err, BaselineError::EmptyCorpus);
+    }
+
+    #[test]
+    fn compute_baseline_rejects_dimension_mismatch() {
+        let corpus = vec![vec![1.0, 2.0], vec![3.0]];
+        let err = compute_baseline(&corpus).unwrap_err();
+        assert_eq!(
+            err,
+            BaselineError::DimensionMismatch {
+                expected: 2,
+                actual: 1,
+                index: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn compute_baseline_rejects_nan() {
+        let corpus = vec![vec![1.0, 2.0], vec![3.0, f64::NAN]];
+        let err = compute_baseline(&corpus).unwrap_err();
+        assert_eq!(err, BaselineError::ContainsNaN { index: 1 });
+    }
+
+    #[test]
+    fn compute_baseline_single_element_corpus() {
+        // p99 == p95 == only value when n==1.
+        let corpus = vec![vec![3.0, 4.0]];
+        let b = compute_baseline(&corpus).unwrap();
+        assert_eq!(b.centroid, vec![3.0, 4.0]);
+        assert!((b.magnitude_p99 - 5.0).abs() < 1e-12);  // sqrt(9+16)
+        assert_eq!(b.distance_p95, 0.0);                   // distance to self
+    }
+
+    #[test]
+    fn compute_baseline_hundred_element_corpus_indices() {
+        // Build a 100-element 1D corpus with magnitudes 1.0 .. 100.0.
+        // p99 nearest-rank index = ((100-1)*99)/100 = 98, so the
+        // 99th-ranked magnitude (index 98, value 99.0).
+        let corpus: Vec<Vec<f64>> = (1..=100).map(|i| vec![i as f64]).collect();
+        let b = compute_baseline(&corpus).unwrap();
+        assert_eq!(b.centroid, vec![50.5]);  // sum(1..=100)/100
+        assert!((b.magnitude_p99 - 99.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn set_baseline_from_corpus_installs_thresholds() {
+        let mut checker = EmbeddingAnomalyChecker::default();
+        let corpus = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
+        let b = checker.set_baseline_from_corpus(&corpus).unwrap();
+        assert!(checker.centroid.is_some());
+        assert_eq!(checker.magnitude_threshold, Some(b.magnitude_p99));
+        assert_eq!(checker.distance_threshold, Some(b.distance_p95));
     }
 }

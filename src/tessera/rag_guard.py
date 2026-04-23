@@ -31,6 +31,7 @@ content is dropped from the context).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -337,3 +338,89 @@ class EmbeddingAnomalyChecker:
                 )
 
         return anomalies
+
+
+# ---------------------------------------------------------------------------
+# Baseline computation (parity port from
+# rust/crates/tessera-scanners/src/rag.rs::compute_baseline; see
+# rust/crates/tessera-scanners/tests/python_rag_baseline_interop.rs for
+# the cross-language byte-equal test).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """Baseline statistics for ``EmbeddingAnomalyChecker.set_baseline``."""
+
+    centroid: list[float]
+    magnitude_p99: float
+    distance_p95: float
+
+
+class BaselineError(ValueError):
+    """Raised by :func:`compute_baseline` when the corpus is invalid."""
+
+
+def _nearest_rank_index(n: int, percentile: int) -> int:
+    """Nearest-rank percentile index. ``n >= 1`` enforced by the caller."""
+    return ((n - 1) * percentile) // 100
+
+
+def compute_baseline(corpus: Sequence[Sequence[float]]) -> Baseline:
+    """Compute baseline statistics from a corpus of legitimate embeddings.
+
+    ``corpus`` must be non-empty, every row must share the same dimension,
+    and no entry may be NaN. Percentiles use nearest-rank ordering
+    (``((n - 1) * pct) // 100``); on a 100-element corpus this puts the
+    p99 at index 99 and the p95 at index 95.
+
+    The Rust port at ``tessera-scanners::compute_baseline`` uses the same
+    rule, so the cross-language interop test pins both sides byte-for-byte.
+
+    Returns a :class:`Baseline` suitable for
+    :meth:`EmbeddingAnomalyChecker.set_baseline`.
+    """
+    if not corpus:
+        raise BaselineError("corpus must not be empty")
+
+    dim = len(corpus[0])
+    for idx, row in enumerate(corpus):
+        if len(row) != dim:
+            raise BaselineError(
+                f"embedding at index {idx} has dimension {len(row)}, expected {dim}"
+            )
+        if any(x != x for x in row):  # NaN check (NaN != NaN)
+            raise BaselineError(f"embedding at index {idx} contains NaN")
+
+    n = len(corpus)
+    centroid = [0.0] * dim
+    for row in corpus:
+        for i, x in enumerate(row):
+            centroid[i] += x
+    centroid = [v / n for v in centroid]
+
+    magnitudes = sorted(
+        sum(x * x for x in row) ** 0.5 for row in corpus
+    )
+    distances = sorted(
+        sum((a - b) ** 2 for a, b in zip(row, centroid)) ** 0.5 for row in corpus
+    )
+
+    return Baseline(
+        centroid=centroid,
+        magnitude_p99=magnitudes[_nearest_rank_index(len(magnitudes), 99)],
+        distance_p95=distances[_nearest_rank_index(len(distances), 95)],
+    )
+
+
+def set_baseline_from_corpus(
+    checker: EmbeddingAnomalyChecker, corpus: Sequence[Sequence[float]]
+) -> Baseline:
+    """Convenience: compute a baseline and install it on ``checker``."""
+    baseline = compute_baseline(corpus)
+    checker.set_baseline(
+        centroid=list(baseline.centroid),
+        magnitude_p99=baseline.magnitude_p99,
+        distance_p95=baseline.distance_p95,
+    )
+    return baseline

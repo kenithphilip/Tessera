@@ -43,6 +43,11 @@ uuid = { workspace = true }
 arc-swap = { workspace = true }
 mimalloc = { workspace = true }
 
+# v0.10.0 perf win: SIMD-accelerated JSON body parser used by the
+# `SimdJson<T>` axum extractor (crates/tessera-gateway/src/simd_extractor.rs).
+# Falls back to serde_json on parse error so behavior stays identical.
+simd-json = { workspace = true }
+
 # Phase 7 OpenTelemetry-native tracing. Behind the `otel` feature so
 # the default build stays light. Enable with `--features otel`.
 tracing = { workspace = true }

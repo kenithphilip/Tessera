@@ -344,3 +344,69 @@ class TestEmbeddingAnomalyChecker:
         # Without baseline, only similarity check runs
         anomalies = checker.check([100.0, 100.0], similarity_score=0.5)
         assert anomalies == []
+
+
+class TestComputeBaseline:
+    """Parity port of `tessera_scanners::rag::compute_baseline` (Rust).
+
+    Matching Rust tests live in
+    `rust/crates/tessera-scanners/src/rag.rs::tests`. The
+    cross-language byte-equal check is in
+    `rust/crates/tessera-scanners/tests/python_rag_baseline_interop.rs`.
+    """
+
+    def test_known_two_dim_corpus(self) -> None:
+        from tessera.rag_guard import compute_baseline
+
+        baseline = compute_baseline([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        assert abs(baseline.centroid[0] - 2.0 / 3.0) < 1e-12
+        assert abs(baseline.centroid[1] - 2.0 / 3.0) < 1e-12
+        # n=3 nearest-rank: index = ((3-1)*99)//100 = 1, so the median
+        # magnitude (1.0).
+        assert abs(baseline.magnitude_p99 - 1.0) < 1e-12
+        assert baseline.distance_p95 > 0.0
+
+    def test_rejects_empty_corpus(self) -> None:
+        from tessera.rag_guard import BaselineError, compute_baseline
+
+        with pytest.raises(BaselineError, match="empty"):
+            compute_baseline([])
+
+    def test_rejects_dimension_mismatch(self) -> None:
+        from tessera.rag_guard import BaselineError, compute_baseline
+
+        with pytest.raises(BaselineError, match="dimension"):
+            compute_baseline([[1.0, 2.0], [3.0]])
+
+    def test_rejects_nan(self) -> None:
+        from tessera.rag_guard import BaselineError, compute_baseline
+
+        with pytest.raises(BaselineError, match="NaN"):
+            compute_baseline([[1.0], [float("nan")]])
+
+    def test_single_element_corpus(self) -> None:
+        from tessera.rag_guard import compute_baseline
+
+        baseline = compute_baseline([[3.0, 4.0]])
+        assert baseline.centroid == [3.0, 4.0]
+        assert abs(baseline.magnitude_p99 - 5.0) < 1e-12  # sqrt(9+16)
+        assert baseline.distance_p95 == 0.0
+
+    def test_hundred_element_corpus_p99_index(self) -> None:
+        from tessera.rag_guard import compute_baseline
+
+        # 1D magnitudes 1..100. p99 nearest-rank index = 98, value 99.0.
+        baseline = compute_baseline([[float(i)] for i in range(1, 101)])
+        assert baseline.centroid == [50.5]
+        assert abs(baseline.magnitude_p99 - 99.0) < 1e-12
+
+    def test_set_baseline_from_corpus_installs_thresholds(self) -> None:
+        from tessera.rag_guard import set_baseline_from_corpus
+
+        checker = EmbeddingAnomalyChecker()
+        baseline = set_baseline_from_corpus(
+            checker, [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+        )
+        assert checker._centroid is not None
+        assert checker._magnitude_threshold == baseline.magnitude_p99
+        assert checker._distance_threshold == baseline.distance_p95

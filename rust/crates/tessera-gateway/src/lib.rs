@@ -19,6 +19,7 @@ use std::{
 };
 
 pub mod filters;
+pub mod simd_extractor;
 pub mod telemetry;
 
 // New primitives live in sibling workspace crates (v0.8.x). The
@@ -1595,7 +1596,7 @@ async fn chat_completions(
     transport_identity: Option<Extension<TransportPeerIdentity>>,
     transport_error: Option<Extension<TransportPeerIdentityError>>,
     headers: HeaderMap,
-    Json(req): Json<ChatRequest>,
+    simd_extractor::SimdJson(req): simd_extractor::SimdJson<ChatRequest>,
 ) -> Response {
     let mut ctx = filters::RequestContext {
         request: req,
@@ -1626,7 +1627,7 @@ async fn a2a_jsonrpc(
     transport_identity: Option<Extension<TransportPeerIdentity>>,
     transport_error: Option<Extension<TransportPeerIdentityError>>,
     headers: HeaderMap,
-    Json(req): Json<JsonRpcRequestModel>,
+    simd_extractor::SimdJson(req): simd_extractor::SimdJson<JsonRpcRequestModel>,
 ) -> Response {
     // Pre-flight: JSON-RPC wire format and routing checks that must happen
     // before we can construct A2ARequestContext.

@@ -37,9 +37,14 @@ async-trait = { workspace = true }
 tempfile = { workspace = true }
 tessera-gateway = { path = "../tessera-gateway" }
 axum = { workspace = true }
+simd-json = { workspace = true }
 
 [[bench]]
 name = "policy_eval"
+harness = false
+
+[[bench]]
+name = "json_extractor"
 harness = false
 
 [lints]
