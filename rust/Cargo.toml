@@ -82,6 +82,8 @@ mimalloc = { version = "0.1", default-features = false }
 regex = "1"
 simd-json = "0.13"
 strsim = "0.11"
+# v0.10.0 Wave B: CEL evaluator (parity port of tessera.cel_engine).
+cel-interpreter = "0.9"
 # Phase 1 internal use.
 tempfile = "3"
 # Phase 5 bench harness.

@@ -7,6 +7,7 @@
 //! the SARIF surfaces; Phase 4 adds policy_builder_llm.
 
 pub mod builder;
+pub mod cel;
 pub mod compliance;
 pub mod delegation;
 pub mod delegation_intent;

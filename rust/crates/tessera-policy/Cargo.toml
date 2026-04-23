@@ -23,6 +23,11 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
 
+# v0.10.0 Wave B: CEL evaluator. Parity port of
+# tessera.cel_engine (Python). Used by Policy::evaluate after the
+# taint-floor check passes; deny-only refinements.
+cel-interpreter = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 
