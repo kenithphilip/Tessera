@@ -180,3 +180,61 @@ success_rate, generated_at
 Latency columns are microseconds (no decimals); `rps` and
 `success_rate` are floats. Grafana datasource queries can pivot on
 `run_label` and `workload` for time-series charts across tags.
+
+## v0.10.0 wave D: Rust gateway vs Python AgentMesh proxy
+
+First captured side-by-side comparison, mixed workload, single-host
+loopback. Run via `rust/scripts/bench-compare.sh 10s 50` which spins
+up both targets, waits for `/healthz`, drives identical workload
+mix, and tears down on exit.
+
+| Run | Workload | Target | Duration | Concurrency | Successes | RPS | p50 ms | p95 ms | p99 ms | p99.9 ms | max ms |
+|-----|----------|--------|----------|-------------|-----------|-----|--------|--------|--------|----------|--------|
+| `rust` (gateway 0.10.0-rc.1) | mixed | :18081 | 10s | 50 | 39,395 | 3,940 | 29.15 | 52.45 | 64.22 | 78.46 | 90.43 |
+| `python` (AgentMesh 0.7.1) | mixed | :18082 | 10s | 50 | 29,775 | 2,978 | 29.28 | 40.54 | 47.97 | 52.45 | 60.67 |
+
+Reading the numbers honestly:
+
+- The Rust gateway processes 32% more requests per second (3,940
+  vs 2,978 RPS). That is the headline win.
+- The Rust gateway's p99 is 34% higher (64 ms vs 48 ms). At the
+  same concurrency it is closer to saturation, so each individual
+  request waits longer in the queue. Lower concurrency or more
+  cores would shift this in Rust's favor.
+- The two targets are doing different work for the same workload.
+  The Rust gateway runs the simpler primitives router (just
+  taint-floor evaluate + label + audit-verify); the AgentMesh proxy
+  also runs prompt screening, secret redaction, risk forecasting,
+  and identity verification on every request. So this is more
+  "Rust gateway with feature subset" vs "AgentMesh full stack" than
+  it is "Rust vs Python on identical work".
+- A fairer single-endpoint comparison (just `/v1/evaluate`) would
+  show the Rust 150x microbench advantage from the policy-eval
+  bench. The mixed workload shows what happens at the macro level
+  when both stacks are saturated.
+
+Reproduce with:
+
+```bash
+cd /Users/kenith.philip/Tessera/rust
+./scripts/bench-compare.sh 30s 200
+```
+
+The script auto-detects the AgentMesh venv at
+`~/AgentMesh/.venv/bin/python` and falls back to a Rust-only run if
+that venv is missing.
+
+## Auto-appended runs
+
+The `compare` and single-workload subcommands append their tables
+below this line when invoked with `--report-file`. New runs land
+here without overwriting the curated sections above.
+
+## compare (mixed)
+
+Generated: `2026-04-24T11:41:14.725869+00:00`
+
+| Run | Workload | Target | Duration | Concurrency | Successes | Failures | RPS | p50 ms | p95 ms | p99 ms | p99.9 ms | max ms | Success rate |
+|-----|----------|--------|----------|-------------|-----------|----------|-----|--------|--------|--------|----------|--------|--------------|
+| `rust` | mixed | `http://127.0.0.1:18081` | 10.0s | 50 | 39395 | 0 | 3940 | 29.15 | 52.45 | 64.22 | 78.46 | 90.43 | 100.00% |
+| `python` | mixed | `http://127.0.0.1:18082` | 10.0s | 50 | 29775 | 0 | 2978 | 29.28 | 40.54 | 47.97 | 52.45 | 60.67 | 100.00% |
