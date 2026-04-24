@@ -48,6 +48,39 @@ class EventKind(StrEnum):
     CONTENT_INJECTION_DETECTED = "content_injection_detected"
     GUARDRAIL_DECISION = "guardrail_decision"
 
+    # v0.12 Wave 1B-v additions: argument-level provenance telemetry.
+    # Emitted from tessera.policy (critical_args enforcement) and
+    # tessera.taint (label lifecycle).
+    LABEL_JOIN = "label.join"
+    LABEL_DECLASSIFY = "label.declassify"
+    LABEL_RECOVERY_MATCH = "label.recovery.match"
+    LABEL_RECOVERY_FALLBACK_OVERTAINT = "label.recovery.fallback_overtaint"
+    CRITICAL_ARGS_DENY = "critical_args.deny"
+
+    # v0.12 Wave 1C-ii additions: Action Critic telemetry.
+    # Emitted from tessera.action_critic skeleton; populated in
+    # Phase 2 wave 2A with real backend calls.
+    CRITIC_ALLOW = "critic.allow"
+    CRITIC_DENY = "critic.deny"
+    CRITIC_APPROVAL_REQUIRED = "critic.approval_required"
+    CRITIC_TIMEOUT = "critic.timeout"
+    CRITIC_VALIDATION_FAILURE = "critic.validation_failure"
+    CRITIC_INJECTION_SUSPECT = "critic.injection_suspect"
+
+    # v0.12 / Phase 2 MCP signature + drift telemetry. Schema
+    # defined now so Phase 2 waves can emit without a second
+    # enum extension.
+    MCP_MANIFEST_SIG_INVALID = "mcp.manifest.sig_invalid"
+    MCP_TOKEN_AUDIENCE_MISMATCH = "mcp.token.audience_mismatch"
+    MCP_DRIFT_SHAPE = "mcp.drift.shape"
+    MCP_DRIFT_LATENCY = "mcp.drift.latency"
+    MCP_DRIFT_DISTRIBUTION = "mcp.drift.distribution"
+
+    # v0.12 migration telemetry (claim_provenance to worker.recovery).
+    CLAIM_PROVENANCE_FAIL = "claim_provenance.fail"
+    # v0.12 delegation exec telemetry (RFC 8707 + per-MCP audience).
+    DELEGATION_EXEC = "delegation.exec"
+
 
 @dataclass(frozen=True)
 class SecurityEvent:

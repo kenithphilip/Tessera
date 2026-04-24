@@ -32,6 +32,28 @@ NIST_CONTROLS: dict[str, tuple[str, ...]] = {
     EventKind.SESSION_EXPIRED: ("AC-12",),
     EventKind.CONTENT_INJECTION_DETECTED: ("SI-10", "SC-7"),
     EventKind.GUARDRAIL_DECISION: ("SI-10", "SC-7"),
+    # v0.12 Wave 1B-v: argument-level provenance telemetry
+    EventKind.LABEL_JOIN: ("AU-10",),
+    EventKind.LABEL_DECLASSIFY: ("AU-10", "AC-4"),
+    EventKind.LABEL_RECOVERY_MATCH: ("AU-10",),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("AU-10", "AC-4"),
+    EventKind.CRITICAL_ARGS_DENY: ("AC-4", "AC-6", "SI-10"),
+    # v0.12 Wave 1C-ii: Action Critic telemetry
+    EventKind.CRITIC_ALLOW: ("SI-10",),
+    EventKind.CRITIC_DENY: ("AC-4", "SI-10"),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("AC-6", "AU-12"),
+    EventKind.CRITIC_TIMEOUT: ("SI-10", "CM-12"),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("SI-10", "SI-15"),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("SI-10", "SC-7"),
+    # v0.12 / Phase 2 MCP signature + drift telemetry
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("SI-7", "AU-10"),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("IA-9", "AC-4"),
+    EventKind.MCP_DRIFT_SHAPE: ("SI-7", "AU-10"),
+    EventKind.MCP_DRIFT_LATENCY: ("SI-4",),
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("SI-4", "AU-10"),
+    # v0.12 migration + delegation exec telemetry
+    EventKind.CLAIM_PROVENANCE_FAIL: ("AU-10", "SI-10"),
+    EventKind.DELEGATION_EXEC: ("AC-4", "AC-6", "AU-12"),
 }
 
 CWE_CODES: dict[str, tuple[str, ...]] = {
@@ -45,6 +67,19 @@ CWE_CODES: dict[str, tuple[str, ...]] = {
     EventKind.SECRET_REDACTED: ("CWE-200",),
     EventKind.CONTENT_INJECTION_DETECTED: ("CWE-77", "CWE-20"),
     EventKind.GUARDRAIL_DECISION: ("CWE-77",),
+    # v0.12 Wave 1B-v: argument-level provenance telemetry
+    EventKind.CRITICAL_ARGS_DENY: ("CWE-20", "CWE-501"),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("CWE-501",),
+    # v0.12 Wave 1C-ii: Action Critic
+    EventKind.CRITIC_DENY: ("CWE-77", "CWE-20"),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("CWE-77",),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("CWE-20",),
+    # v0.12 / Phase 2 MCP signature + drift
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("CWE-345", "CWE-494"),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("CWE-287",),
+    EventKind.MCP_DRIFT_SHAPE: ("CWE-345",),
+    EventKind.CLAIM_PROVENANCE_FAIL: ("CWE-345",),
+    EventKind.DELEGATION_EXEC: ("CWE-285",),
 }
 
 # OWASP Agentic AI Top 10 taxonomy (Agent Audit ASI-01..ASI-10).
@@ -72,6 +107,28 @@ OWASP_ASI: dict[str, tuple[str, ...]] = {
     EventKind.HUMAN_APPROVAL_REQUIRED: ("ASI-03",),
     EventKind.HUMAN_APPROVAL_RESOLVED: ("ASI-03",),
     EventKind.SESSION_EXPIRED: ("ASI-05",),
+    # v0.12 Wave 1B-v: argument-level provenance telemetry
+    EventKind.CRITICAL_ARGS_DENY: ("ASI-01", "ASI-03"),
+    EventKind.LABEL_JOIN: ("ASI-08",),
+    EventKind.LABEL_DECLASSIFY: ("ASI-01", "ASI-02"),
+    EventKind.LABEL_RECOVERY_MATCH: ("ASI-08",),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("ASI-01", "ASI-08"),
+    # v0.12 Wave 1C-ii: Action Critic
+    EventKind.CRITIC_ALLOW: ("ASI-03",),
+    EventKind.CRITIC_DENY: ("ASI-01", "ASI-03"),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("ASI-03",),
+    EventKind.CRITIC_TIMEOUT: ("ASI-03",),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("ASI-01",),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("ASI-01",),
+    # v0.12 / Phase 2 MCP signature + drift
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("ASI-04", "ASI-08"),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("ASI-05",),
+    EventKind.MCP_DRIFT_SHAPE: ("ASI-04", "ASI-08"),
+    EventKind.MCP_DRIFT_LATENCY: ("ASI-04",),
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("ASI-04",),
+    # v0.12 migration + delegation exec
+    EventKind.CLAIM_PROVENANCE_FAIL: ("ASI-01", "ASI-08"),
+    EventKind.DELEGATION_EXEC: ("ASI-03",),
 }
 
 # MITRE ATLAS v5.4.0 (Feb 2026) technique mapping. Tessera defenses
@@ -97,6 +154,17 @@ MITRE_ATLAS: dict[str, tuple[str, ...]] = {
     EventKind.SECRET_REDACTED: ("AML.T0024",),
     EventKind.HUMAN_APPROVAL_REQUIRED: ("AML.T0043",),
     EventKind.HUMAN_APPROVAL_RESOLVED: ("AML.T0043",),
+    # v0.12 additions
+    EventKind.CRITICAL_ARGS_DENY: ("AML.T0051.002",),
+    EventKind.LABEL_DECLASSIFY: ("AML.T0024",),
+    EventKind.CRITIC_DENY: ("AML.T0051.001", "AML.T0051.002"),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("AML.T0051.001", "AML.T0051.002"),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("AML.T0043",),
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("AML.T0010",),  # ML Supply Chain
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("AML.T0024",),
+    EventKind.MCP_DRIFT_SHAPE: ("AML.T0010",),
+    EventKind.CLAIM_PROVENANCE_FAIL: ("AML.T0051.002",),
+    EventKind.DELEGATION_EXEC: ("AML.T0024",),
 }
 
 # EU AI Act (Regulation 2024/1689) Articles applicable to high-risk
@@ -119,6 +187,25 @@ EU_AI_ACT: dict[str, tuple[str, ...]] = {
     EventKind.HUMAN_APPROVAL_REQUIRED: ("Art.14",),
     EventKind.HUMAN_APPROVAL_RESOLVED: ("Art.14",),
     EventKind.SESSION_EXPIRED: ("Art.12",),
+    # v0.12 additions
+    EventKind.CRITICAL_ARGS_DENY: ("Art.9", "Art.15"),
+    EventKind.LABEL_JOIN: ("Art.12",),
+    EventKind.LABEL_DECLASSIFY: ("Art.12", "Art.15"),
+    EventKind.LABEL_RECOVERY_MATCH: ("Art.12",),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("Art.12", "Art.15"),
+    EventKind.CRITIC_ALLOW: ("Art.15",),
+    EventKind.CRITIC_DENY: ("Art.15",),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("Art.14",),
+    EventKind.CRITIC_TIMEOUT: ("Art.15",),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("Art.15",),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("Art.15",),
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("Art.15",),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("Art.15",),
+    EventKind.MCP_DRIFT_SHAPE: ("Art.15",),
+    EventKind.MCP_DRIFT_LATENCY: ("Art.15",),
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("Art.15",),
+    EventKind.CLAIM_PROVENANCE_FAIL: ("Art.12", "Art.15"),
+    EventKind.DELEGATION_EXEC: ("Art.12", "Art.14"),
 }
 
 # ISO/IEC 42001:2023 Annex A AI Management System control IDs.
@@ -140,6 +227,25 @@ ISO_42001: dict[str, tuple[str, ...]] = {
     EventKind.HUMAN_APPROVAL_REQUIRED: ("A.6.2.7", "A.10.2"),
     EventKind.HUMAN_APPROVAL_RESOLVED: ("A.10.2",),
     EventKind.SESSION_EXPIRED: ("A.8.2",),
+    # v0.12 additions: argument-level provenance + critic + MCP signing.
+    EventKind.LABEL_JOIN: ("A.7.4", "A.8.2"),
+    EventKind.LABEL_DECLASSIFY: ("A.6.2.6", "A.7.4", "A.8.2"),
+    EventKind.LABEL_RECOVERY_MATCH: ("A.7.4", "A.8.2"),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("A.7.4", "A.9.3", "A.9.4"),
+    EventKind.CRITICAL_ARGS_DENY: ("A.6.2.6", "A.9.3", "A.9.4"),
+    EventKind.CRITIC_ALLOW: ("A.9.4",),
+    EventKind.CRITIC_DENY: ("A.9.3", "A.9.4"),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("A.6.2.7", "A.10.2"),
+    EventKind.CRITIC_TIMEOUT: ("A.9.4", "A.10.2"),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("A.9.4",),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("A.9.3", "A.9.4"),
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("A.9.3", "A.9.4"),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("A.9.3",),
+    EventKind.MCP_DRIFT_SHAPE: ("A.9.4", "A.10.2"),
+    EventKind.MCP_DRIFT_LATENCY: ("A.9.4", "A.10.2"),
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("A.9.4", "A.10.2"),
+    EventKind.CLAIM_PROVENANCE_FAIL: ("A.7.4", "A.8.2", "A.9.4"),
+    EventKind.DELEGATION_EXEC: ("A.8.2", "A.9.3"),
 }
 
 # CSA AI Controls Matrix (AICM) v1.0 control identifiers. CSA
@@ -163,6 +269,25 @@ CSA_AICM: dict[str, tuple[str, ...]] = {
     EventKind.HUMAN_APPROVAL_REQUIRED: ("GA-02", "AIS-03"),
     EventKind.HUMAN_APPROVAL_RESOLVED: ("GA-02", "LOG-04"),
     EventKind.SESSION_EXPIRED: ("IAM-04", "LOG-04"),
+    # v0.12 additions: argument-level provenance + critic + MCP signing.
+    EventKind.LABEL_JOIN: ("DSP-08", "LOG-04"),
+    EventKind.LABEL_DECLASSIFY: ("DSP-04", "DSP-08", "LOG-04"),
+    EventKind.LABEL_RECOVERY_MATCH: ("DSP-08", "LOG-04"),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("DSP-08", "AIS-03", "LOG-04"),
+    EventKind.CRITICAL_ARGS_DENY: ("LM-04", "AIS-03", "GA-02"),
+    EventKind.CRITIC_ALLOW: ("AIS-03", "LOG-04"),
+    EventKind.CRITIC_DENY: ("LM-04", "AIS-03"),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("GA-02", "AIS-03"),
+    EventKind.CRITIC_TIMEOUT: ("AIS-03", "LOG-04"),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("LM-04", "AIS-03"),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("LM-04", "TVM-02"),
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("TVM-02", "GA-02"),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("IAM-02", "IAM-04"),
+    EventKind.MCP_DRIFT_SHAPE: ("TVM-02", "AIS-03"),
+    EventKind.MCP_DRIFT_LATENCY: ("TVM-02", "LOG-04"),
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("TVM-02", "AIS-03"),
+    EventKind.CLAIM_PROVENANCE_FAIL: ("DSP-08", "LOG-04"),
+    EventKind.DELEGATION_EXEC: ("IAM-02", "GA-02", "LOG-04"),
 }
 
 # NIST AI 600-1 (July 2024) twelve GenAI risks. The risk IDs are
@@ -186,6 +311,25 @@ NIST_AI_600_1: dict[str, tuple[str, ...]] = {
     EventKind.HUMAN_APPROVAL_REQUIRED: ("HumanAIConfig",),
     EventKind.HUMAN_APPROVAL_RESOLVED: ("HumanAIConfig",),
     EventKind.SESSION_EXPIRED: ("InfoSecurity",),
+    # v0.12 additions: argument-level provenance + critic + MCP signing.
+    EventKind.LABEL_JOIN: ("InfoIntegrity",),
+    EventKind.LABEL_DECLASSIFY: ("InfoIntegrity", "DataPrivacy"),
+    EventKind.LABEL_RECOVERY_MATCH: ("InfoIntegrity",),
+    EventKind.LABEL_RECOVERY_FALLBACK_OVERTAINT: ("InfoIntegrity", "DangerousOutputs"),
+    EventKind.CRITICAL_ARGS_DENY: ("DangerousOutputs", "InfoIntegrity"),
+    EventKind.CRITIC_ALLOW: ("HumanAIConfig",),
+    EventKind.CRITIC_DENY: ("DangerousOutputs",),
+    EventKind.CRITIC_APPROVAL_REQUIRED: ("HumanAIConfig",),
+    EventKind.CRITIC_TIMEOUT: ("DangerousOutputs", "HumanAIConfig"),
+    EventKind.CRITIC_VALIDATION_FAILURE: ("Confabulation", "InfoIntegrity"),
+    EventKind.CRITIC_INJECTION_SUSPECT: ("DangerousOutputs", "InfoIntegrity"),
+    EventKind.MCP_MANIFEST_SIG_INVALID: ("ValueChain", "InfoSecurity"),
+    EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("InfoSecurity",),
+    EventKind.MCP_DRIFT_SHAPE: ("ValueChain", "InfoIntegrity"),
+    EventKind.MCP_DRIFT_LATENCY: ("ValueChain",),
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("ValueChain", "InfoIntegrity"),
+    EventKind.CLAIM_PROVENANCE_FAIL: ("InfoIntegrity",),
+    EventKind.DELEGATION_EXEC: ("HumanAIConfig", "InfoSecurity"),
 }
 
 
