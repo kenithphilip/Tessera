@@ -181,6 +181,41 @@ Latency columns are microseconds (no decimals); `rps` and
 `success_rate` are floats. Grafana datasource queries can pivot on
 `run_label` and `workload` for time-series charts across tags.
 
+## v0.11.0: single-endpoint compare (/v1/evaluate)
+
+Mixed-workload numbers below are useful for "is the macro stack
+faster" questions but conflate work the two stacks do differently.
+The single-endpoint compare drives only `/v1/evaluate` against both
+targets so the comparison is at one explicit level.
+
+| Run | Workload | Target | Duration | Concurrency | Successes | RPS | p50 ms | p95 ms | p99 ms |
+|-----|----------|--------|----------|-------------|-----------|-----|--------|--------|--------|
+| `rust` (gateway 0.11.0) | evaluate | :18081 | 10s | 50 | 11,984 | 1,198 | 61.18 | 108.61 | 131.46 |
+| `python` (AgentMesh 0.9.0) | evaluate | :18082 | 10s | 50 | 27,287 | 2,729 | 26.53 | 35.74 | 42.72 |
+
+This counter-intuitive result is honest:
+
+- The Rust gateway's `/v1/evaluate` writes through the
+  `SessionContextStore` (DashMap with TTL + LRU eviction) on every
+  request because the bench session_id is the same for every call
+  and the store update is synchronous. At concurrency 50, every
+  call serializes on the same shard.
+- The Python AgentMesh `/v1/evaluate` short-circuits when no
+  segments exist in the session yet (the bench workload does not
+  precede each evaluate with a `/v1/label`), so it pays only the
+  policy lookup cost, not the session-store cost.
+- The microbench at `policy_eval` confirms the per-call policy
+  evaluation is ~120 ns native (around 150x faster than Python).
+  The /v1/evaluate latency above is dominated by everything around
+  that call (HTTP, axum routing, session store update), not the
+  policy itself.
+- For a fair single-endpoint bench, drive a workload that includes
+  both `/v1/label` and `/v1/evaluate` (the mixed workload below
+  does this). Or audit `SessionContextStore` for the single-shard
+  bottleneck in v0.12.
+
+Both Wave D runs are reproducible via `rust/scripts/bench-compare.sh`.
+
 ## v0.10.0 wave D: Rust gateway vs Python AgentMesh proxy
 
 First captured side-by-side comparison, mixed workload, single-host
@@ -238,3 +273,21 @@ Generated: `2026-04-24T11:41:14.725869+00:00`
 |-----|----------|--------|----------|-------------|-----------|----------|-----|--------|--------|--------|----------|--------|--------------|
 | `rust` | mixed | `http://127.0.0.1:18081` | 10.0s | 50 | 39395 | 0 | 3940 | 29.15 | 52.45 | 64.22 | 78.46 | 90.43 | 100.00% |
 | `python` | mixed | `http://127.0.0.1:18082` | 10.0s | 50 | 29775 | 0 | 2978 | 29.28 | 40.54 | 47.97 | 52.45 | 60.67 | 100.00% |
+
+## compare (mixed)
+
+Generated: `2026-04-24T14:01:06.062762+00:00`
+
+| Run | Workload | Target | Duration | Concurrency | Successes | Failures | RPS | p50 ms | p95 ms | p99 ms | p99.9 ms | max ms | Success rate |
+|-----|----------|--------|----------|-------------|-----------|----------|-----|--------|--------|--------|----------|--------|--------------|
+| `rust` | mixed | `http://127.0.0.1:18081` | 10.0s | 50 | 39296 | 0 | 3930 | 28.88 | 53.47 | 64.54 | 84.67 | 96.32 | 100.00% |
+| `python` | mixed | `http://127.0.0.1:18082` | 10.0s | 50 | 31396 | 0 | 3140 | 28.93 | 38.72 | 46.34 | 51.04 | 57.34 | 100.00% |
+
+## compare (evaluate)
+
+Generated: `2026-04-24T14:01:36.150535+00:00`
+
+| Run | Workload | Target | Duration | Concurrency | Successes | Failures | RPS | p50 ms | p95 ms | p99 ms | p99.9 ms | max ms | Success rate |
+|-----|----------|--------|----------|-------------|-----------|----------|-----|--------|--------|--------|----------|--------|--------------|
+| `rust` | evaluate | `http://127.0.0.1:18081` | 10.0s | 50 | 11984 | 0 | 1198 | 61.18 | 108.61 | 131.46 | 150.01 | 155.78 | 100.00% |
+| `python` | evaluate | `http://127.0.0.1:18082` | 10.0s | 50 | 27287 | 0 | 2729 | 26.53 | 35.74 | 42.72 | 50.37 | 58.02 | 100.00% |

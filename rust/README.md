@@ -51,7 +51,46 @@ tessera-bench  -> tessera-policy / tessera-audit / tessera-runtime (microbench)
 `url_rules`) so existing embedders keep building unchanged. See
 `crates/tessera-gateway/src/lib.rs`.
 
-## v0.9.0-alpha.1 (Phase 7 in flight: OTel + housekeeping)
+## v0.11.0 (current): platform wheels + callbacks + rate limiter
+
+Three follow-on items shipped in v0.11.0:
+
+1. **Linux wheels via GitHub Actions matrix build.** `tessera-py`
+   no longer pulls `tessera-runtime` (and its transitive `ring`
+   dep) so the manylinux aarch64 cross-build works. The wheel
+   matrix in `.github/workflows/wheels.yml` ships
+   cp310/cp311/cp312 abi3 wheels for linux x86_64, linux
+   aarch64, macOS x86_64, macOS aarch64, and windows x64.
+2. **Rate limiter PyO3 binding.** `tessera_rs.ratelimit.ToolCallRateLimit`
+   exposes the existing `tessera-policy::ratelimit::ToolCallRateLimit`
+   port to Python with the same constructor signature the Python
+   `tessera.ratelimit.ToolCallRateLimit` accepts. Three
+   cross-language interop tests (window cap, burst detection,
+   lifetime cap) pin the wire behavior including reason strings.
+3. **PyScanner callback registry.**
+   `tessera_rs.scanners.register_scanner(name, callable)` and
+   `scan(name, text)` provide a process-global registry for
+   "hard" scanners (PromptGuard, Perplexity, PDFInspector,
+   ImageInspector, CodeShield) that depend on Python ML / PIL /
+   sandboxed-PDF stacks. Any consumer in the same Python
+   interpreter can register or invoke; future Rust-side
+   consumers (gateway, AgentMesh) dispatch through the same
+   registry.
+
+AgentMesh `MeshProxy(use_rust_primitives=True)` now auto-swaps
+three additional surfaces (rate limiter, SSRF guard, audit sink)
+beyond the previous v0.10.0 audit-only auto-swap. See
+`AgentMesh/docs/RUST_PRIMITIVES.md` for the full surface map.
+
+## v0.10.0: data-plane evolution
+
+CEL evaluator port (cel-interpreter, byte-equal Python parity),
+Cranelift JIT codegen for int-only rules (12-80x interpreter
+speedup), simd-json axum body extractor, EmbeddingAnomalyChecker
+baseline computation, and the first AgentMesh `tessera_rs`
+adapter (audit sink auto-swap + manual adapter classes).
+
+## v0.9.0-alpha.1 (Phase 7: OTel + housekeeping)
 
 Phase 7 of the original 8-phase plan opens the v0.9.0 line with
 OpenTelemetry-native spans and the workspace housekeeping pass.

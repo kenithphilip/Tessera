@@ -1,9 +1,50 @@
 # Tessera Rust workspace, roadmap
 
-What landed in `v0.8.0`, what is in flight for `v0.9.0`, and what
+What landed in each release line, what is in flight, and what
 sits beyond. Items that the original 8-phase plan deliberately
 deferred or excluded are here too, so reviewers can see the whole
 picture rather than just the in-flight work.
+
+## Shipped (v0.11.0, current)
+
+Five follow-on items from the v0.10.0 retrospective:
+
+- **GitHub Actions wheel matrix.** `.github/workflows/wheels.yml`
+  ships cp310/cp311/cp312 abi3 wheels for linux x86_64, linux
+  aarch64, macOS x86_64, macOS aarch64, windows x64. Linux aarch64
+  cross-build fixed by dropping `tessera-runtime` (and its
+  transitive `ring` dep) from `tessera-py`.
+- **Rate limiter PyO3 binding.** `tessera_rs.ratelimit.ToolCallRateLimit`
+  exposes the existing `tessera-policy::ratelimit::ToolCallRateLimit`
+  to Python with byte-equal reason strings. 3 cross-language
+  interop tests pin window cap, burst detection, and lifetime cap.
+- **Deeper AgentMesh auto-swap.** `MeshProxy(use_rust_primitives=True)`
+  now swaps the rate limiter, SSRF guard, and audit sink (when
+  `audit_log_path` is set). The Policy / Context / scanner / URL
+  rules / CEL adapters remain available for direct construction.
+- **PyScanner callback registry.**
+  `tessera_rs.scanners.register_scanner` + `scan` provide a
+  process-global registry for hard scanners (PromptGuard,
+  Perplexity, PDFInspector, ImageInspector, CodeShield) that
+  depend on Python ML / PIL / sandboxed-PDF stacks.
+- **Single-endpoint bench compare.** `bench-compare.sh` now runs
+  both `mixed` and `evaluate` workloads against the dual targets
+  and captures both tables to `rust/bench/results.md`.
+
+20 adapter parity tests, 3 rate-limiter interop tests, all green.
+Default-features test suite plus the `cel-jit` feature suite both
+pass with no regressions.
+
+## Shipped (v0.10.0)
+
+Closes the 8-phase port plan plus the v0.10.0 four-wave plan:
+
+- CEL evaluator port (cel-interpreter, byte-equal Python parity)
+- Cranelift CEL JIT codegen (12-80x interpreter speedup on int rules)
+- simd-json axum body extractor (4-8% faster on 4-64KB bodies)
+- EmbeddingAnomalyChecker `compute_baseline` in both languages
+- AgentMesh `tessera_rs` adapter (audit sink auto-swap)
+- bench-compare.sh first measured side-by-side numbers
 
 ## Shipped (v0.8.0)
 
@@ -31,44 +72,35 @@ The 8-phase port plan from
   crates/tessera-py/MIGRATION.md.
 - 750+ tests passing across the workspace with zero warnings.
 
-## In flight (v0.9.0)
+## Shipped (v0.9.0-alpha.1)
 
 Phase 7 of the original plan:
 
-- **OpenTelemetry-native spans.** Wired up behind the
-  `tessera-gateway` `otel` feature. Default build stays
-  transport-free (plain `tracing-subscriber` + `RUST_LOG`); enable
-  `--features otel` to install the OTLP gRPC exporter. Operators
-  use the standard OTel env vars
-  (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`).
-- **Workspace housekeeping.** [workspace.lints] table normalizes
-  rust + clippy lints across crates; every crate has a README;
-  every public type has rustdoc. Zero warnings in the default
-  build.
+- **OpenTelemetry-native spans** behind the `tessera-gateway`
+  `otel` feature.
+- **Workspace housekeeping**, [workspace.lints] normalization,
+  per-crate READMEs, zero warnings in the default build.
 
-## Deferred (post-v0.9.0)
+## Deferred (post-v0.11.0)
 
-These are tracked but not slated.
+Items tracked but not slated for the next release.
 
-- **Cranelift CEL JIT.** The Python reference's
-  `tessera.cel_engine` interprets CEL expressions; a Cranelift
-  JIT path would compile the policy expressions to native code
-  for the few customers that use CEL on the hot frame. Belongs
-  here only if profiling shows CEL on the hot frame. Tracked as
-  its own RFC; gated on a customer signal.
-- **Phase-2 simd-json swap.** simd-json is vetted on aarch64
-  (`rust/bench/simd-json-spike.md`); the actual integration
-  awaits a custom axum body extractor that owns its own
-  buffer. Real-world benchmark needed to justify the change.
-- **Comparison rows in rust/bench/results.md.** Phase 5
-  carryover. The harness is ready; the rows need both the Python
-  AgentMesh proxy and the Rust v0.7.x baseline running on the
-  same host.
-- **EmbeddingAnomalyChecker baseline statistics.** The Phase 3
-  port shipped a stub for the embedding anomaly path because the
-  Python implementation pulls in numpy + sklearn. A full Rust
-  port would need a BLAS-backed linear-algebra crate; deferred
-  until a customer asks.
+- **SessionContextStore single-shard contention.** The
+  v0.11.0 single-endpoint bench surfaced that `/v1/evaluate`
+  serializes per session_id on one DashMap shard. A per-key
+  hot-path bypass (Arc cache that skips the shard lock when the
+  context is unchanged) would unlock realistic single-endpoint
+  parity with the Python proxy. Tracked for v0.12.0.
+- **Wider AgentMesh auto-swap.** Rate limiter, SSRF, and audit
+  are auto-swapped today; Policy + Context + URL rules + CEL +
+  scanners require explicit construction. Wider coverage is a
+  set of small construction-site edits in `proxy.py.__post_init__`
+  that need careful integration testing per surface.
+- **Hard-scanner ONNX path.** The PyScanner callback bridge
+  ships in v0.11.0; the next step is a Rust-native inference
+  path for PromptGuard/Perplexity that drops the Python ML
+  dependency. Tracked when a customer asks for the deployment
+  simplification.
 
 ## Out of scope for the foreseeable future
 

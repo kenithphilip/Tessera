@@ -18,10 +18,16 @@ tessera-core = { path = "../tessera-core" }
 tessera-audit = { path = "../tessera-audit" }
 tessera-policy = { path = "../tessera-policy" }
 tessera-scanners = { path = "../tessera-scanners" }
-tessera-runtime = { path = "../tessera-runtime" }
+# NOTE: tessera-runtime intentionally NOT a dep here. It pulls in
+# reqwest -> rustls -> ring, which breaks Linux aarch64 cross-builds
+# in the maturin manylinux container. The PyO3 surface only needs
+# the four crates above; runtime async surfaces have no Python
+# binding. Re-add if/when a runtime primitive is actually exposed.
 pyo3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
 
 [lints]
 workspace = true

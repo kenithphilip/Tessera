@@ -197,8 +197,11 @@ Reference deployments:
   (`tessera-core`, `tessera-scanners`, `tessera-audit`, `tessera-policy`,
   `tessera-runtime`, `tessera-gateway`, `tessera-bench`) and a PyO3
   wheel `tessera-rs` published to PyPI for adapter authors who want
-  the fast path without leaving Python. Workspace at v0.9.0-alpha.1,
-  PyPI wheel at 0.9.0a1, all 757 tests green.
+  the fast path without leaving Python. Workspace at v0.11.0,
+  PyPI wheel at 0.11.0, all tests green. Includes a Cranelift CEL
+  JIT (12-80x interpreter speedup on int rules), simd-json body
+  extractor, rate limiter port, and a PyScanner callback registry
+  for hard scanners.
 - [`examples/injection_blocked.py`](examples/injection_blocked.py):
   minimal offline demo
 - [`examples/quarantine_demo.py`](examples/quarantine_demo.py):
@@ -424,9 +427,13 @@ primitives (policy evaluation, scanners, audit chain, canonical JSON)
 without reimplementing them.
 
 ```bash
-pip install tessera-rs            # latest stable, 0.8.0
-pip install tessera-rs==0.9.0a1   # prerelease with OTel-native spans
+pip install tessera-rs            # latest stable, 0.11.0
 ```
+
+The 0.11.0 wheel ships pre-built for cp310/cp311/cp312 across
+linux x86_64/aarch64, macOS x86_64/aarch64, and windows x64.
+Older releases (0.8.0, 0.9.0a1, 0.10.0) remain on PyPI for
+backward compatibility.
 
 See [`rust/crates/tessera-py/MIGRATION.md`](rust/crates/tessera-py/MIGRATION.md)
 for the Python `tessera` to `tessera_rs` import map.

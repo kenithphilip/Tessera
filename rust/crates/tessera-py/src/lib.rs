@@ -36,6 +36,7 @@ use tessera_core::labels::{HmacSigner, Origin, TrustLevel};
 use tessera_policy::cel::{
     CelAction, CelContext, CelDecision, CelPolicyEngine, CelRule,
 };
+use tessera_policy::ratelimit::{CallRateStatus, ToolCallRateLimit};
 use tessera_policy::{Policy as PolicyImpl, ResourceRequirement, SsrfGuard as SsrfGuardImpl,
                      UrlRule as UrlRuleImpl, UrlRulesEngine as UrlRulesEngineImpl, RuleAction,
                      PatternKind};
@@ -475,6 +476,100 @@ fn decision_to_dict<'py>(py: Python<'py>, d: &CelDecision) -> Bound<'py, PyDict>
     dict
 }
 
+// ---- Rate limiter --------------------------------------------------------
+
+/// Per-session tool-call rate limit. Mirrors
+/// `tessera_policy::ratelimit::ToolCallRateLimit` and its Python
+/// counterpart `tessera.ratelimit.ToolCallRateLimit`.
+///
+/// Three independent caps:
+/// 1. Window rate: `max_calls` per rolling `window_seconds`.
+/// 2. Burst: `burst_threshold` calls within `burst_window_seconds`
+///    triggers a `cooldown_seconds` denial.
+/// 3. Session lifetime: `session_lifetime_max` total calls
+///    (omit / pass `None` to disable).
+#[pyclass(name = "ToolCallRateLimit", module = "tessera_rs.ratelimit")]
+struct PyToolCallRateLimit {
+    inner: ToolCallRateLimit,
+}
+
+#[pymethods]
+impl PyToolCallRateLimit {
+    #[new]
+    #[pyo3(signature = (
+        max_calls=50,
+        window_seconds=300.0,
+        burst_threshold=10,
+        burst_window_seconds=5.0,
+        cooldown_seconds=30.0,
+        session_lifetime_max=Some(500),
+    ))]
+    fn new(
+        max_calls: usize,
+        window_seconds: f64,
+        burst_threshold: usize,
+        burst_window_seconds: f64,
+        cooldown_seconds: f64,
+        session_lifetime_max: Option<usize>,
+    ) -> Self {
+        Self {
+            inner: ToolCallRateLimit::new(
+                max_calls,
+                chrono::Duration::milliseconds((window_seconds * 1000.0) as i64),
+                burst_threshold,
+                chrono::Duration::milliseconds((burst_window_seconds * 1000.0) as i64),
+                chrono::Duration::milliseconds((cooldown_seconds * 1000.0) as i64),
+                session_lifetime_max,
+            ),
+        }
+    }
+
+    /// Check (and on success, record) a tool call. Returns
+    /// `(allowed: bool, reason: str | None)`.
+    #[pyo3(signature = (session_id, tool_name=""))]
+    fn check(&self, session_id: &str, tool_name: &str) -> (bool, Option<String>) {
+        self.inner.check(session_id, tool_name)
+    }
+
+    /// Convenience: returns just the allowed bool.
+    #[pyo3(signature = (session_id, tool_name=""))]
+    fn allow(&self, session_id: &str, tool_name: &str) -> bool {
+        self.inner.allow(session_id, tool_name)
+    }
+
+    /// Current status as a dict
+    /// `{session_id, calls_in_window, calls_remaining, max_calls,
+    /// window_seconds, exceeded}`.
+    fn status(&self, py: Python<'_>, session_id: &str) -> PyObject {
+        rate_status_dict(py, &self.inner.status(session_id))
+    }
+
+    /// Drop call history. Pass `None` to reset every session.
+    #[pyo3(signature = (session_id=None))]
+    fn reset(&self, session_id: Option<&str>) {
+        self.inner.reset(session_id)
+    }
+
+    fn total_calls(&self, session_id: &str) -> usize {
+        self.inner.total_calls(session_id)
+    }
+
+    fn burst_alerts(&self, session_id: &str) -> usize {
+        self.inner.burst_alerts(session_id)
+    }
+}
+
+fn rate_status_dict<'py>(py: Python<'py>, s: &CallRateStatus) -> PyObject {
+    let dict = PyDict::new_bound(py);
+    let _ = dict.set_item("session_id", &s.session_id);
+    let _ = dict.set_item("calls_in_window", s.calls_in_window);
+    let _ = dict.set_item("calls_remaining", s.calls_remaining);
+    let _ = dict.set_item("max_calls", s.max_calls);
+    let _ = dict.set_item("window_seconds", s.window_seconds);
+    let _ = dict.set_item("exceeded", s.exceeded);
+    dict.into()
+}
+
 // ---- SSRF guard ----------------------------------------------------------
 
 #[pyclass(name = "SsrfGuard", module = "tessera_rs.ssrf")]
@@ -564,6 +659,81 @@ fn injection_score(text: &str) -> f64 {
     heuristic_injection_score(text)
 }
 
+// ---- PyScanner callback bridge ------------------------------------------
+//
+// Tessera's "hard" scanners (PromptGuard, Perplexity, PDFInspector,
+// ImageInspector, CodeShield) are not ported to Rust because they
+// depend on Python ML / PIL / sandboxed-PDF stacks. Instead, this
+// bridge lets a host process register a Python callable under a
+// stable name, then invoke it from any consumer (the Rust gateway,
+// AgentMesh, or another Python module) via `tessera_rs.scanners.scan`.
+//
+// The registered callable signature is `def scan(text: str) -> dict`
+// where the dict contains at minimum `{detected: bool, score: float,
+// reason: str}`. Additional fields are passed through unchanged so
+// scanner-specific telemetry rides along without schema changes here.
+
+static PY_SCANNER_REGISTRY: std::sync::OnceLock<parking_lot::Mutex<HashMap<String, Py<PyAny>>>> =
+    std::sync::OnceLock::new();
+
+fn registry() -> &'static parking_lot::Mutex<HashMap<String, Py<PyAny>>> {
+    PY_SCANNER_REGISTRY.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+/// Register a Python scanner under a stable name.
+///
+/// Once registered, callers (Rust gateway, AgentMesh, host Python)
+/// invoke via `tessera_rs.scanners.scan(name, text)`. Replaces any
+/// existing registration with the same name and logs a warning.
+#[pyfunction]
+fn register_scanner(_py: Python<'_>, name: &str, callable: Py<PyAny>) -> PyResult<()> {
+    let mut g = registry().lock();
+    if g.insert(name.to_owned(), callable).is_some() {
+        eprintln!(
+            "[tessera_rs.scanners] register_scanner: overwrote previous \
+             registration for {name:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Drop a registered scanner. Returns True if a registration was
+/// removed, False if the name was not registered.
+#[pyfunction]
+fn unregister_scanner(name: &str) -> bool {
+    registry().lock().remove(name).is_some()
+}
+
+/// List all registered scanner names. Useful for ops/health checks.
+#[pyfunction]
+fn registered_scanners() -> Vec<String> {
+    let g = registry().lock();
+    let mut names: Vec<String> = g.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// Invoke a registered scanner. Returns the dict the Python callable
+/// returned. Raises ValueError when no scanner is registered under
+/// `name`, or when the callable raises.
+#[pyfunction]
+fn scan(py: Python<'_>, name: &str, text: &str) -> PyResult<PyObject> {
+    let callable = {
+        let g = registry().lock();
+        match g.get(name) {
+            Some(c) => c.clone_ref(py),
+            None => {
+                return Err(PyValueError::new_err(format!(
+                    "no scanner registered under {name:?}; \
+                     call register_scanner({name:?}, ...) first"
+                )));
+            }
+        }
+    };
+    let result = callable.call1(py, (text,))?;
+    Ok(result)
+}
+
 /// Hidden Unicode tag scanner. Returns a dict
 /// `{detected: bool, hidden_payload: str, tag_count: int, positions: [int]}`.
 #[pyfunction]
@@ -588,11 +758,16 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_replay_detail, m)?)?;
     m.add_function(wrap_pyfunction!(injection_score, m)?)?;
     m.add_function(wrap_pyfunction!(scan_unicode_tags, m)?)?;
+    m.add_function(wrap_pyfunction!(register_scanner, m)?)?;
+    m.add_function(wrap_pyfunction!(unregister_scanner, m)?)?;
+    m.add_function(wrap_pyfunction!(registered_scanners, m)?)?;
+    m.add_function(wrap_pyfunction!(scan, m)?)?;
     m.add_class::<PyJsonlHashchainSink>()?;
     m.add_class::<PyContext>()?;
     m.add_class::<PyPolicy>()?;
     m.add_class::<PyCelRule>()?;
     m.add_class::<PyCelPolicyEngine>()?;
+    m.add_class::<PyToolCallRateLimit>()?;
     m.add_class::<PySsrfGuard>()?;
     m.add_class::<PyUrlRulesEngine>()?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

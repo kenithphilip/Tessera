@@ -109,7 +109,7 @@ fi
 mkdir -p "$ROOT/bench/results"
 
 if [ "$AGENTMESH_OK" = "true" ]; then
-    echo "[bench-compare] running compare against Rust ($RUST_TARGET_PORT) and Python ($PYTHON_TARGET_PORT)"
+    echo "[bench-compare] running mixed compare against Rust ($RUST_TARGET_PORT) and Python ($PYTHON_TARGET_PORT)"
     "$ROOT/target/release/tessera-bench" compare \
         --rust-target "http://127.0.0.1:$RUST_TARGET_PORT" \
         --python-target "http://127.0.0.1:$PYTHON_TARGET_PORT" \
@@ -117,6 +117,16 @@ if [ "$AGENTMESH_OK" = "true" ]; then
         --concurrency "$CONCURRENCY" \
         --warmup 5s \
         --workload mixed \
+        --report-file "$ROOT/bench/results.md" \
+        --csv-dir "$ROOT/bench/results"
+    echo "[bench-compare] running single-endpoint compare (/v1/evaluate) "
+    "$ROOT/target/release/tessera-bench" compare \
+        --rust-target "http://127.0.0.1:$RUST_TARGET_PORT" \
+        --python-target "http://127.0.0.1:$PYTHON_TARGET_PORT" \
+        --duration "$DURATION" \
+        --concurrency "$CONCURRENCY" \
+        --warmup 5s \
+        --workload evaluate \
         --report-file "$ROOT/bench/results.md" \
         --csv-dir "$ROOT/bench/results"
 else
