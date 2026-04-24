@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-audit"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "crossbeam-channel",
  "hex",
@@ -3049,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-bench"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3072,7 +3072,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-core"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "hmac",
@@ -3083,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-gateway"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-policy"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "cel-interpreter",
  "cel-parser",
@@ -3150,7 +3150,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-py"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "pyo3",
  "serde",
@@ -3164,7 +3164,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-runtime"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3189,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-scanners"
-version = "0.10.0-alpha.1"
+version = "0.10.0"
 dependencies = [
  "aho-corasick",
  "base64 0.22.1",
