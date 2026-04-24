@@ -128,6 +128,15 @@ impl PyJsonlHashchainSink {
             .map_err(|e| PyValueError::new_err(format!("{e:?}")))?;
         Ok(record.seq)
     }
+
+    /// Block until the writer thread has drained every queued append
+    /// to disk. Mirrors the Rust `JsonlHashchainSink::flush` method.
+    /// Useful in tests that read the file immediately after append.
+    fn flush(&self) -> PyResult<()> {
+        self.inner
+            .flush()
+            .map_err(|e| PyValueError::new_err(format!("{e:?}")))
+    }
 }
 
 /// Build the `replay` detail dict from envelope fields. Matches
