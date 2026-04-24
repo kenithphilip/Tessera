@@ -185,6 +185,24 @@ class QuarantinedExecutor:
         ):
             if untrusted.segments:
                 report = await self._run_worker_with_retry(untrusted)
+                # Re-attach provenance labels stripped by the
+                # JSON serialization boundary at the worker. Best-
+                # effort: failures are non-fatal because the
+                # downstream policy still has the trusted-segment
+                # labels via min_trust on the planner context. The
+                # recovery emits LABEL_RECOVERY_* events for every
+                # field so SOC teams have full visibility.
+                try:
+                    from tessera.worker.recovery import (
+                        field_provenance_recovery,
+                    )
+
+                    field_provenance_recovery(report, untrusted)
+                except Exception:  # noqa: BLE001
+                    # Recovery is observability + soft signal. Do
+                    # not let a buggy recovery path block the
+                    # planner.
+                    pass
             else:
                 report = WorkerReport()
 
