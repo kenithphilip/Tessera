@@ -1,0 +1,96 @@
+# Action Critic principles v1
+#
+# The first six principles cover the critical-path patterns the
+# Phase 1C-ii skeleton is designed to evaluate. Phase 3 wave 3G
+# extends to 20 principles + GCG-resistance test suite.
+#
+# Each principle declares:
+#
+#   id            short stable identifier (used in CriticDecision.triggered_principles)
+#   description   plain-English statement; surfaced in audit detail
+#   asi_codes     OWASP Agentic Top 10 ASI-* mappings
+#   atlas_codes   MITRE ATLAS technique IDs
+#   rationale     longer engineering justification (for docs / reviews)
+#
+# References:
+#   - docs/strategy/2026-04-engineering-brief.md Section 2.3
+#   - docs/adr/0006-arg-level-provenance-primary.md
+schema_version: "tessera.principles.v1"
+revision: 1
+issued: "2026-04-24"
+
+principles:
+  - id: data_minimization
+    description: >-
+      The minimum information required to perform the action must
+      reach the tool. Excessive scope (e.g., full conversation
+      context handed to a single-purpose API) increases blast
+      radius if the tool is compromised.
+    asi_codes: [ASI-02, ASI-07]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Bounds disclosure on the recipient side and reduces what a
+      future drift / signature-failure event can ex-filtrate.
+
+  - id: origin_consistency
+    description: >-
+      Critical arguments must originate from a labeled source whose
+      integrity matches the tool's expectation (transfer_funds.amount
+      from TRUSTED, send_email.body from at most ENDORSED).
+    asi_codes: [ASI-01, ASI-04]
+    atlas_codes: [AML.T0051.001, AML.T0051.002]
+    rationale: >-
+      Captures the CaMeL invariant: an action's controlling inputs
+      must trace to a trusted origin. Aligns with the
+      tool_critical_args.required_integrity field.
+
+  - id: irreversibility
+    description: >-
+      Actions whose effect cannot be cleanly undone (file deletion,
+      fund transfer, message send) require a stronger evidence
+      gradient than reversible reads. The critic flags
+      irreversibility-class actions for human approval whenever the
+      origin-consistency check is borderline.
+    asi_codes: [ASI-03, ASI-04]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Mirrors the existing tessera.risk.IrreversibilityClass; the
+      critic surfaces it explicitly so humans see the choice.
+
+  - id: least_privilege
+    description: >-
+      The principal performing the action must hold the minimum
+      delegation required, with no scope inflation between context
+      authorization and tool invocation.
+    asi_codes: [ASI-04, ASI-10]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Catches delegation widening (a USER token used to invoke a
+      SYSTEM-only tool) and the same-planner-as-critic anti-pattern.
+
+  - id: no_exfiltration
+    description: >-
+      Tool calls whose effect is to ship data to an external
+      destination (send_email recipient, write_file path beyond a
+      permitted base, transfer_funds beneficiary) must not include
+      data with a more restrictive secrecy label than the
+      destination's audience.
+    asi_codes: [ASI-02, ASI-07]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Aligns with the audience_check field on
+      CriticalArgSpec; the critic flags violations even when policy
+      misses them due to label-recovery over-tainting.
+
+  - id: untrusted_arg_reasonable
+    description: >-
+      When a critical argument's label is UNTRUSTED, the critic
+      examines whether the value's character class and length
+      shape (from ArgShape) are plausible for the tool's documented
+      purpose. A 4 KiB UNTRUSTED string in transfer_funds.amount
+      is rejected on shape alone.
+    asi_codes: [ASI-01, ASI-09]
+    atlas_codes: [AML.T0043]
+    rationale: >-
+      Last-mile defense against AST instrumentation gaps and
+      label-recovery false positives.
