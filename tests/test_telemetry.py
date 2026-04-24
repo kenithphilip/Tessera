@@ -187,6 +187,87 @@ def test_proxy_request_span_omits_none_gen_ai_attributes(exporter):
     assert "gen_ai.usage.output_tokens" not in attrs
     assert "gen_ai.response.finish_reason" not in attrs
     assert "gen_ai.response.model" not in attrs
+    # v0.11.1 wave 0B: new GenAI semconv attributes also omitted
+    # when not provided.
+    assert "gen_ai.request.id" not in attrs
+    assert "gen_ai.response.id" not in attrs
+    assert "gen_ai.usage.cache_read_input_tokens" not in attrs
+    assert "gen_ai.usage.cache_creation_input_tokens" not in attrs
+    assert "gen_ai.error.type" not in attrs
+    assert "gen_ai.conversation.id" not in attrs
+
+
+def test_proxy_request_span_emits_full_genai_semconv_attributes(exporter):
+    """v0.11.1 wave 0B: when caller passes the new GenAI semconv
+    attributes, they all surface on the span."""
+    with proxy_request_span(
+        model="claude-3-5-sonnet-20241022",
+        message_count=2,
+        system="anthropic",
+        request_id="req_01H7PQRS",
+        response_id="msg_01ABCDEF",
+        cache_read_input_tokens=1024,
+        cache_creation_input_tokens=512,
+        error_type=None,  # success path: no error
+        conversation_id="conv_01GH",
+    ):
+        pass
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "tessera.proxy.request"]
+    attrs = spans[0].attributes
+    assert attrs["gen_ai.request.id"] == "req_01H7PQRS"
+    assert attrs["gen_ai.response.id"] == "msg_01ABCDEF"
+    assert attrs["gen_ai.usage.cache_read_input_tokens"] == 1024
+    assert attrs["gen_ai.usage.cache_creation_input_tokens"] == 512
+    assert attrs["gen_ai.conversation.id"] == "conv_01GH"
+    # error_type was None and should be omitted.
+    assert "gen_ai.error.type" not in attrs
+
+
+def test_proxy_request_span_emits_error_type_on_failure(exporter):
+    with proxy_request_span(
+        model="gpt-4",
+        message_count=1,
+        error_type="anthropic.RateLimitError",
+    ):
+        pass
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "tessera.proxy.request"]
+    attrs = spans[0].attributes
+    assert attrs["gen_ai.error.type"] == "anthropic.RateLimitError"
+
+
+def test_emit_tool_call_emits_call_arguments_and_conversation_id(exporter):
+    """v0.11.1 wave 0B: gen_ai.tool.call.arguments + gen_ai.conversation.id
+    surface on tessera.mcp.tool_call when provided."""
+    from tessera.telemetry import emit_tool_call
+
+    emit_tool_call(
+        tool="send_email",
+        origin="user",
+        principal="alice",
+        call_arguments='{"to": "bob@example.com", "subject": "<<REDACTED>>"}',
+        conversation_id="conv_01GH",
+    )
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "tessera.mcp.tool_call"]
+    attrs = spans[0].attributes
+    assert (
+        attrs["gen_ai.tool.call.arguments"]
+        == '{"to": "bob@example.com", "subject": "<<REDACTED>>"}'
+    )
+    assert attrs["gen_ai.conversation.id"] == "conv_01GH"
+
+
+def test_emit_tool_call_omits_optional_attributes_when_absent(exporter):
+    from tessera.telemetry import emit_tool_call
+
+    emit_tool_call(tool="search", origin="tool", principal="bot")
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "tessera.mcp.tool_call"]
+    attrs = spans[0].attributes
+    assert "gen_ai.tool.call.arguments" not in attrs
+    assert "gen_ai.conversation.id" not in attrs
 
 
 def test_record_upstream_usage_sets_attributes_on_current_span(exporter):

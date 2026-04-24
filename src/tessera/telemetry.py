@@ -52,8 +52,25 @@ def emit_decision(decision: "Decision", *, backend: str | None = None) -> None:
         span.set_attribute("gen_ai.tool.name", decision.tool)
 
 
-def emit_tool_call(tool: str, origin: str, principal: str) -> None:
-    """Emit a span for an MCP tool invocation with its labeled origin."""
+def emit_tool_call(
+    tool: str,
+    origin: str,
+    principal: str,
+    *,
+    call_arguments: str | None = None,
+    conversation_id: str | None = None,
+) -> None:
+    """Emit a span for an MCP tool invocation with its labeled origin.
+
+    `call_arguments` is the per-call argument payload as a JSON
+    string. The OpenTelemetry GenAI semconv `gen_ai.tool.call.arguments`
+    attribute is opt-in (PII / secret leakage risk). Pass it only
+    when the caller has redacted secrets and PII via
+    `tessera.redaction`. Tessera does not auto-redact at this layer
+    to avoid double-work; the proxy redacts upstream.
+    `conversation_id` matches the host's conversation/thread id so
+    spans across tool calls correlate.
+    """
     if not _OTEL or _tracer is None:
         return
     with _tracer.start_as_current_span("tessera.mcp.tool_call") as span:
@@ -65,6 +82,9 @@ def emit_tool_call(tool: str, origin: str, principal: str) -> None:
         span.set_attribute("gen_ai.tool.name", tool)
         span.set_attribute("gen_ai.tool.type", "extension")
         span.set_attribute("gen_ai.agent.name", "tessera.mcp")
+        # v0.11.1 wave 0B: OpenTelemetry GenAI semconv full compliance.
+        _set_attribute(span, "gen_ai.tool.call.arguments", call_arguments)
+        _set_attribute(span, "gen_ai.conversation.id", conversation_id)
 
 
 @contextmanager
@@ -80,11 +100,27 @@ def proxy_request_span(
     finish_reason: str | None = None,
     system: str | None = None,
     response_model: str | None = None,
+    request_id: str | None = None,
+    response_id: str | None = None,
+    cache_read_input_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
+    error_type: str | None = None,
+    conversation_id: str | None = None,
 ) -> Iterator[None]:
     """Context manager wrapping a single proxy request.
 
     Tool-call and policy spans emitted inside this block become children
     via OTel's implicit context propagation.
+
+    Attributes follow the OpenTelemetry GenAI semantic conventions
+    (v1.31+; see https://opentelemetry.io/docs/specs/semconv/gen-ai/).
+    The optional `request_id`, `response_id`, `cache_*`, `error_type`,
+    and `conversation_id` parameters were added for v0.11.1 wave 0B
+    full GenAI semconv compliance; pass them when the upstream
+    provider returns the corresponding identifiers (Anthropic
+    `request-id` header, OpenAI `response.id`, Anthropic /
+    OpenAI cache_* token counts, error class name, host conversation
+    or thread id).
     """
     if not _OTEL or _tracer is None:
         yield
@@ -102,6 +138,19 @@ def proxy_request_span(
         _set_attribute(span, "gen_ai.usage.output_tokens", output_tokens)
         _set_attribute(span, "gen_ai.response.finish_reason", finish_reason)
         _set_attribute(span, "gen_ai.response.model", response_model)
+        # v0.11.1 wave 0B: OpenTelemetry GenAI semconv full compliance.
+        _set_attribute(span, "gen_ai.request.id", request_id)
+        _set_attribute(span, "gen_ai.response.id", response_id)
+        _set_attribute(
+            span, "gen_ai.usage.cache_read_input_tokens", cache_read_input_tokens
+        )
+        _set_attribute(
+            span,
+            "gen_ai.usage.cache_creation_input_tokens",
+            cache_creation_input_tokens,
+        )
+        _set_attribute(span, "gen_ai.error.type", error_type)
+        _set_attribute(span, "gen_ai.conversation.id", conversation_id)
         yield
 
 

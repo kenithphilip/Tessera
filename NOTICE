@@ -1,0 +1,39 @@
+Tessera
+Copyright 2026 Kenith Philip and Tessera contributors
+
+This product is licensed under the Apache License, Version 2.0
+(the "License"). See the LICENSE file at the root of this
+repository for the full text.
+
+== Re-license history ==
+
+Tessera released versions through and including v0.11.0 under the
+GNU Affero General Public License, Version 3.0 or later
+(AGPL-3.0-or-later). The full text of that license is preserved
+in the file LICENSE-AGPL-historical for reference.
+
+Effective with the v0.11.1 release on 2026-04-24, the project
+re-licensed to Apache-2.0. The rationale, including the conflict
+between AGPL-on-the-library and default LangChain / LangGraph /
+CrewAI / LlamaIndex / PydanticAI middleware bundling, is captured
+in `docs/adr/0001-license-split.md` and references the strategy
+documents in `docs/strategy/2026-04-mesh-review.md`.
+
+The companion AgentMesh service (separate repository at
+https://github.com/kenithphilip/AgentMesh) remains under
+AGPL-3.0-or-later. The split mirrors the
+Grafana / Mattermost / Plausible model: permissive license on
+the library, copyleft on the service.
+
+== Contribution policy ==
+
+Contributions to this repository require a Developer Certificate
+of Origin (DCO) sign-off. See CONTRIBUTING.md for details. The
+DCO ensures all contributions are eligible for inclusion under
+the Apache-2.0 license without requiring a CLA.
+
+== Third-party components ==
+
+This product depends on third-party open-source components, each
+under its own license. See the lock file (uv.lock or
+requirements.txt) for the authoritative dependency list.

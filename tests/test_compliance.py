@@ -56,6 +56,92 @@ def test_all_event_kinds_have_nist_mapping() -> None:
         assert kind in NIST_CONTROLS, f"{kind} missing from NIST_CONTROLS"
 
 
+# -- v0.11.1 Phase 0 wave 0C: extended compliance taxonomies ----------------
+
+
+def test_enrich_includes_mitre_atlas_for_injection_event() -> None:
+    from tessera.compliance import MITRE_ATLAS
+
+    event = SecurityEvent.now(
+        EventKind.CONTENT_INJECTION_DETECTED, "alice", {"tool": "x"}
+    )
+    enriched = enrich_event(event)
+    assert "AML.T0051.001" in enriched["mitre_atlas"]
+    assert "AML.T0051.002" in enriched["mitre_atlas"]
+    # Bare table also exposes the mapping.
+    assert MITRE_ATLAS[EventKind.CONTENT_INJECTION_DETECTED]
+
+
+def test_enrich_includes_eu_ai_act_articles_for_policy_deny() -> None:
+    from tessera.compliance import EU_AI_ACT
+
+    event = SecurityEvent.now(EventKind.POLICY_DENY, "alice", {"tool": "x"})
+    enriched = enrich_event(event)
+    assert "Art.9" in enriched["eu_ai_act"]
+    assert "Art.15" in enriched["eu_ai_act"]
+    assert EU_AI_ACT[EventKind.POLICY_DENY]
+
+
+def test_enrich_includes_iso_42001_for_label_verify_failure() -> None:
+    from tessera.compliance import ISO_42001
+
+    event = SecurityEvent.now(EventKind.LABEL_VERIFY_FAILURE, "unknown", {})
+    enriched = enrich_event(event)
+    # A.7.4 data quality + A.8.2 logging.
+    assert "A.7.4" in enriched["iso_42001"]
+    assert "A.8.2" in enriched["iso_42001"]
+    assert ISO_42001[EventKind.LABEL_VERIFY_FAILURE]
+
+
+def test_enrich_includes_csa_aicm_for_secret_redacted() -> None:
+    from tessera.compliance import CSA_AICM
+
+    event = SecurityEvent.now(EventKind.SECRET_REDACTED, "alice", {})
+    enriched = enrich_event(event)
+    # DSP-04 data classification + DSP-08 data masking.
+    assert "DSP-04" in enriched["csa_aicm"]
+    assert "DSP-08" in enriched["csa_aicm"]
+    assert CSA_AICM[EventKind.SECRET_REDACTED]
+
+
+def test_enrich_includes_nist_ai_600_1_for_human_approval() -> None:
+    from tessera.compliance import NIST_AI_600_1
+
+    event = SecurityEvent.now(EventKind.HUMAN_APPROVAL_REQUIRED, "alice", {})
+    enriched = enrich_event(event)
+    # Human-AI Configuration risk.
+    assert "HumanAIConfig" in enriched["nist_ai_600_1"]
+    assert NIST_AI_600_1[EventKind.HUMAN_APPROVAL_REQUIRED]
+
+
+def test_enrich_unknown_kind_returns_empty_for_extended_taxonomies() -> None:
+    # SESSION_EXPIRED is in some tables but not all; make sure missing
+    # entries return empty lists and never raise KeyError.
+    event = SecurityEvent.now(EventKind.SESSION_EXPIRED, "sys", {})
+    enriched = enrich_event(event)
+    assert isinstance(enriched["mitre_atlas"], list)
+    assert isinstance(enriched["eu_ai_act"], list)
+    assert isinstance(enriched["iso_42001"], list)
+    assert isinstance(enriched["csa_aicm"], list)
+    assert isinstance(enriched["nist_ai_600_1"], list)
+
+
+def test_enrich_event_dict_includes_all_eight_taxonomies() -> None:
+    event = SecurityEvent.now(EventKind.POLICY_DENY, "alice", {"tool": "x"})
+    enriched = enrich_event(event)
+    expected_keys = {
+        "nist_controls",
+        "cwe_codes",
+        "owasp_asi",
+        "mitre_atlas",
+        "eu_ai_act",
+        "iso_42001",
+        "csa_aicm",
+        "nist_ai_600_1",
+    }
+    assert expected_keys <= set(enriched.keys())
+
+
 # -- Hash-chain audit log ----------------------------------------------------
 
 
