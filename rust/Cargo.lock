@@ -3034,6 +3034,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessera-agentgateway-audit-event-sink"
+version = "0.14.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "tessera-agentgateway-mcp-drift-scanner"
+version = "0.14.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "tessera-agentgateway-spiffe-svid-validator"
+version = "0.14.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tessera-audit"
 version = "0.11.0"
 dependencies = [

@@ -38,7 +38,8 @@ def test_sample_feed_validates() -> None:
     raw = SAMPLE_FEED_PATH.read_text()
     feed = validate_feed(raw)
     assert feed.schema_version == "tessera.threat_intel.v1"
-    assert len(feed.iocs) == 4
+    # Wave 3F extended the sample feed beyond the original 4 IOCs.
+    assert len(feed.iocs) >= 4
 
 
 def test_sample_feed_contains_all_kinds() -> None:

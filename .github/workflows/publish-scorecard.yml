@@ -1,0 +1,49 @@
+name: Publish Scorecard
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to push to gh-pages branch
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Tessera
+        run: pip install -e '.[dev]'
+
+      - name: Emit scorecard attestation
+        run: |
+          python -m tessera.evaluate.cli emit-scorecard \
+            --version "${RELEASE_VERSION}" \
+            --out docs/scorecard/static/sample.intoto.jsonl \
+            --sign hmac
+        env:
+          TESSERA_SCORECARD_HMAC_KEY: ${{ secrets.TESSERA_SCORECARD_HMAC_KEY }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: "0.128.0"
+          extended: false
+
+      - name: Build Hugo site
+        run: hugo --source docs/scorecard --destination ../../public/scorecard --minify
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public/scorecard
+          destination_dir: scorecard
+          commit_message: "scorecard: publish attestation for release"

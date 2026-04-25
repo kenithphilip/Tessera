@@ -1,0 +1,16 @@
+[package]
+name = "tessera-agentgateway-mcp-drift-scanner"
+version = "0.14.0"
+edition = "2021"
+publish = false
+description = "MCP behavioral drift scanner plugin for upstream agentgateway. In-tree until the upstream PR merges."
+
+[lib]
+name = "tessera_agentgateway_mcp_drift_scanner"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"

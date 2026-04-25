@@ -1,4 +1,4 @@
-"""Deterministic evaluation of the v1 principles.
+"""Deterministic evaluation of the action critic principles.
 
 The Action Critic runs a deterministic principle pre-check BEFORE
 calling any backend (LLM or otherwise). The pre-check covers the
@@ -18,18 +18,33 @@ external dependencies. Only when it returns ALLOW does the
 backend get called for the soft principles (data minimization,
 irreversibility, no exfiltration), which require model judgment.
 
+Principles version selection
+-----------------------------
+
+Set the environment variable ``TESSERA_PRINCIPLES_VERSION`` to
+``"2"`` to load ``principles/v2.yaml`` (20 principles, P01-P20).
+The default is ``"1"`` (``principles/v1.yaml``, 6 principles).
+
+The :func:`load_principles` function returns a list of
+:class:`PrincipleSpec` dataclasses representing the active set.
+The :func:`deterministic_pre_check` signature is unchanged.
+
 Reference
 ---------
 
 - ``src/tessera/action_critic/principles/v1.yaml``
+- ``src/tessera/action_critic/principles/v2.yaml``
+- ``docs/strategy/principles_evolution.md``
 - ``docs/strategy/2026-04-engineering-brief.md`` Section 2.3.
 """
 
 from __future__ import annotations
 
+import os
+import pathlib
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Iterable
+from typing import Any, Iterable
 
 from tessera.policy.tool_critical_args import CriticalArgSpec, specs_for
 from tessera.taint.label import (
@@ -39,7 +54,11 @@ from tessera.taint.label import (
 
 
 class Principle(StrEnum):
-    """The six principles defined in :file:`principles/v1.yaml`."""
+    """All principles across v1 and v2.
+
+    v1 principles (P01-P06) are the six original principles.
+    v2 principles (P07-P20) are the fourteen additions in Wave 3G.
+    """
 
     DATA_MINIMIZATION = "data_minimization"
     ORIGIN_CONSISTENCY = "origin_consistency"
@@ -47,6 +66,101 @@ class Principle(StrEnum):
     LEAST_PRIVILEGE = "least_privilege"
     NO_EXFILTRATION = "no_exfiltration"
     UNTRUSTED_ARG_REASONABLE = "untrusted_arg_reasonable"
+    # v2 additions
+    TOOL_AUDIT_TRAIL_INTEGRITY = "tool_audit_trail_integrity"
+    INPUT_FORMAT_CONSISTENCY = "input_format_consistency"
+    CROSS_TOOL_DEPENDENCY_CHECK = "cross_tool_dependency_check"
+    RATELIMIT_RESPECT = "ratelimit_respect"
+    SECRECY_DONT_EXPORT = "secrecy_dont_export"
+    CAPABILITY_MINIMIZATION = "capability_minimization"
+    CONFUSED_DEPUTY_CHECK = "confused_deputy_check"
+    DETERMINISTIC_UNDER_REPLAY = "deterministic_under_replay"
+    READERS_AUDIENCE_MATCH = "readers_audience_match"
+    UNSAFE_TEMPLATE_RENDER = "unsafe_template_render"
+    DESTRUCTIVE_REQUIRES_APPROVAL = "destructive_requires_approval"
+    MCP_TIER_FLOOR = "mcp_tier_floor"
+    CRITIC_SELF_CONSISTENCY = "critic_self_consistency"
+    EMERGENCY_BRAKE = "emergency_brake"
+
+
+@dataclass(frozen=True, slots=True)
+class PrincipleSpec:
+    """One principle record as loaded from a principles YAML file.
+
+    Args:
+        id: Stable principle identifier (matches :class:`Principle` values).
+        description: Plain-English statement surfaced in audit detail.
+        asi_codes: OWASP Agentic Top 10 ASI-* mappings.
+        atlas_codes: MITRE ATLAS technique IDs.
+        rationale: Longer engineering justification.
+    """
+
+    id: str
+    description: str
+    asi_codes: tuple[str, ...]
+    atlas_codes: tuple[str, ...]
+    rationale: str
+
+
+_PRINCIPLES_DIR = pathlib.Path(__file__).parent / "principles"
+
+
+def _parse_spec(raw: dict[str, Any]) -> PrincipleSpec:
+    return PrincipleSpec(
+        id=raw["id"],
+        description=raw.get("description", ""),
+        asi_codes=tuple(raw.get("asi_codes") or []),
+        atlas_codes=tuple(raw.get("atlas_codes") or []),
+        rationale=raw.get("rationale", ""),
+    )
+
+
+def load_principles(version: int | None = None) -> list[PrincipleSpec]:
+    """Load the principles set for the given version.
+
+    Args:
+        version: Principles version integer (1 or 2). When ``None``,
+            reads ``TESSERA_PRINCIPLES_VERSION`` from the environment;
+            defaults to ``1`` if the variable is absent or invalid.
+
+    Returns:
+        Ordered list of :class:`PrincipleSpec` records.
+
+    Raises:
+        FileNotFoundError: When the requested YAML file does not exist.
+        ValueError: When the YAML does not contain a ``principles`` list.
+    """
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "PyYAML is required for principles loading; "
+            "add 'pyyaml' to your dependencies"
+        ) from exc
+
+    if version is None:
+        raw_env = os.environ.get("TESSERA_PRINCIPLES_VERSION", "1").strip()
+        try:
+            version = int(raw_env)
+        except ValueError:
+            version = 1
+
+    filename = f"v{version}.yaml"
+    path = _PRINCIPLES_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Principles file not found: {path}. "
+            f"Valid values for TESSERA_PRINCIPLES_VERSION: 1, 2."
+        )
+
+    with path.open("r", encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+
+    principles_raw = doc.get("principles")
+    if not isinstance(principles_raw, list):
+        raise ValueError(f"{path}: missing or invalid 'principles' list")
+
+    return [_parse_spec(p) for p in principles_raw]
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,9 +320,11 @@ __all__ = [
     "ArgShapeLike",
     "LabelSummaryLike",
     "Principle",
+    "PrincipleSpec",
     "PrincipleViolation",
     "deterministic_pre_check",
     "evaluate_no_exfiltration",
     "evaluate_origin_consistency",
     "evaluate_untrusted_arg_reasonable",
+    "load_principles",
 ]

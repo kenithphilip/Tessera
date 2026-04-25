@@ -81,6 +81,14 @@ class EventKind(StrEnum):
     # v0.12 delegation exec telemetry (RFC 8707 + per-MCP audience).
     DELEGATION_EXEC = "delegation.exec"
 
+    # Wave 3B-i: Tier 1 (Solo) runtime isolation violations.
+    # RUNTIME_EGRESS_DENY fires when a patched HTTP call targets a host
+    # not in the EgressAllowlist. RUNTIME_FS_DENY fires when open() is
+    # called in a write mode against a path outside FilesystemGuard's
+    # allowed-write prefixes.
+    RUNTIME_EGRESS_DENY = "runtime.egress_deny"
+    RUNTIME_FS_DENY = "runtime.fs_deny"
+
 
 @dataclass(frozen=True)
 class SecurityEvent:

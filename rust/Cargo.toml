@@ -9,6 +9,11 @@ members = [
     "crates/tessera-gateway",
     "crates/tessera-bench",
     "crates/tessera-py",
+    # v0.14 Phase 3 wave 3H: upstream agentgateway plugins.
+    # In-tree until the upstream PRs land at solo-io/agentgateway.
+    "agentgateway-plugins/spiffe-svid-validator",
+    "agentgateway-plugins/audit-event-sink",
+    "agentgateway-plugins/mcp-drift-scanner",
 ]
 # Default to building everything except the PyO3 wheel: that crate
 # links a Python extension and fails plain `cargo build` without the
@@ -22,6 +27,9 @@ default-members = [
     "crates/tessera-runtime",
     "crates/tessera-gateway",
     "crates/tessera-bench",
+    "agentgateway-plugins/spiffe-svid-validator",
+    "agentgateway-plugins/audit-event-sink",
+    "agentgateway-plugins/mcp-drift-scanner",
 ]
 
 [workspace.package]

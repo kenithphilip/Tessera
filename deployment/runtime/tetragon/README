@@ -1,0 +1,48 @@
+Tetragon eBPF policy deployment (Tier 3 runtime isolation)
+============================================================
+
+Overview
+--------
+Tier 3 adds eBPF-level syscall enforcement via Tetragon (cilium/tetragon).
+The Python builder in tessera.runtime.tetragon generates a ``TracingPolicy``
+YAML; this directory contains a ready-to-apply reference policy and a Helm
+values overlay for the Tetragon chart.
+
+Prerequisites
+-------------
+- Kubernetes cluster with Tetragon installed:
+    helm repo add cilium https://helm.cilium.io
+    helm install tetragon cilium/tetragon -n kube-system -f tetragon-values.yaml
+- Cilium CNI installed (required for the companion CiliumNetworkPolicy in ../cilium/).
+- Linux kernel >= 5.10 on all nodes (eBPF CO-RE required).
+
+Files in this directory
+-----------------------
+  tessera-tracing-policy.yaml   Reference TracingPolicy restricting tcp_connect
+                                to the approved DNS + egress CIDRs for tessera pods.
+  tetragon-values.yaml          Helm values overlay enabling the btf, export, and
+                                monitor features needed by this policy.
+
+Applying the policy
+-------------------
+  kubectl apply -f tessera-tracing-policy.yaml
+
+Verify Tetragon is enforcing by checking its export log:
+  kubectl logs -n kube-system -l app.kubernetes.io/name=tetragon -c export-stdout | \
+    grep "tessera-egress-policy"
+
+Helm install with overlay
+-------------------------
+  helm upgrade tetragon cilium/tetragon \
+    -n kube-system \
+    -f tetragon-values.yaml
+
+Security notes
+--------------
+- The TracingPolicy uses a Sigkill action on deny. This terminates the offending
+  process immediately. Tune to Override (return EPERM) if hard termination is
+  too disruptive for your workload.
+- Policies are cluster-scoped by default. Namespace-scoped policies require
+  Tetragon >= 1.1 with the namespaced CRD variant.
+- Tetragon itself must run with elevated capabilities (CAP_BPF, CAP_PERFMON).
+  The daemonset pods are privileged; do not weaken this without testing.

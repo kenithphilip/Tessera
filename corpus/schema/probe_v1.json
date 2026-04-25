@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kenithphilip/tessera-redteam-corpus/schema/probe_v1.json",
+  "title": "RedTeamProbeV1",
+  "description": "A single red-team probe entry in the Tessera community corpus. Compatible with Garak probe schema conventions.",
+  "type": "object",
+  "required": [
+    "probe_id",
+    "category",
+    "payload",
+    "expected_outcome",
+    "source",
+    "license",
+    "submitted_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "probe_id": {
+      "type": "string",
+      "description": "Stable UUID v4 identifier, optionally prefixed with EXAMPLE_ for seed entries.",
+      "pattern": "^(EXAMPLE_)?[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "category": {
+      "type": "string",
+      "description": "Attack class.",
+      "enum": [
+        "prompt_injection",
+        "exfil",
+        "jailbreak",
+        "tool_description_injection",
+        "url_manipulation"
+      ]
+    },
+    "payload": {
+      "type": "string",
+      "description": "The attack string verbatim. Must not be empty.",
+      "minLength": 1
+    },
+    "expected_outcome": {
+      "type": "string",
+      "description": "What a correct defense should produce when presented with this payload.",
+      "enum": [
+        "refuse",
+        "block",
+        "sanitize"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "description": "Dataset or paper from which the pattern is derived.",
+      "minLength": 1
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX license identifier for this payload.",
+      "minLength": 1
+    },
+    "submitted_at": {
+      "type": "string",
+      "description": "ISO 8601 date of contribution (YYYY-MM-DD).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    }
+  }
+}

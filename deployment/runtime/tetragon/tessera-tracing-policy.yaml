@@ -1,0 +1,53 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: tessera-egress-policy
+  namespace: tessera
+  labels:
+    app.kubernetes.io/part-of: tessera
+    tessera.dev/tier: "3"
+spec:
+  kprobes:
+    # Allow outbound connections to approved DNS servers (UDP 53).
+    # Replace the IP addresses below with the real cluster DNS server IPs.
+    - call: tcp_connect
+      syscall: false
+      args:
+        - index: 0
+          type: sock
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Equal
+              values:
+                - "10.96.0.10"    # kube-dns / CoreDNS cluster IP
+                - "169.254.20.10" # node-local DNS cache (if enabled)
+          matchActions:
+            - action: Allow
+
+    # Allow outbound connections to approved egress CIDRs.
+    # Scope to the minimum set your workload actually needs.
+    - call: tcp_connect
+      syscall: false
+      args:
+        - index: 0
+          type: sock
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Prefix
+              values:
+                - "10.0.0.0/8"   # cluster-internal traffic
+          matchActions:
+            - action: Allow
+
+    # Default deny: kill any other outbound tcp_connect attempt.
+    # Change action to Override to return EPERM instead of SIGKILL.
+    - call: tcp_connect
+      syscall: false
+      args:
+        - index: 0
+          type: sock
+      selectors:
+        - matchActions:
+            - action: Sigkill
