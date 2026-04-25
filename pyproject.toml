@@ -20,6 +20,11 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    # Phase 1 wave 1A property-based tests for the label lattice
+    # algebraic laws live under tests/invariants/. Without this,
+    # `pip install -e '.[dev]'` in CI cannot import hypothesis and
+    # pytest fails at collection time.
+    "hypothesis>=6.100",
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
     "pyjwt[crypto]>=2.8",
