@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 v1.0 is the API + wire-format freeze for the v1.x line; future v2
 changes are scoped under `docs/adr/0007-provenance-label-v2-migration.md`.
 
+## [1.0.2] - 2026-04-26
+
+### Fixed
+
+- **Missing `tessera_rs.label` shim file.** The PyO3
+  `PyProvenanceLabel` class (Wave 4B) is annotated with
+  `module = "tessera_rs.label"` so its `__module__` resolves
+  correctly, but the matching `tessera_rs/label.py` re-export
+  shim was never added. As a result `from tessera_rs import
+  label` and `from tessera_rs.label import ProvenanceLabel`
+  both raised `ImportError` against shipped wheels. AgentMesh's
+  `RustProvenanceLabelAdapter` lazy-imports this submodule and
+  silently falls back to Python without it. Adds the missing
+  one-line shim mirroring the audit/context/cel/ratelimit
+  pattern.
+- Refreshed `tessera_rs/__init__.py` docstring to list every
+  v1.0-frozen submodule (`cel`, `ratelimit`, `label`).
+
+## [1.0.1] - 2026-04-25
+
+Phase 4 audit + 7 gap-closure fixes against the v0.12-to-v1.0
+plan. The user-flagged Wave 4F gap (corpus v2 was 700 payloads,
+spec called for >=1000) plus six other gaps surfaced by an
+end-to-end audit.
+
+### Added
+
+- Community red-team corpus v2 expanded from 700 to 1091 raw
+  payloads (~934 unique after dedup): 181 new `tool_call_payloads`
+  (oversized JSON, malformed dates, SQL / command injection) and
+  150 new `exfiltration_patterns` (zero-width-char hidden URLs,
+  email beacons, base64 chunking).
+- `corpus/RELEASE_NOTES_v2.md` and `corpus/probes/MANIFEST.md`
+  documenting the v2 corpus.
+- `corpus/tools/dedup.py` minhash dedup utility.
+- Three signed paired scorecards committed as static artifacts:
+  `paired-{claude-sonnet-4.5,gpt-5,gemini-2.5-pro}.intoto.jsonl`
+  with matching `.dsse.json` envelopes.
+- `docs/api_stability/v1.0_freeze.md` capturing the v1.x ABI +
+  wire-format contract.
+- `PyProvenanceLabel` PyO3 wrapper class registered on
+  `tessera_rs._native` (98 lines in `rust/crates/tessera-py/src/lib.rs`).
+- `TESSERA_ENFORCEMENT_MODE=scalar` now emits a one-time
+  `DeprecationWarning` per process (test in
+  `tests/test_policy_enforcement_mode.py`).
+
+### Changed
+
+- `pyproject.toml` license metadata corrected to `Apache-2.0`
+  (was still `AGPL-3.0-or-later` from v0.13.x drift; ADR-0001
+  authoritative).
+- `WorkerReport` switched to `extra="forbid"`.
+
+### Verified
+
+- 2018 Python tests passing, 16 skipped, 0 failures.
+- v1.0.1 tag pushed to GitHub; PyPI Trusted Publishing setup
+  pending operator action.
+
 ## [1.0.0] - 2026-04-25
 
 General Availability. End of the four-phase v0.12-to-v1.0 plan.
