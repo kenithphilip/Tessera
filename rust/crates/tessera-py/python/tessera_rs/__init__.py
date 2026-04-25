@@ -13,10 +13,13 @@ Submodule layout::
     from tessera_rs.audit import canonical_json, JsonlHashchainSink, make_replay_detail
     from tessera_rs.ssrf import SsrfGuard
     from tessera_rs.url_rules import UrlRulesEngine
+    from tessera_rs.cel import CelRule, CelPolicyEngine
+    from tessera_rs.ratelimit import ToolCallRateLimit
+    from tessera_rs.label import ProvenanceLabel  # v1.0 wave 4B
 
-Phase 3 (alpha.3) ships the smallest useful surface: zero-dependency
-primitives that the AgentMesh adapter authors can drop in for the
-fast path. Later phases expand coverage as more primitives stabilize.
+The v1.0 surface is frozen. Later 1.x releases will extend
+coverage without breaking shape; see
+``Tessera/docs/api_stability/v1.0_freeze.md`` for the contract.
 """
 
 from tessera_rs._native import __version__
