@@ -49,7 +49,6 @@ References
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -360,40 +359,173 @@ def field_provenance_recovery(
     )
 
 
+# ---------------------------------------------------------------------------
+# Response-grounding (formerly tessera.claim_provenance, absorbed in 2L)
+# ---------------------------------------------------------------------------
+#
+# The legacy tessera.claim_provenance.verify_response_provenance grounded
+# model-response sentences in context segments by token overlap. The
+# implementation moved here as part of Wave 2L; the legacy module is
+# deleted.
+
+import re
+from dataclasses import dataclass
+
+from tessera.labels import TrustLevel
+
+
+@dataclass(frozen=True)
+class ClaimGrounding:
+    """Provenance of one claim in the model response."""
+
+    claim: str
+    segment_indices: tuple[int, ...]
+    min_trust: TrustLevel
+    overlap_score: float
+    from_directive_segment: bool
+
+
+@dataclass(frozen=True)
+class ProvenanceVerificationResult:
+    """Result of verifying provenance of all claims in a model response."""
+
+    tainted_claims: tuple[ClaimGrounding, ...]
+    clean_claims: tuple[ClaimGrounding, ...]
+    tainted: bool
+    score: float
+
+
+_STOP_WORDS = frozenset(
+    {
+        "a", "an", "the", "is", "are", "was", "were", "be", "been",
+        "to", "of", "in", "for", "on", "with", "and", "or", "at",
+        "by", "from", "as", "that", "this", "it", "its", "i", "you",
+        "we", "they", "he", "she", "my", "your", "our", "their",
+    }
+)
+
+
+def _tokenize_for_grounding(text: str) -> set[str]:
+    """Extract normalized word tokens, excluding stop words."""
+    tokens = re.findall(r"\b[a-zA-Z]{3,}\b", text.lower())
+    return {t for t in tokens if t not in _STOP_WORDS}
+
+
+def _overlap_ratio(tokens_a: set[str], tokens_b: set[str]) -> float:
+    """Jaccard-like overlap: intersection / min(|a|, |b|)."""
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    return len(intersection) / min(len(tokens_a), len(tokens_b))
+
+
+def verify_response_provenance(
+    model_response: str,
+    context: Context,
+    directive_segment_indices: frozenset[int] = frozenset(),
+    untrusted_threshold: TrustLevel = TrustLevel.TOOL,
+    overlap_threshold: float = 0.3,
+) -> ProvenanceVerificationResult:
+    """Verify that model response claims are grounded in trusted context.
+
+    Token-overlap grounding: each response sentence is mapped to its
+    most likely source segment, and claims grounded in untrusted
+    segments that were also flagged as directive content are tainted.
+
+    This function moved here from the deleted
+    ``tessera.claim_provenance`` module in Wave 2L. The behavior is
+    unchanged; only the import path moved. Callers should switch to
+    ``tessera.worker.recovery.verify_response_provenance``.
+    """
+    segment_tokens = [
+        _tokenize_for_grounding(seg.content) for seg in context.segments
+    ]
+    raw_sentences = re.split(r"[.!?]+", model_response)
+    sentences = [s.strip() for s in raw_sentences if len(s.split()) >= 4]
+
+    tainted: list[ClaimGrounding] = []
+    clean: list[ClaimGrounding] = []
+
+    for sentence in sentences:
+        claim_tokens = _tokenize_for_grounding(sentence)
+        if not claim_tokens:
+            continue
+        grounding_indices: list[int] = []
+        best_overlap = 0.0
+        for i, seg_tokens in enumerate(segment_tokens):
+            ov = _overlap_ratio(claim_tokens, seg_tokens)
+            if ov >= overlap_threshold:
+                grounding_indices.append(i)
+                best_overlap = max(best_overlap, ov)
+        if not grounding_indices:
+            clean.append(
+                ClaimGrounding(
+                    claim=sentence,
+                    segment_indices=(),
+                    min_trust=TrustLevel.SYSTEM,
+                    overlap_score=0.0,
+                    from_directive_segment=False,
+                )
+            )
+            continue
+        dominant_idx = max(
+            grounding_indices,
+            key=lambda i: _overlap_ratio(claim_tokens, segment_tokens[i]),
+        )
+        dominant_trust = context.segments[dominant_idx].label.trust_level
+        dominant_is_directive = dominant_idx in directive_segment_indices
+        min_trust = min(
+            context.segments[i].label.trust_level for i in grounding_indices
+        )
+        from_directive = any(
+            i in directive_segment_indices for i in grounding_indices
+        )
+        is_tainted = (
+            dominant_trust < untrusted_threshold and dominant_is_directive
+        )
+        grounding = ClaimGrounding(
+            claim=sentence,
+            segment_indices=tuple(grounding_indices),
+            min_trust=min_trust,
+            overlap_score=best_overlap,
+            from_directive_segment=from_directive,
+        )
+        if is_tainted:
+            tainted.append(grounding)
+        else:
+            clean.append(grounding)
+
+    total = len(tainted) + len(clean)
+    score = len(tainted) / total if total > 0 else 0.0
+    return ProvenanceVerificationResult(
+        tainted_claims=tuple(tainted),
+        clean_claims=tuple(clean),
+        tainted=bool(tainted),
+        score=score,
+    )
+
+
 def from_claim_provenance(
     model_response: str,
     context: Context,
     **kwargs: Any,
-) -> Any:
-    """Deprecated shim re-exporting :func:`tessera.claim_provenance.verify_response_provenance`.
+) -> ProvenanceVerificationResult:
+    """Stable alias for :func:`verify_response_provenance`.
 
-    Use :func:`field_provenance_recovery` for new code. This shim is
-    scheduled for deletion in Phase 2 wave 2L per the
-    v0.12 to v1.0 plan.
-
-    The legacy function grounded *response* sentences by token
-    overlap; the new function grounds *report fields* by literal
-    substring matching. The two operate on different data and
-    serve different purposes; the rename here is for API
-    consolidation, not behavioral equivalence.
+    Wave 2L absorbed the legacy ``tessera.claim_provenance`` module
+    into this one. This alias keeps any caller that grepped for the
+    historic name working without a deprecation warning, since the
+    name now lives at a permanent address.
     """
-    warnings.warn(
-        "tessera.worker.recovery.from_claim_provenance is a deprecated "
-        "shim around tessera.claim_provenance.verify_response_provenance. "
-        "Use field_provenance_recovery for Worker report fields, or call "
-        "tessera.claim_provenance.verify_response_provenance directly. "
-        "Removed in v0.13 (Phase 2 wave 2L).",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from tessera.claim_provenance import verify_response_provenance
-
     return verify_response_provenance(model_response, context, **kwargs)
 
 
 __all__ = [
+    "ClaimGrounding",
     "FieldRecovery",
+    "ProvenanceVerificationResult",
     "RecoveryResult",
     "field_provenance_recovery",
     "from_claim_provenance",
+    "verify_response_provenance",
 ]
