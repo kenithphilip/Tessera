@@ -220,10 +220,32 @@ def _build_upstream_statement(raw: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"failed to decode upstream DSSE payload: {exc}") from exc
 
     # Case 2: synthesise a minimal Statement from bare upstream fields.
-    server_uri = raw.get("serverUri") or raw.get("server_uri") or ""
+    # Accept three shapes:
+    #   {"serverUri": "..."}                              <- Tessera native
+    #   {"server_uri": "..."}                             <- snake-case
+    #   {"server": {"name": "...", "version": "..."}}     <- official
+    #                                                        registry.modelcontextprotocol.io
+    nested = raw.get("server") if isinstance(raw.get("server"), dict) else None
+    server_uri = (
+        raw.get("serverUri")
+        or raw.get("server_uri")
+        or (nested.get("name") if nested else None)
+        or ""
+    )
     if not server_uri:
-        raise ValueError("upstream manifest missing serverUri")
-    issued_at = raw.get("issuedAt") or raw.get("issued_at") or _utcnow()
+        raise ValueError("upstream manifest missing serverUri / server.name")
+    # Composite versioned id keeps multiple versions of the same server
+    # distinguishable in the OCI tag namespace.
+    if nested and nested.get("version") and ":" not in server_uri:
+        server_uri = f"{server_uri}:{nested['version']}"
+    issued_at = (
+        raw.get("issuedAt")
+        or raw.get("issued_at")
+        or ((raw.get("_meta") or {}).get(
+            "io.modelcontextprotocol.registry/official", {}
+        ).get("publishedAt"))
+        or _utcnow()
+    )
     issuer = raw.get("issuer", "https://tessera.dev/mirror")
     resource_indicator = raw.get("resourceIndicator") or raw.get("resource_indicator") or server_uri
     tier = raw.get("tesseraTrustTier") or raw.get("tessera_trust_tier") or "community"
@@ -375,29 +397,95 @@ class RegistryMirror:
     def fetch_upstream(self) -> list[dict[str, Any]]:
         """Fetch the manifest list from the upstream registry.
 
-        Tries ``GET {upstream_url}/manifests`` first; falls back to
-        ``GET {upstream_url}`` when the ``/manifests`` path returns a
-        non-200 response. This accommodates both the official registry
-        API and simple static JSON hosts.
+        Probes endpoints in this order:
+
+        1. ``GET {upstream_url}/v0/servers`` (paginated). Matches the
+           official registry at ``registry.modelcontextprotocol.io``
+           which returns ``{"servers": [...], "metadata":
+           {"nextCursor": ...}}`` and follows ``nextCursor`` until the
+           upstream stops returning one.
+        2. ``GET {upstream_url}/manifests`` for legacy / Tessera-shaped
+           registries.
+        3. ``GET {upstream_url}`` as a final fallback for static JSON
+           hosts that publish a single document.
 
         Returns:
-            A list of raw manifest dicts. Each dict may be either a DSSE
-            envelope or a bare record with at least a ``serverUri`` key.
+            A list of raw upstream records. Each record may be a DSSE
+            envelope, a bare ``serverUri`` document, or the
+            ``{"server": {...}}`` shape used by the official registry.
 
         Raises:
             httpx.HTTPError: On transport failure.
-            ValueError: When the response body is not valid JSON or is not
-                a list or wrapping object.
+            ValueError: When every probe returns a non-JSON or
+                otherwise unusable response.
         """
+        # Probe 1: official registry /v0/servers with pagination.
+        servers = self._fetch_v0_servers()
+        if servers is not None:
+            return servers
+
+        # Probe 2: Tessera-shaped /manifests.
         resp = httpx.get(f"{self._upstream_url}/manifests", timeout=15.0)
-        if resp.status_code == 404:
-            resp = httpx.get(self._upstream_url, timeout=15.0)
+        if resp.status_code != 404:
+            resp.raise_for_status()
+            return self._coerce_list(resp)
+
+        # Probe 3: root URL (static JSON document).
+        resp = httpx.get(self._upstream_url, timeout=15.0)
         resp.raise_for_status()
+        try:
+            return self._coerce_list(resp)
+        except ValueError as exc:
+            ctype = resp.headers.get("content-type", "?")
+            raise ValueError(
+                f"upstream registry returned no recognised endpoint: "
+                f"/v0/servers, /manifests, and / all failed. "
+                f"Root content-type={ctype}. Last decode error: {exc}"
+            ) from exc
+
+    def _fetch_v0_servers(self) -> list[dict[str, Any]] | None:
+        """Drive the paginated /v0/servers endpoint to completion.
+
+        Returns ``None`` when the endpoint is not present (404 on the
+        first call), otherwise the full concatenated server list.
+        """
+        servers: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, str] = {"limit": "100"}
+            if cursor:
+                params["cursor"] = cursor
+            resp = httpx.get(
+                f"{self._upstream_url}/v0/servers",
+                params=params,
+                timeout=15.0,
+            )
+            if resp.status_code == 404 and not servers:
+                return None
+            resp.raise_for_status()
+            payload = resp.json()
+            page = payload.get("servers") if isinstance(payload, dict) else None
+            if not isinstance(page, list):
+                return None
+            servers.extend(page)
+            cursor = (payload.get("metadata") or {}).get("nextCursor")
+            if not cursor:
+                break
+        return servers
+
+    @staticmethod
+    def _coerce_list(resp: httpx.Response) -> list[dict[str, Any]]:
+        """Decode an httpx response into a list of upstream records.
+
+        Accepts either a JSON list at the root, or a wrapping object
+        whose value at ``manifests`` / ``items`` / ``entries`` / ``data``
+        / ``servers`` is the list.
+        """
         data = resp.json()
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
-            for key in ("manifests", "items", "entries", "data"):
+            for key in ("manifests", "items", "entries", "data", "servers"):
                 if isinstance(data.get(key), list):
                     return data[key]
         raise ValueError(
