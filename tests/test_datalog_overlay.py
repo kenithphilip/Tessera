@@ -177,18 +177,19 @@ def test_engine_explicit_python_backend() -> None:
     assert engine is not None
 
 
-def test_engine_ascent_backend_raises_when_missing() -> None:
-    pytest.importorskip("packaging")
-    try:
-        import ascent  # noqa: F401
+def test_engine_pydatalog_backend_raises_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When pyDatalog is not importable, asking for it raises with a
+    clear pip-install hint."""
+    import sys
 
-        pytest.skip("ascent IS installed; test only runs without it")
-    except ImportError:
-        pass
-    with pytest.raises(RuntimeError, match="ascent"):
+    # Hide both the real module and its alias so the import attempt fails.
+    monkeypatch.setitem(sys.modules, "pyDatalog", None)
+    with pytest.raises(RuntimeError, match="pyDatalog"):
         DatalogPolicyEngine(
             rules_source='Edge("a","b").',
-            backend="ascent",
+            backend="pydatalog",
         )
 
 
@@ -216,3 +217,94 @@ def test_transitive_closure() -> None:
 def test_atom_is_ground() -> None:
     assert Atom("R", ("a", "b")).is_ground()
     assert not Atom("R", ("a", "X")).is_ground()
+
+
+# ---------------------------------------------------------------------------
+# Stratified negation correctness (audit gap 2)
+# ---------------------------------------------------------------------------
+
+
+def test_stratified_negation_canonical_example() -> None:
+    """Stratified negation: rule body !P fires only after P stratum
+    is fully derived. Canonical "win/lose" game-theory example."""
+    src = '''
+    Move("a", "b").
+    Move("b", "c").
+    Move("c", "d").
+    Win(X) :- Move(X, Y), !Win(Y).
+    '''
+    engine = DatalogPolicyEngine(rules_source=src)
+    g = CallGraph()
+    backend = type(engine._backend)()
+    for rule in engine.rules:
+        backend.add_rule(rule)
+    backend.add_fact("Move", "a", "b")
+    backend.add_fact("Move", "b", "c")
+    backend.add_fact("Move", "c", "d")
+    relations = backend.evaluate()
+    wins = relations.get("Win", set())
+    # In the canonical game: a position wins if you can move to a
+    # losing position. From d there are no moves, so d loses; c can
+    # move to d (loses), so c wins; b can move to c (wins), so b
+    # has no winning move, so b loses; a can move to b (loses), so
+    # a wins. Expected wins: {a, c}.
+    assert ("a",) in wins
+    assert ("c",) in wins
+    assert ("b",) not in wins
+
+
+def test_negation_does_not_re_enable_after_strat_complete() -> None:
+    """Once the positive stratum closes, a !X check is monotone."""
+    src = '''
+    Banned("evil").
+    Allow(X) :- Tool(X), !Banned(X).
+    '''
+    engine = DatalogPolicyEngine(rules_source=src)
+    backend = type(engine._backend)()
+    for rule in engine.rules:
+        backend.add_rule(rule)
+    backend.add_fact("Tool", "evil")
+    backend.add_fact("Tool", "good")
+    relations = backend.evaluate()
+    allowed = relations.get("Allow", set())
+    assert ("good",) in allowed
+    assert ("evil",) not in allowed
+
+
+# ---------------------------------------------------------------------------
+# pyDatalog backend (audit gap 1)
+# ---------------------------------------------------------------------------
+
+
+def test_pydatalog_backend_evaluates_simple_rule() -> None:
+    """The optional pyDatalog backend produces the same shape as
+    the in-tree evaluator on a simple rule."""
+    pytest = __import__("pytest")
+    pytest.importorskip("pyDatalog")
+    src = '''
+    Edge("a", "b").
+    Edge("b", "c").
+    Path(X, Y) :- Edge(X, Y).
+    '''
+    engine = DatalogPolicyEngine(rules_source=src, backend="pydatalog")
+    g = CallGraph()
+    denies = engine.evaluate(g)
+    assert denies == []  # no Deny rule
+
+
+def test_pydatalog_backend_alias_ascent() -> None:
+    """The legacy spec name 'ascent' aliases to pydatalog."""
+    pytest = __import__("pytest")
+    pytest.importorskip("pyDatalog")
+    e = DatalogPolicyEngine(rules_source='Edge("a","b").', backend="ascent")
+    assert e is not None
+
+
+def test_auto_backend_picks_pydatalog_when_available() -> None:
+    """auto picks pyDatalog when importable."""
+    pytest = __import__("pytest")
+    pytest.importorskip("pyDatalog")
+    from tessera.policy.datalog import _PyDatalogBackend
+
+    e = DatalogPolicyEngine(rules_source='Edge("a","b").', backend="auto")
+    assert isinstance(e._backend, _PyDatalogBackend)

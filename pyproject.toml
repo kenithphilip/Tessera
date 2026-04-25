@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-mesh"
-version = "0.14.0"
+version = "0.14.1"
 description = "Signed provenance labels and taint-tracking policy for LLM context windows."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -89,6 +89,14 @@ guardrail = [
 ]
 guardrail-openai = [
     "openai>=1.0",
+]
+datalog = [
+    # Phase 3 wave 3A: pure-Python Datalog with stratified negation.
+    # The default DatalogPolicyEngine ships an in-tree evaluator;
+    # this extra installs pyDatalog for higher-throughput rule sets.
+    # The spec called for "ascent", a Rust crate; pyDatalog is the
+    # established Python equivalent (PyPI, MIT-licensed).
+    "pyDatalog>=0.17",
 ]
 
 [project.scripts]

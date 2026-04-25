@@ -60,13 +60,16 @@ impl HashChainedAuditSink {
     /// Append an event and return the resulting entry hash.
     pub fn append(&mut self, event: AuditEvent) -> Result<[u8; 32], SinkError> {
         self.sequence += 1;
-        let canonical = serde_json::to_vec(&serde_json::json!({
+        // Reuse tessera-audit's canonical-JSON helper so this plugin
+        // and the in-tree audit log produce identical hashes.
+        let payload = serde_json::json!({
             "sequence": self.sequence,
             "previous_hash": hex::encode_lower(self.last_hash),
             "event": &event,
-        }))?;
+        });
+        let canonical = tessera_audit::canonical_json(&payload);
         let mut hasher = Sha256::new();
-        hasher.update(&canonical);
+        hasher.update(canonical.as_bytes());
         let digest = hasher.finalize();
         let mut entry_hash = [0u8; 32];
         entry_hash.copy_from_slice(&digest);
@@ -88,16 +91,14 @@ impl HashChainedAuditSink {
             if entry.previous_hash != expected_prev {
                 return false;
             }
-            let canonical = match serde_json::to_vec(&serde_json::json!({
+            let payload = serde_json::json!({
                 "sequence": entry.sequence,
                 "previous_hash": hex::encode_lower(entry.previous_hash),
                 "event": &entry.event,
-            })) {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
+            });
+            let canonical = tessera_audit::canonical_json(&payload);
             let mut hasher = Sha256::new();
-            hasher.update(&canonical);
+            hasher.update(canonical.as_bytes());
             let digest = hasher.finalize();
             let mut computed = [0u8; 32];
             computed.copy_from_slice(&digest);

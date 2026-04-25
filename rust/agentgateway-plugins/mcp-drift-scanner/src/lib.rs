@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 
+// Audit gap 4: re-export tessera-core's Origin so SOC analysts can
+// classify each drift alert by the segment origin without
+// importing tessera-core directly.
+pub use tessera_core::Origin as TesseraOrigin;
+
 /// One observed response sample.
 #[derive(Debug, Clone)]
 pub struct Observation {
