@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tessera-mesh
+  namespace: tessera-mesh
+  labels:
+    app.kubernetes.io/name: tessera-mesh
+    app.kubernetes.io/version: "0.13.0"
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    tessera.dev/version: "0.13.0"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tessera-mesh
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow intra-pod traffic only (agent-app to tessera-mesh sidecar).
+    # NetworkPolicy cannot restrict localhost; this rule documents the intent
+    # and is forward-compatible with ambient-mesh per-container enforcement.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tessera-mesh
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    # Kubernetes DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # OTel collector in the observability namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 4317

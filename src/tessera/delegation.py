@@ -5,6 +5,25 @@ principal delegated a bounded set of actions to one agent for one
 audience and session until a specific expiry time. This module provides
 the v0 symmetric signing path via HMAC-SHA256 so the proxy and policy
 layer can fail closed before richer OAuth or JWT-based profiles land.
+
+WIMSE alignment (Wave 2I -- draft-klrc-aiagent-auth):
+
+Three optional fields are added to ``DelegationToken``:
+
+- ``mcp_audiences``: frozenset of MCP server audiences this delegation
+  covers.  Corresponds to the ``mcp_audiences`` extension claim in
+  draft-klrc-aiagent-auth.
+- ``allowed_tools``: frozenset of tool names the agent may invoke.
+  Corresponds to ``allowed_tools``.
+- ``sensitivity_ceiling``: maximum ``SecrecyLevel`` the delegated agent
+  may process.  Corresponds to ``sensitivity_ceiling``.
+
+Migration contract: all three fields default to their empty/None values.
+A token produced by code that predates this wave will verify under the
+new code unchanged because the canonical form is extended only when the
+new fields are non-empty (same principle as the existing ``authorized_actions``
+and ``constraints`` fields).  Existing callers that do not pass the new
+fields continue to produce bit-identical canonical bytes and signatures.
 """
 
 from __future__ import annotations
@@ -15,6 +34,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
+
+from tessera.taint.label import SecrecyLevel
 
 
 def _utc(value: datetime) -> datetime:
@@ -32,6 +53,20 @@ class DelegationToken:
     audience, authorized actions, constraints, session identifier, and
     expiry. Verification also enforces expiry and, when supplied, the
     expected audience.
+
+    WIMSE alignment fields (draft-klrc-aiagent-auth, Wave 2I):
+
+    These three optional fields extend the canonical form only when
+    non-empty, preserving bit-identical signatures for tokens produced
+    before this version.
+
+    Args:
+        mcp_audiences: Frozenset of MCP server audiences the agent may
+            reach under this delegation.  Empty by default.
+        allowed_tools: Frozenset of tool names the agent may invoke.
+            Empty by default.
+        sensitivity_ceiling: Maximum ``SecrecyLevel`` the agent may
+            process.  ``None`` by default (no ceiling).
     """
 
     subject: str
@@ -42,10 +77,23 @@ class DelegationToken:
     session_id: str = ""
     expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     signature: str = ""
+    # WIMSE alignment fields -- added Wave 2I.  Must come after all existing
+    # fields so that positional construction of old tokens is unaffected.
+    mcp_audiences: frozenset[str] = field(default_factory=frozenset)
+    allowed_tools: frozenset[str] = field(default_factory=frozenset)
+    sensitivity_ceiling: SecrecyLevel | None = field(default=None)
 
     def canonical(self) -> bytes:
-        """Return the deterministic bytes covered by the signature."""
-        payload = {
+        """Return the deterministic bytes covered by the signature.
+
+        The core fields are always included.  The three WIMSE extension fields
+        (``mcp_audiences``, ``allowed_tools``, ``sensitivity_ceiling``) are
+        appended to the payload only when they hold non-default values.  This
+        ensures that tokens produced without the new fields produce the same
+        canonical bytes as tokens where the new fields are at their defaults,
+        preserving backwards-compatible verification.
+        """
+        payload: dict[str, Any] = {
             "subject": self.subject,
             "delegate": self.delegate,
             "audience": self.audience,
@@ -54,6 +102,14 @@ class DelegationToken:
             "session_id": self.session_id,
             "expires_at": _utc(self.expires_at).isoformat(),
         }
+        # Extend canonical form only when WIMSE fields are non-empty / non-None,
+        # keeping signatures from pre-Wave-2I tokens bit-identical.
+        if self.mcp_audiences:
+            payload["mcp_audiences"] = sorted(self.mcp_audiences)
+        if self.allowed_tools:
+            payload["allowed_tools"] = sorted(self.allowed_tools)
+        if self.sensitivity_ceiling is not None:
+            payload["sensitivity_ceiling"] = int(self.sensitivity_ceiling)
         return json.dumps(
             payload,
             sort_keys=True,
@@ -161,6 +217,11 @@ def verify_delegation(
 
     Verification fails closed for missing signatures, wrong keys, expired
     tokens, tampered fields, or audience mismatches.
+
+    Tokens produced before Wave 2I (without ``mcp_audiences``,
+    ``allowed_tools``, or ``sensitivity_ceiling``) verify correctly here
+    because their canonical form is byte-identical to a token where all
+    three fields hold their default values.
     """
     if not token.signature:
         return False
@@ -170,3 +231,12 @@ def verify_delegation(
         return False
     expected = hmac.new(key, token.canonical(), sha256).hexdigest()
     return hmac.compare_digest(expected, token.signature)
+
+
+__all__ = [
+    "DelegationToken",
+    "DelegationNarrowingViolation",
+    "narrow_delegation",
+    "sign_delegation",
+    "verify_delegation",
+]

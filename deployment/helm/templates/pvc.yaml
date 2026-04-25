@@ -1,0 +1,21 @@
+{{- if .Values.auditLog.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tessera-mesh.fullname" . }}-audit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tessera-mesh.labels" . | nindent 4 }}
+  annotations:
+    tessera.dev/version: {{ .Chart.AppVersion | quote }}
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.auditLog.storageClass }}
+  storageClassName: {{ .Values.auditLog.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.auditLog.size }}
+{{- end }}

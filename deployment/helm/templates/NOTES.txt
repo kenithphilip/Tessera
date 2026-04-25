@@ -1,0 +1,31 @@
+tessera-mesh {{ .Chart.AppVersion }} deployed to namespace {{ .Release.Namespace }}.
+
+Sidecar proxy endpoint (in-cluster):
+  https://{{ include "tessera-mesh.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Point your agent application at http://localhost:{{ .Values.service.port }} to route
+tool calls through the Tessera policy engine.
+
+IMPORTANT: The agent-app container in the Deployment is a placeholder (busybox).
+Replace it with your actual agent image before running in production:
+
+  helm upgrade {{ .Release.Name }} tessera/tessera-mesh \
+    --set image.repository=ghcr.io/kenithphilip/tessera-mesh \
+    --set image.tag={{ .Chart.AppVersion }}
+
+Signing keys:
+{{- if .Values.signing.existingSecret }}
+  Using pre-existing Secret: {{ .Values.signing.existingSecret }}
+{{- else }}
+  WARNING: Using chart-managed Secret stub. Rotate or replace before production.
+  See deployment/argocd/README.md for secrets-store CSI driver integration.
+{{- end }}
+
+Audit log PVC:
+{{- if .Values.auditLog.enabled }}
+  {{ include "tessera-mesh.fullname" . }}-audit ({{ .Values.auditLog.size }})
+{{- else }}
+  Disabled. Enable with --set auditLog.enabled=true
+{{- end }}
+
+Reference: https://github.com/kenithphilip/Tessera

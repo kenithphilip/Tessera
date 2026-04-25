@@ -1,0 +1,75 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tessera-mesh
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: tessera-mesh
+    app.kubernetes.io/version: "0.13.0"
+  annotations:
+    tessera.dev/version: "0.13.0"
+spec:
+  generators:
+    - list:
+        elements:
+          # Add one entry per cluster. The "server" value must match the
+          # cluster URL registered with ArgoCD (argocd cluster list).
+          - name: prod-us-east
+            server: https://prod-us-east.k8s.example.internal
+            env: production
+          - name: prod-eu-west
+            server: https://prod-eu-west.k8s.example.internal
+            env: production
+          - name: staging
+            server: https://staging.k8s.example.internal
+            env: staging
+  template:
+    metadata:
+      name: "tessera-mesh-{{name}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: tessera-mesh
+        app.kubernetes.io/version: "0.13.0"
+        tessera.dev/cluster: "{{name}}"
+        tessera.dev/env: "{{env}}"
+      annotations:
+        tessera.dev/version: "0.13.0"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/kenithphilip/Tessera
+        targetRevision: HEAD
+        path: deployment/helm
+        helm:
+          releaseName: tessera-mesh
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: signing.existingSecret
+              value: tessera-mesh-signing
+      destination:
+        server: "{{server}}"
+        namespace: tessera-mesh
+      syncPolicy:
+        automated:
+          # prune: false in production to avoid accidental resource deletion.
+          # Enable prune only after verifying the ApplicationSet diff manually.
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+      ignoreDifferences:
+        - group: ""
+          kind: Secret
+          name: tessera-mesh-signing
+          jsonPointers:
+            - /data

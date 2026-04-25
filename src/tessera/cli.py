@@ -45,6 +45,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tessera")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    bench = sub.add_parser("bench", help="evaluation and attestation toolchain")
+    bench.add_argument(
+        "bench_args",
+        nargs=argparse.REMAINDER,
+        help="sub-command and arguments forwarded to tessera.evaluate.cli",
+    )
+
     serve = sub.add_parser("serve", help="run the Tessera proxy")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8080)
@@ -272,6 +279,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    if args.cmd == "bench":
+        from tessera.evaluate.cli import main as bench_main
+
+        return bench_main(args.bench_args or [])
     if args.cmd == "control-plane":
         if not args.auth_token and not args.allow_unauthenticated:
             print(

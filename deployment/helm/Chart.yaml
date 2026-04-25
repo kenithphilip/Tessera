@@ -1,0 +1,19 @@
+apiVersion: v2
+name: tessera-mesh
+description: AgentMesh proxy + Tessera primitives library as a sidecar next to the agent runtime.
+type: application
+version: 0.1.0
+appVersion: "0.13.0"
+keywords:
+  - agent-security
+  - llm
+  - prompt-injection
+  - tessera
+home: https://github.com/kenithphilip/Tessera
+sources:
+  - https://github.com/kenithphilip/Tessera
+maintainers:
+  - name: Kenith Philip
+    url: https://github.com/kenithphilip
+annotations:
+  tessera.dev/version: "0.13.0"

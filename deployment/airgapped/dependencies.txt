@@ -1,0 +1,35 @@
+# Tessera-mesh air-gapped dependency manifest
+# Version: 0.13.0
+# Generated: 2026-04-25
+#
+# All SHA256 digests are marked TODO. Verify against the upstream registry
+# before mirroring. Do not mirror artifacts whose digests you have not
+# independently verified.
+#
+# Format: <registry>/<repository>:<tag> sha256:<digest>
+#
+# Fetch current digests with:
+#   crane digest <image>
+# or:
+#   docker manifest inspect --verbose <image> | jq '.[].Descriptor.digest'
+
+# Tessera-mesh proxy
+ghcr.io/kenithphilip/tessera-mesh:0.13.0 sha256:TODO_VERIFY_BEFORE_MIRROR
+
+# Base runtime image used by tessera-mesh (update to match actual Dockerfile)
+python:3.12-slim sha256:TODO_VERIFY_BEFORE_MIRROR
+
+# Agent placeholder (busybox; replace with your agent image in production)
+busybox:stable sha256:TODO_VERIFY_BEFORE_MIRROR
+
+# SPIRE server
+ghcr.io/spiffe/spire-server:1.9.4 sha256:TODO_VERIFY_BEFORE_MIRROR
+
+# SPIRE agent
+ghcr.io/spiffe/spire-agent:1.9.4 sha256:TODO_VERIFY_BEFORE_MIRROR
+
+# OTel collector (optional; remove if using a different telemetry backend)
+otel/opentelemetry-collector-contrib:0.98.0 sha256:TODO_VERIFY_BEFORE_MIRROR
+
+# Helm chart OCI artifact (optional; skip if distributing the chart as a tarball)
+# oci://ghcr.io/kenithphilip/charts/tessera-mesh:0.1.0 sha256:TODO_VERIFY_BEFORE_MIRROR

@@ -27,6 +27,8 @@ dev = [
     "grpcio>=1.70",
     "grpcio-tools>=1.70",
     "protobuf>=4.25",
+    "jsonschema>=4.21",
+    "pyyaml>=6.0",
 ]
 otel = [
     "opentelemetry-api>=1.25",

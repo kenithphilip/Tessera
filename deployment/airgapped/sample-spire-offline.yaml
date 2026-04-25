@@ -1,0 +1,70 @@
+# sample-spire-offline.yaml
+# SPIRE server configuration for a fully offline (air-gapped) deployment.
+#
+# Key differences from a connected deployment:
+#   - telemetry disabled (no Prometheus/OTel scrape endpoints)
+#   - UpstreamAuthority uses the disk plugin with a self-signed CA
+#   - No federation with external SPIRE deployments
+#   - jwt_key_type and ca_key_type use P-256 for FIPS-friendly key generation
+#
+# Replace CLUSTER_NAME and the CA cert/key paths before use.
+# This file is a server config (HCL-like syntax rendered as YAML for reference).
+# The actual SPIRE server consumes HCL; convert with:
+#   yq -o=json sample-spire-offline.yaml | ... (adapt as needed)
+
+server:
+  bind_address: "0.0.0.0"
+  bind_port: "8081"
+  socket_path: "/tmp/spire-server/private/api.sock"
+  trust_domain: "tessera-mesh.example.internal"
+  data_dir: "/var/lib/spire/server/data"
+  log_level: "INFO"
+  # Disable all telemetry endpoints in air-gapped environments.
+  log_format: "text"
+  jwt_key_type: "ec-p256"
+  ca_key_type: "ec-p256"
+  ca_ttl: "24h"
+  default_x509_svid_ttl: "1h"
+  default_jwt_svid_ttl: "5m"
+
+plugins:
+  DataStore:
+    - sql:
+        plugin_data:
+          database_type: sqlite3
+          connection_string: "/var/lib/spire/server/data/datastore.sqlite3"
+
+  KeyManager:
+    - disk:
+        plugin_data:
+          keys_path: "/var/lib/spire/server/data/keys.json"
+
+  NodeAttestor:
+    - k8s_psat:
+        plugin_data:
+          clusters:
+            CLUSTER_NAME:
+              service_account_allow_list:
+                - "tessera-mesh:tessera-mesh"
+              kube_config_file: ""
+              allowed_node_label_keys: []
+              allowed_pod_label_keys: []
+
+  UpstreamAuthority:
+    # Self-signed CA for air-gapped mode. In connected deployments, replace
+    # this with the vault or cert-manager plugin.
+    - disk:
+        plugin_data:
+          cert_file_path: "/var/lib/spire/server/ca/root-cert.pem"
+          key_file_path: "/var/lib/spire/server/ca/root-key.pem"
+
+health_checks:
+  listener_enabled: true
+  bind_address: "0.0.0.0"
+  bind_port: "8080"
+  live_path: "/live"
+  ready_path: "/ready"
+
+# Telemetry disabled: no Prometheus, no Statsd, no OTel export.
+# Remove or adjust if your air-gapped environment has an internal telemetry sink.
+telemetry: {}

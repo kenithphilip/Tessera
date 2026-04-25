@@ -1,0 +1,304 @@
+# Tessera Security Attestation Schema v1
+#
+# FROZEN under Tessera v0.12 plan Wave 2G. Do not modify without a version bump
+# to predicateType. Schema changes during the v0.13 minor line break existing
+# verifiers.
+#
+# Wire format: in-toto Statement v1 wrapping a Tessera-specific predicate.
+# Signing envelope: DSSE. Default signer: Sigstore Fulcio + Rekor.
+# Alternative for air-gapped deployments: HMAC-SHA256 over canonical JSON.
+#
+# References:
+#   in-toto Statement v1: https://in-toto.io/Statement/v1
+#   DSSE: https://github.com/secure-systems-lab/dsse
+#   Sigstore: https://docs.sigstore.dev/
+
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "https://tessera.dev/schemas/security-attestation/v1.json"
+title: "Tessera Security Attestation"
+description: >
+  in-toto Statement v1 wrapping a Tessera security-attestation predicate.
+  One attestation is emitted per release; it captures benchmark results,
+  scanner evaluation metrics, audit summary, and compliance taxonomy coverage.
+  Frozen 2026-04-25 under Tessera v0.12 plan Wave 2G.
+type: object
+required:
+  - _type
+  - subject
+  - predicateType
+  - predicate
+additionalProperties: false
+properties:
+  _type:
+    type: string
+    const: "https://in-toto.io/Statement/v1"
+    description: in-toto Statement v1 type URI.
+  subject:
+    type: array
+    minItems: 1
+    description: >
+      Artifacts this attestation applies to. Typically the Tessera release
+      wheel and/or an AgentMesh OCI image digest.
+    items:
+      type: object
+      required:
+        - name
+        - digest
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: >
+            Artifact identifier. For a Python wheel: "tessera_mesh-X.Y.Z-py3-none-any.whl".
+            For an OCI image: the registry URI with tag.
+        digest:
+          type: object
+          required:
+            - sha256
+          additionalProperties:
+            type: string
+          properties:
+            sha256:
+              type: string
+              pattern: "^[0-9a-f]{64}$"
+              description: Lowercase hex SHA-256 of the artifact.
+  predicateType:
+    type: string
+    const: "https://tessera.dev/security-attestation/v1"
+    description: Tessera security-attestation predicate type URI.
+  predicate:
+    type: object
+    required:
+      - tessera_version
+      - attestation_id
+      - generated_at
+      - claims
+      - benchmarks
+      - mcp_security_score
+      - audit_summary
+      - compliance_taxonomies
+      - principles_revision
+    additionalProperties: false
+    properties:
+      tessera_version:
+        type: string
+        description: >
+          SemVer string for the Tessera release this attestation covers,
+          e.g. "0.12.0".
+      attestation_id:
+        type: string
+        description: UUIDv4 that uniquely identifies this attestation instance.
+      generated_at:
+        type: string
+        format: date-time
+        description: ISO-8601 UTC timestamp at which this attestation was generated.
+      claims:
+        type: array
+        description: >
+          Human-readable security claims backed by evidence. Each claim
+          binds a statement to one or more content-addressable evidence
+          pointers so verifiers can fetch and re-check the evidence.
+        items:
+          type: object
+          required:
+            - id
+            - statement
+            - evidence_refs
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              description: >
+                Short slug identifying the claim, e.g.
+                "taint-propagation-completeness" or "worker-schema-enforcement".
+            statement:
+              type: string
+              description: Plain-English claim statement.
+            evidence_refs:
+              type: array
+              description: Content-addressable pointers to supporting evidence.
+              items:
+                type: object
+                required:
+                  - uri
+                  - sha256
+                additionalProperties: false
+                properties:
+                  uri:
+                    type: string
+                    description: >
+                      URI at which the evidence can be fetched, e.g.
+                      "https://github.com/kenithphilip/Tessera/releases/download/v0.12.0/benchmark_agentdojo.json".
+                  sha256:
+                    type: string
+                    pattern: "^[0-9a-f]{64}$"
+                    description: SHA-256 of the evidence artifact at the time of attestation.
+      benchmarks:
+        type: object
+        description: >
+          Per-suite benchmark metrics. Keys are benchmark suite names.
+          Absent keys indicate the suite was not run for this release.
+        additionalProperties: false
+        properties:
+          agentdojo:
+            $ref: "#/definitions/agentDojoMetrics"
+          cyberseceval:
+            $ref: "#/definitions/cyberSecEvalMetrics"
+          scanner_eval:
+            $ref: "#/definitions/scannerEvalMetrics"
+      mcp_security_score:
+        type: object
+        description: >
+          Per-MCP-server security scores produced by the Tessera MCP
+          security evaluator. Keys are server URIs or display names.
+          Values are numeric scores in [0, 1] (1 = fully secure).
+        additionalProperties:
+          type: number
+          minimum: 0
+          maximum: 1
+      audit_summary:
+        type: object
+        description: >
+          High-level summary derived from the hash-chained audit log.
+          Provides a SIEM-consumable snapshot without embedding the full log.
+        required:
+          - event_counts_by_kind
+          - hash_chain_root
+          - sequence_count
+        additionalProperties: false
+        properties:
+          event_counts_by_kind:
+            type: object
+            description: Map of SecurityEvent.kind string to occurrence count.
+            additionalProperties:
+              type: integer
+              minimum: 0
+          hash_chain_root:
+            type: string
+            description: >
+              SHA-256 of the last record in the audit log, or 64 zeros
+              (genesis) when no events were recorded.
+          sequence_count:
+            type: integer
+            minimum: 0
+            description: Total number of chained records in the audit log.
+      compliance_taxonomies:
+        type: object
+        description: >
+          The compliance taxonomies Tessera enriches. Each key is a
+          taxonomy identifier; each value indicates coverage status.
+        additionalProperties: false
+        properties:
+          NIST_CSF:
+            $ref: "#/definitions/taxonomyCoverage"
+          CWE:
+            $ref: "#/definitions/taxonomyCoverage"
+          OWASP_ASI:
+            $ref: "#/definitions/taxonomyCoverage"
+          MITRE_ATLAS:
+            $ref: "#/definitions/taxonomyCoverage"
+          EU_AI_Act:
+            $ref: "#/definitions/taxonomyCoverage"
+          ISO_42001:
+            $ref: "#/definitions/taxonomyCoverage"
+          CSA_AICM:
+            $ref: "#/definitions/taxonomyCoverage"
+          NIST_AI_600_1:
+            $ref: "#/definitions/taxonomyCoverage"
+      principles_revision:
+        type: integer
+        minimum: 1
+        description: >
+          Integer revision of the principles/v1.yaml document that
+          governs this attestation. Monotonically increasing.
+
+definitions:
+  agentDojoMetrics:
+    type: object
+    description: Metrics from an AgentDojo benchmark run.
+    additionalProperties: false
+    properties:
+      utility_accuracy:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Fraction of tasks completed correctly (UA).
+      attack_success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Fraction of injection attacks that succeeded (ASR, lower is better).
+      suite:
+        type: string
+        description: AgentDojo suite version or identifier.
+      run_id:
+        type: string
+        description: Opaque identifier for the benchmark run artifact.
+  cyberSecEvalMetrics:
+    type: object
+    description: Metrics from a CyberSecEval benchmark run.
+    additionalProperties: false
+    properties:
+      attack_success_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Fraction of prompt injection attacks that succeeded (lower is better).
+      average_pass_rate:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Fraction of benign prompts answered correctly (APR).
+      suite:
+        type: string
+        description: CyberSecEval suite version or identifier.
+      run_id:
+        type: string
+        description: Opaque identifier for the benchmark run artifact.
+  scannerEvalMetrics:
+    type: object
+    description: Metrics from the Tessera scanner evaluation harness.
+    additionalProperties: false
+    properties:
+      precision:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Scanner precision (P).
+      recall:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Scanner recall (R).
+      f1:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: Scanner F1 score.
+      roc_auc:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: ROC AUC for the scanner classifier.
+      run_id:
+        type: string
+        description: Opaque identifier for the scanner evaluation run artifact.
+  taxonomyCoverage:
+    type: object
+    description: Coverage status for a single compliance taxonomy.
+    required:
+      - covered
+    additionalProperties: false
+    properties:
+      covered:
+        type: boolean
+        description: >
+          True when Tessera emits enriched events that reference this taxonomy.
+      controls:
+        type: array
+        description: Specific control or control-family identifiers covered.
+        items:
+          type: string
+      notes:
+        type: string
+        description: Free-form notes on the coverage scope or limitations.

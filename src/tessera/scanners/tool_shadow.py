@@ -5,12 +5,15 @@ register a tool with the same (or nearly the same) name as a legitimate tool
 from a trusted server. The agent then calls the attacker's tool instead of
 the real one. This is a confused-deputy attack at the tool registration layer.
 
-Detection: compute edit distance between all tool names across servers.
-Flag pairs with distance <= 2 (configurable) that come from different servers.
-Distance 0 = identical name (direct shadow). Distance 1-2 = typosquatting.
+Two detection strategies:
 
-Edit distance is computed with the Levenshtein algorithm (iterative DP, O(mn)
-time). No ML required.
+1. Edit distance (Levenshtein) for typosquatting: flag pairs from different
+   servers with distance <= 2. No ML required.
+
+2. Semantic embedding similarity for synonym attacks: an attacker names a
+   tool "email_send" to shadow "send_email". Levenshtein distance is 6 but
+   cosine similarity on embedded names is near 1.0. Use semantic_similarity_risk
+   for this detection path.
 
 Source attribution: Agent Audit (rule AGENT-055).
 """
@@ -18,6 +21,7 @@ Source attribution: Agent Audit (rule AGENT-055).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,58 @@ def scan_cross_server_shadows(
         _emit_findings(result, principal)
 
     return result
+
+
+@dataclass(frozen=True)
+class ShadowRisk:
+    """One candidate pair flagged by semantic similarity."""
+
+    proposed: str
+    registered: str
+    similarity: float  # cosine similarity in [0, 1]
+
+
+def semantic_similarity_risk(
+    tool_name: str,
+    registered_tools: Iterable[str],
+    embedder: object = None,
+    threshold: float = 0.88,
+) -> list[ShadowRisk]:
+    """Detect tool shadowing via embedding cosine similarity.
+
+    Embeds the proposed tool name and each registered name, then flags
+    pairs whose cosine similarity exceeds threshold. This catches synonym
+    attacks that Levenshtein distance misses (e.g. "send_email" vs
+    "email_send").
+
+    Args:
+        tool_name: The proposed (potentially malicious) tool name.
+        registered_tools: Names already registered with the agent.
+        embedder: Callable (str) -> list[float]. If None, falls back to
+            tessera.mcp.embedding.get_embedder(). If that also returns
+            None (package not installed), returns an empty list.
+        threshold: Cosine similarity above which a pair is flagged.
+            Default 0.88 balances recall and precision on tool name sets.
+
+    Returns:
+        List of ShadowRisk, one per registered tool above threshold.
+        Empty list when no embedder is available or no pairs cross the
+        threshold.
+    """
+    from tessera.mcp.embedding import cosine_similarity, get_embedder
+
+    embed = embedder or get_embedder()
+    if embed is None:
+        return []
+
+    proposed_vec = embed(tool_name)
+    risks: list[ShadowRisk] = []
+    for registered in registered_tools:
+        registered_vec = embed(registered)
+        sim = cosine_similarity(proposed_vec, registered_vec)
+        if sim >= threshold:
+            risks.append(ShadowRisk(proposed=tool_name, registered=registered, similarity=sim))
+    return risks
 
 
 def _emit_findings(result: ShadowScanResult, principal: str) -> None:

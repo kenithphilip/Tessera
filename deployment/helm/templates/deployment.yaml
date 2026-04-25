@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tessera-mesh.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tessera-mesh.labels" . | nindent 4 }}
+  annotations:
+    tessera.dev/version: {{ .Chart.AppVersion | quote }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "tessera-mesh.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tessera-mesh.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+      annotations:
+        tessera.dev/version: {{ .Chart.AppVersion | quote }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "tessera-mesh.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "tessera-mesh.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.auditLog.enabled }}
+        - name: audit-log
+          persistentVolumeClaim:
+            claimName: {{ include "tessera-mesh.fullname" . }}-audit
+        {{- end }}
+        {{- if .Values.spire.socketPath }}
+        - name: spire-agent-socket
+          hostPath:
+            path: {{ .Values.spire.volumeHostPath }}
+            type: DirectoryOrCreate
+        {{- end }}
+      containers:
+        # -----------------------------------------------------------------------
+        # PLACEHOLDER: replace this container spec with your actual agent
+        # application. The tessera-mesh sidecar below intercepts outbound tool
+        # calls on port 8443 before they reach the MCP server. Point your agent
+        # at http://localhost:8443 as the proxy endpoint.
+        # -----------------------------------------------------------------------
+        - name: agent-app
+          image: "busybox:stable"
+          command: ["sh", "-c", "echo 'Replace this container with your agent app' && sleep infinity"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+        # -----------------------------------------------------------------------
+        # Tessera-mesh sidecar: enforces tool-call policy, taint tracking, and
+        # schema validation before requests leave the pod.
+        # -----------------------------------------------------------------------
+        - name: tessera-mesh
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: TESSERA_CONFIG
+              value: /etc/tessera/config.yaml
+            - name: TESSERA_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tessera-mesh.signingSecretName" . }}
+                  key: hmac-key
+            - name: TESSERA_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tessera-mesh.signingSecretName" . }}
+                  key: oauth-client-secret
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tessera
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.auditLog.enabled }}
+            - name: audit-log
+              mountPath: {{ .Values.auditLog.mountPath }}
+            {{- end }}
+            {{- if .Values.spire.socketPath }}
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: proxy
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: proxy
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: proxy
+              scheme: HTTPS
+            failureThreshold: 12
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

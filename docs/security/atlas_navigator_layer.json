@@ -1,0 +1,183 @@
+{
+  "name": "Tessera v0.13 coverage",
+  "versions": {
+    "attack": "14",
+    "navigator": "4.9",
+    "layer": "4.5"
+  },
+  "domain": "ATLAS",
+  "description": "Tessera v0.13 mitigation coverage mapped to MITRE ATLAS v14. Each technique score of 100 indicates at least one Tessera SecurityEvent kind detects or blocks that technique. Scores are coverage indicators, not severity ratings. Generated from tessera.compliance.MITRE_ATLAS.",
+  "filters": {
+    "platforms": []
+  },
+  "sorting": 0,
+  "layout": {
+    "layout": "flat",
+    "aggregateFunction": "max",
+    "showID": true,
+    "showName": true,
+    "showAggregateScores": false,
+    "countUnscored": false,
+    "expandedSubtechniques": "annotated"
+  },
+  "hideDisabled": false,
+  "techniques": [
+    {
+      "techniqueID": "AML.T0051.001",
+      "score": 100,
+      "color": "#3d85c8",
+      "comment": "Covered by: policy_deny, worker_schema_violation, content_injection_detected, critic.deny, critic.injection_suspect",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "policy_deny, worker_schema_violation, content_injection_detected, critic.deny, critic.injection_suspect"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "Trust-label taint tracking (min_trust) blocks tool calls when any context segment is untrusted. Schema-enforced dual-LLM quarantine prevents free-form injection from the Worker."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Direct Prompt Injection"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0051.002",
+      "score": 100,
+      "color": "#3d85c8",
+      "comment": "Covered by: content_injection_detected, label_verify_failure, provenance_verify_failure, critical_args.deny, critic.deny, critic.injection_suspect, claim_provenance.fail",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "content_injection_detected, label_verify_failure, provenance_verify_failure, critical_args.deny, critic.deny, critic.injection_suspect, claim_provenance.fail"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "HMAC/JWT signed context labels detect tampered or forged provenance. Critical-args enforcement blocks tool calls where sensitive arguments derive from untrusted context segments."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Indirect Prompt Injection"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0043",
+      "score": 100,
+      "color": "#6aa84f",
+      "comment": "Covered by: guardrail_decision, human_approval_required, human_approval_resolved, critic.approval_required",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "guardrail_decision, human_approval_required, human_approval_resolved, critic.approval_required"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "LLMGuardrail evaluates context and emits a decision event. Human-approval gates halt irreversible actions. Action Critic requires explicit approval for high-risk operations."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Craft Adversarial Data"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0024",
+      "score": 100,
+      "color": "#e69138",
+      "comment": "Covered by: identity_verify_failure, proof_verify_failure, delegation_verify_failure, secret_redacted, label.declassify, mcp.token.audience_mismatch, delegation.exec",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "identity_verify_failure, proof_verify_failure, delegation_verify_failure, secret_redacted, label.declassify, mcp.token.audience_mismatch, delegation.exec"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "SecretRegistry redacts credentials before context enters the LLM. Delegation tokens carry audience constraints (RFC 8707). Identity and proof verification block impersonation attempts."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Exfiltration via Inference API"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0010",
+      "score": 100,
+      "color": "#cc0000",
+      "comment": "Covered by: mcp.manifest.sig_invalid, mcp.drift.shape",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "mcp.manifest.sig_invalid, mcp.drift.shape"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "MCP manifest signature verification detects tampered server manifests. Shape-drift detection flags behavioural changes between baseline and live tool outputs."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "ML Supply Chain Compromise"
+        }
+      ]
+    }
+  ],
+  "gradient": {
+    "colors": ["#ffffff", "#3d85c8"],
+    "minValue": 0,
+    "maxValue": 100
+  },
+  "legendItems": [
+    {
+      "label": "Tessera coverage confirmed",
+      "color": "#3d85c8"
+    },
+    {
+      "label": "Adversarial data / approval gate",
+      "color": "#6aa84f"
+    },
+    {
+      "label": "Exfiltration / identity",
+      "color": "#e69138"
+    },
+    {
+      "label": "Supply chain",
+      "color": "#cc0000"
+    }
+  ],
+  "metadata": [
+    {
+      "name": "generator",
+      "value": "tessera.compliance.MITRE_ATLAS"
+    },
+    {
+      "name": "tessera_version",
+      "value": "v0.13"
+    },
+    {
+      "name": "generated_at",
+      "value": "2026-04-25"
+    },
+    {
+      "name": "atlas_version",
+      "value": "v14"
+    }
+  ],
+  "links": [
+    {
+      "label": "Tessera GitHub",
+      "url": "https://github.com/kenithphilip/Tessera"
+    }
+  ],
+  "showTacticRowBackground": false,
+  "tacticRowBackground": "#dddddd",
+  "selectTechniquesAcrossTactics": true,
+  "selectSubtechniquesWithParent": false,
+  "selectVisibleTechniques": false
+}
