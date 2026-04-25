@@ -49,6 +49,11 @@ jobs:
             exit 1
           fi
           echo "Generated join token (length=${#JOIN_TOKEN})"
+          # Export for the workload-registration step: SPIRE's
+          # join_token attestor assigns the agent the SPIFFE ID
+          # spiffe://<trust-domain>/spire/agent/join_token/<TOKEN>,
+          # which must be the parentID on registration entries.
+          echo "SPIRE_JOIN_TOKEN=${JOIN_TOKEN}" >> "${GITHUB_ENV}"
 
           # The agent needs the server's trust bundle to bootstrap,
           # but our published docker-compose.yml does not share a
