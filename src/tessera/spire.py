@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import importlib
+import inspect
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -218,6 +219,44 @@ def _normalize_audiences(
     return tuple(value)
 
 
+def _call_fetch_jwt(
+    method: Any,
+    *,
+    audiences: tuple[str, ...],
+    spiffe_id: str | None,
+) -> Any:
+    """Invoke a Workload API JWT fetch method across spiffe API revs.
+
+    Older ``spiffe`` releases (<=0.2.5) accepted ``spiffe_id=`` as a
+    kwarg; newer releases dropped it and wrap argument errors in
+    ``FetchJwtSvidError``, which would defeat a bare TypeError-only
+    fallback. Inspect the method signature first and only pass
+    ``spiffe_id`` (or its renamed equivalent ``subject``) if the
+    parameter actually exists. Falls back to positional call shapes
+    if signature introspection fails.
+    """
+    audiences_set = set(audiences)
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        params = {}
+
+    kwargs: dict[str, Any] = {"audience": audiences_set}
+    if spiffe_id is not None:
+        if "spiffe_id" in params:
+            kwargs["spiffe_id"] = spiffe_id
+        elif "subject" in params:
+            kwargs["subject"] = spiffe_id
+
+    try:
+        return method(**kwargs)
+    except TypeError:
+        try:
+            return method(audiences_set)
+        except TypeError:
+            return method(audiences)
+
+
 def _fetch_modern_token(
     module: ModuleType,
     *,
@@ -231,13 +270,9 @@ def _fetch_modern_token(
                 method = getattr(client, method_name, None)
                 if method is None:
                     continue
-                try:
-                    value = method(audience=set(audiences), spiffe_id=spiffe_id)
-                except TypeError:
-                    try:
-                        value = method(set(audiences))
-                    except TypeError:
-                        value = method(audiences)
+                value = _call_fetch_jwt(
+                    method, audiences=audiences, spiffe_id=spiffe_id
+                )
                 return _token_from_svid(value)
     source_cls = getattr(module, "JwtSource", None)
     if source_cls is not None:
@@ -246,13 +281,9 @@ def _fetch_modern_token(
                 method = getattr(source, method_name, None)
                 if method is None:
                     continue
-                try:
-                    value = method(audience=set(audiences), spiffe_id=spiffe_id)
-                except TypeError:
-                    try:
-                        value = method(set(audiences))
-                    except TypeError:
-                        value = method(audiences)
+                value = _call_fetch_jwt(
+                    method, audiences=audiences, spiffe_id=spiffe_id
+                )
                 return _token_from_svid(value)
     return None
 
