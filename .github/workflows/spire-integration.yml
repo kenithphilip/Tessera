@@ -65,30 +65,17 @@ jobs:
             exit 1
           fi
 
-          # Bake the join token into a CI-only agent.conf override.
-          # The published agent.conf has an empty join_token plugin_data
-          # block; the SPIRE -joinToken CLI flag does not reliably
-          # propagate through `docker compose run`, so the more robust
-          # path is to substitute the token into the config and mount
-          # the override. Use a sed address range to scope the
-          # replacement to the join_token block only (KeyManager and
-          # WorkloadAttestor blocks also contain `plugin_data {}` and
-          # would be corrupted by a global replace).
-          mkdir -p /tmp/spire-agent-conf
-          sed '/NodeAttestor "join_token"/,/^  }$/ s|plugin_data {}|plugin_data { join_token = "'"${JOIN_TOKEN}"'" }|' \
-            agent.conf > /tmp/spire-agent-conf/agent.conf
-          if ! grep -q "join_token = \"" /tmp/spire-agent-conf/agent.conf; then
-            echo "Failed to inject join token into agent.conf"
-            cat /tmp/spire-agent-conf/agent.conf
-            exit 1
-          fi
-
+          # The spire-agent image ENTRYPOINT is ["spire-agent", "run"].
+          # If we override the command with "/opt/spire/bin/spire-agent
+          # run -config ... -joinToken ...", the entrypoint prepends a
+          # second "spire-agent run", scrambling argv and silently
+          # discarding -joinToken. Pass only the flags here; the
+          # entrypoint provides the binary + subcommand.
           docker compose run -d --name spire-agent-ci \
             -v /tmp/spire-bundle/bundle.crt:/run/spire/bundle.crt:ro \
-            -v /tmp/spire-agent-conf/agent.conf:/opt/spire/conf/agent/agent.conf:ro \
             spire-agent \
-            /opt/spire/bin/spire-agent run \
-            -config /opt/spire/conf/agent/agent.conf
+            -config /opt/spire/conf/agent/agent.conf \
+            -joinToken "${JOIN_TOKEN}"
 
           for i in $(seq 1 30); do
             if docker exec spire-agent-ci \
