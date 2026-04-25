@@ -160,7 +160,7 @@ class TestSchemaEnforcement:
 
 class TestClaimProvenance:
     def test_claim_grounded_in_trusted_content_is_clean(self) -> None:
-        from tessera.claim_provenance import verify_response_provenance
+        from tessera.worker.recovery import verify_response_provenance
 
         ctx = _ctx(
             _seg("Hotel Marais has a rating of 4.5 and costs 180 EUR.", Origin.USER),
@@ -172,7 +172,7 @@ class TestClaimProvenance:
         assert not result.tainted
 
     def test_claim_grounded_in_directive_untrusted_segment_is_tainted(self) -> None:
-        from tessera.claim_provenance import verify_response_provenance
+        from tessera.worker.recovery import verify_response_provenance
 
         ctx = _ctx(
             _seg("find me a hotel in Paris", Origin.USER),
@@ -190,7 +190,7 @@ class TestClaimProvenance:
         assert result.tainted
 
     def test_user_grounded_claim_not_tainted_even_with_directive_flag(self) -> None:
-        from tessera.claim_provenance import verify_response_provenance
+        from tessera.worker.recovery import verify_response_provenance
 
         ctx = _ctx(
             _seg("I want to visit Riverside View Hotel.", Origin.USER),

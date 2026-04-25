@@ -1,0 +1,101 @@
+# Default values for tessera-mesh.
+# These are reference defaults. Breaking changes are expected through v0.13.x
+# as design partners exercise this chart. Pin a specific chart version in
+# production rather than tracking the latest.
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/kenithphilip/tessera-mesh
+  tag: "0.13.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  tessera.dev/version: "0.13.0"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8443
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Signing keys. The chart creates a Secret stub when existingSecret is empty.
+# In production, set existingSecret to the name of a pre-existing Secret and
+# leave hmacKey / oauthClientSecret blank.
+signing:
+  existingSecret: ""
+  # Only used when existingSecret is empty (NOT recommended for production).
+  hmacKey: ""
+  oauthClientSecret: ""
+
+# OpenTelemetry collector endpoint for traces and metrics.
+otel:
+  endpoint: "otel-collector.observability.svc.cluster.local:4317"
+  insecure: false
+
+# SPIRE Workload API socket. Mount is skipped when path is empty.
+spire:
+  socketPath: "/run/spire/sockets/agent.sock"
+  volumeHostPath: "/run/spire/sockets"
+
+# Audit log persistence.
+auditLog:
+  enabled: true
+  storageClass: ""
+  size: 10Gi
+  mountPath: /var/tessera/audit
+
+# Policy and critic configuration baked into the ConfigMap.
+policy:
+  enforcementMode: enforce
+  critic:
+    mode: strict
+  mcp:
+    tierMin: USER
+
+# Verbatim extra environment variables injected into the tessera-mesh sidecar.
+extraEnv: []
+
+# Node placement.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# NetworkPolicy: restrict ingress and egress to explicit allowlists.
+networkPolicy:
+  enabled: true
+  # Additional ingress sources beyond the agent app container on the same pod.
+  additionalIngress: []
+  # Additional egress destinations beyond otel + SPIRE + Kubernetes DNS.
+  additionalEgress: []

@@ -4,20 +4,35 @@ This module adds a real caller-identity path for the proxy and other
 HTTP transports. The compact credential is a JWT with a SPIFFE subject
 and optional proof key binding in `cnf.jkt`. A separate DPoP-style proof
 JWT binds that credential to one HTTP request and can be replay-checked.
+
+WIMSE alignment (draft-ietf-wimse-workload-identity-bcp and
+draft-klrc-aiagent-auth): the three new types at the bottom of this
+module map Tessera's existing identity primitives to the WIMSE wire
+format without changing any existing caller-visible behaviour.
+
+- ``WorkloadIdentity`` -- local structured representation of a workload.
+- ``WIMSEIdentityClaim`` -- WIMSE ID claim set (RFC 9068 profile).
+- ``WorkloadIdentityToken`` -- WIT envelope (typ: wit+jwt).
+- ``OAuthTransactionToken`` -- shim that serialises a ``DelegationToken``
+  as a draft OAuth Transaction Token (txn_token claim) for interop.
 """
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import secrets
 from hashlib import sha256
 from threading import Lock
-from typing import Any, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 from urllib.parse import urlparse
 
 from tessera.signing import SigningNotAvailable
+
+if TYPE_CHECKING:
+    from tessera.delegation import DelegationToken
 
 try:  # pragma: no cover - exercised when PyJWT is installed
     import jwt as pyjwt
@@ -482,3 +497,284 @@ class AgentProofVerifier:
         except (KeyError, TypeError, ValueError):
             return False
         return True
+
+
+# ---------------------------------------------------------------------------
+# WIMSE alignment
+#
+# References:
+#   draft-ietf-wimse-workload-identity-bcp (WIMSE BCP)
+#   draft-klrc-aiagent-auth (AI Agent Auth extension to WIMSE)
+#   RFC 9068 (JWT Profile for Access Tokens, used as claim basis)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WorkloadIdentity:
+    """Structured representation of a local workload before tokenisation.
+
+    This is the Tessera-internal form; use ``WIMSEIdentityClaim.from_workload_identity``
+    to produce the WIMSE wire-format claim set.
+
+    Args:
+        spiffe_id: SPIFFE ID of the workload (e.g. ``spiffe://trust.example/svc/foo``).
+        trust_domain: Trust domain extracted from the SPIFFE ID.
+        issuer: JWT ``iss`` value for the WIT (typically the SPIRE server URI).
+        audience: Intended audience(s) for the WIT.
+        tenant: Optional tenant / namespace for multi-tenant deployments
+            (``tenant`` claim in draft-klrc-aiagent-auth).
+        issued_at: Token issuance time. Defaults to now.
+        expires_at: Token expiry. Defaults to 1 hour from ``issued_at``.
+    """
+
+    spiffe_id: str
+    trust_domain: str
+    issuer: str
+    audience: tuple[str, ...]
+    tenant: str | None = None
+    issued_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc) + timedelta(hours=1)
+    )
+
+
+@dataclass(frozen=True)
+class WIMSEIdentityClaim:
+    """WIMSE workload identity claim set.
+
+    Maps to the claim set defined in draft-ietf-wimse-workload-identity-bcp
+    and extended by draft-klrc-aiagent-auth for AI-agent contexts.
+
+    Fields:
+        iss: Issuer -- the SPIRE server or WIMSE-capable issuer URI.
+        sub: Subject -- the SPIFFE ID of the workload.
+        aud: Audience -- one or more intended recipients.
+        wimse_id: The canonical WIMSE workload identifier (mirrors ``sub``
+            for SPIFFE-backed deployments, but may differ for non-SPIFFE).
+        tenant: Optional tenant / namespace (draft-klrc-aiagent-auth
+            ``tenant`` claim).
+        created_at: Issuance time (maps to JWT ``iat``).
+        expires_at: Expiry time (maps to JWT ``exp``).
+    """
+
+    iss: str
+    sub: str
+    aud: tuple[str, ...]
+    wimse_id: str
+    tenant: str | None
+    created_at: datetime
+    expires_at: datetime
+
+    @classmethod
+    def from_workload_identity(cls, workload_id: WorkloadIdentity) -> WIMSEIdentityClaim:
+        """Build a WIMSE claim set from a local workload descriptor.
+
+        The ``wimse_id`` is set to the SPIFFE ID, matching the convention in
+        draft-ietf-wimse-workload-identity-bcp Section 4.
+
+        Args:
+            workload_id: Local workload descriptor.
+
+        Returns:
+            A frozen ``WIMSEIdentityClaim`` ready for tokenisation.
+        """
+        return cls(
+            iss=workload_id.issuer,
+            sub=workload_id.spiffe_id,
+            aud=workload_id.audience,
+            wimse_id=workload_id.spiffe_id,
+            tenant=workload_id.tenant,
+            created_at=_utc(workload_id.issued_at),
+            expires_at=_utc(workload_id.expires_at),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JWT-compatible claim dict."""
+        payload: dict[str, Any] = {
+            "iss": self.iss,
+            "sub": self.sub,
+            "aud": list(self.aud),
+            "wimse_id": self.wimse_id,
+            "iat": int(self.created_at.timestamp()),
+            "exp": int(self.expires_at.timestamp()),
+        }
+        if self.tenant is not None:
+            payload["tenant"] = self.tenant
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> WIMSEIdentityClaim:
+        """Deserialise from a JWT claim dict.
+
+        Args:
+            data: Raw claim dict (e.g. from a decoded JWT payload).
+
+        Returns:
+            A ``WIMSEIdentityClaim`` instance.
+
+        Raises:
+            ValueError: If required claims are missing or have wrong types.
+        """
+        try:
+            iss = str(data["iss"])
+            sub = str(data["sub"])
+            raw_aud = data["aud"]
+            aud = (raw_aud,) if isinstance(raw_aud, str) else tuple(raw_aud)
+            wimse_id = str(data["wimse_id"])
+            created_at = datetime.fromtimestamp(float(data["iat"]), timezone.utc)
+            expires_at = datetime.fromtimestamp(float(data["exp"]), timezone.utc)
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"missing or malformed WIMSE claim: {exc}") from exc
+        return cls(
+            iss=iss,
+            sub=sub,
+            aud=aud,
+            wimse_id=wimse_id,
+            tenant=str(data["tenant"]) if "tenant" in data else None,
+            created_at=created_at,
+            expires_at=expires_at,
+        )
+
+
+class _WITSigner(Protocol):
+    """Minimal signer interface for WorkloadIdentityToken."""
+
+    def sign_bytes(self, data: bytes) -> str: ...
+
+
+class _WITVerifier(Protocol):
+    """Minimal verifier interface for WorkloadIdentityToken."""
+
+    def verify_bytes(self, data: bytes, signature: str) -> bool: ...
+
+
+@dataclass(frozen=True)
+class WorkloadIdentityToken:
+    """WIT (Workload Identity Token) envelope.
+
+    The WIT is a signed wrapper for a ``WIMSEIdentityClaim``.  In production
+    SPIFFE deployments this is a JWT-SVID with ``typ: wit+jwt``; in Tessera's
+    reference implementation we use HMAC-SHA256 over the canonical JSON
+    payload so the test suite has no external key-management dependency.
+
+    The ``typ`` header value follows draft-ietf-wimse-workload-identity-bcp:
+    ``wit+jwt``.
+
+    Args:
+        claims: The WIMSE claim set carried by this token.
+        alg: Algorithm identifier (informational; actual signing uses the
+            provided signer object).
+        signature: Hex-encoded HMAC-SHA256 over the canonical payload, or an
+            empty string for unsigned tokens.
+    """
+
+    claims: WIMSEIdentityClaim
+    alg: str = "HS256"
+    signature: str = ""
+
+    def _canonical(self) -> bytes:
+        """Canonical bytes covered by the signature."""
+        return json.dumps(
+            self.claims.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def sign(self, key: bytes) -> WorkloadIdentityToken:
+        """Return a signed copy using HMAC-SHA256.
+
+        Args:
+            key: Raw HMAC key bytes.
+
+        Returns:
+            A new ``WorkloadIdentityToken`` with ``signature`` set.
+        """
+        mac = hmac.new(key, self._canonical(), sha256).hexdigest()
+        return WorkloadIdentityToken(claims=self.claims, alg=self.alg, signature=mac)
+
+    def verify(self, key: bytes) -> WIMSEIdentityClaim:
+        """Verify the HMAC and return the claim set on success.
+
+        Args:
+            key: Raw HMAC key bytes.
+
+        Returns:
+            The embedded ``WIMSEIdentityClaim`` when verification succeeds.
+
+        Raises:
+            ValueError: If the signature is missing or does not match.
+        """
+        if not self.signature:
+            raise ValueError("WorkloadIdentityToken has no signature")
+        expected = hmac.new(key, self._canonical(), sha256).hexdigest()
+        if not hmac.compare_digest(expected, self.signature):
+            raise ValueError("WorkloadIdentityToken signature mismatch")
+        return self.claims
+
+
+@dataclass(frozen=True)
+class OAuthTransactionToken:
+    """Shim that presents a ``DelegationToken`` as a draft OAuth Transaction Token.
+
+    draft-ietf-oauth-transaction-tokens defines a ``txn_token`` JWT claim set
+    for conveying caller identity and authorization context across service
+    boundaries.  This adapter wraps Tessera's existing ``DelegationToken``
+    without altering its canonical form or HMAC key material.
+
+    The canonical-form HMAC of the underlying ``DelegationToken`` is
+    preserved byte-for-byte; no new signing round-trip occurs.
+
+    Args:
+        delegation: The wrapped ``DelegationToken``.
+    """
+
+    delegation: DelegationToken
+
+    def to_txn_token_claims(self) -> dict[str, Any]:
+        """Serialise to a draft OAuth Transaction Token claim dict.
+
+        Maps ``DelegationToken`` fields as follows:
+
+        - ``sub`` <- ``delegation.delegate``
+        - ``azp`` (authorised party) <- ``delegation.subject``
+        - ``aud`` <- ``[delegation.audience]``
+        - ``txn_token.authorized_actions`` <- sorted actions
+        - ``txn_token.constraints`` <- constraints dict
+        - ``txn_token.session_id`` <- session_id
+        - ``exp`` <- ``delegation.expires_at`` as a Unix timestamp
+
+        Returns:
+            A dict suitable for JSON serialisation or JWT payload construction.
+        """
+        d = self.delegation
+        claims: dict[str, Any] = {
+            "sub": d.delegate,
+            "azp": d.subject,
+            "aud": [d.audience],
+            "exp": int(_utc(d.expires_at).timestamp()),
+            "txn_token": {
+                "authorized_actions": sorted(d.authorized_actions),
+                "constraints": d.constraints,
+                "session_id": d.session_id,
+            },
+        }
+        return claims
+
+
+__all__ = [
+    # Pre-existing
+    "AgentIdentity",
+    "AgentIdentityVerifier",
+    "JWTAgentIdentitySigner",
+    "JWTAgentIdentityVerifier",
+    "JWKSAgentIdentityVerifier",
+    "AgentProofReplayCache",
+    "AgentProofSigner",
+    "AgentProofVerifier",
+    "jwk_thumbprint",
+    # WIMSE alignment (Wave 2I)
+    "WorkloadIdentity",
+    "WIMSEIdentityClaim",
+    "WorkloadIdentityToken",
+    "OAuthTransactionToken",
+]

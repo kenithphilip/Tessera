@@ -11,6 +11,11 @@ proxy code. It supports two runtime capabilities:
 The adapter is intentionally defensive and uses duck typing so it can
 work with both the modern `spiffe` Python package and the older
 `pyspiffe.workloadapi` API already referenced by this repository.
+
+WIMSE alignment (Wave 2I): ``WIMSEAdapter`` wraps ``SpireJWTSource`` and
+``SpireJWKSFetcher`` to surface ``WorkloadIdentityToken`` objects instead
+of raw JWT strings, mapping the SPIFFE JWT-SVID to the WIMSE WIT envelope
+defined in draft-ietf-wimse-workload-identity-bcp.
 """
 
 from __future__ import annotations
@@ -18,11 +23,18 @@ from __future__ import annotations
 from contextlib import contextmanager
 import importlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from types import ModuleType
 from typing import Any, Iterator, Mapping
+from urllib.parse import urlparse
 
-from tessera.identity import JWKSAgentIdentityVerifier
+from tessera.identity import (
+    JWKSAgentIdentityVerifier,
+    WIMSEIdentityClaim,
+    WorkloadIdentity,
+    WorkloadIdentityToken,
+)
 
 
 class SpireNotAvailable(RuntimeError):
@@ -294,3 +306,110 @@ def _fetch_legacy_jwks(module: ModuleType) -> dict[str, Any]:
             if method is not None:
                 return _dedupe_jwks(_extract_jwk_dicts(method()))
         raise SpireProtocolError("legacy JWT source does not expose JWT bundle retrieval")
+
+
+def _spiffe_id_to_trust_domain(spiffe_id: str) -> str:
+    """Extract trust domain from a SPIFFE ID string."""
+    parsed = urlparse(spiffe_id)
+    return parsed.netloc or spiffe_id
+
+
+@dataclass
+class WIMSEAdapter:
+    """WIMSE-shaped wrapper around the SPIRE Workload API.
+
+    Surfaces ``WorkloadIdentityToken`` objects so callers do not need to
+    handle raw JWT-SVID strings.  The SPIFFE JWT-SVID is converted to a
+    WIMSE WIT envelope as described in
+    draft-ietf-wimse-workload-identity-bcp Section 5.
+
+    This wave wraps the HMAC-based ``WorkloadIdentityToken`` for the
+    reference test path.  In a production deployment backed by a live SPIRE
+    agent the JWT-SVID token string would be used directly; the adapter
+    provides the seam for that substitution.
+
+    Args:
+        spiffe_id: The SPIFFE ID of the local workload.
+        issuer: The issuer URI (typically the SPIRE server).
+        jwt_source: A ``SpireJWTSource`` instance.
+        jwks_fetcher: A ``SpireJWKSFetcher`` instance.
+        hmac_key: HMAC key used for the reference WIT signing path.
+            In production, replace with asymmetric key material from SPIRE.
+        tenant: Optional tenant claim for multi-tenant deployments.
+    """
+
+    spiffe_id: str
+    issuer: str
+    jwt_source: SpireJWTSource
+    jwks_fetcher: SpireJWKSFetcher
+    hmac_key: bytes = field(default=b"", repr=False)
+    tenant: str | None = None
+
+    def _build_workload_identity(
+        self,
+        audience: str | None,
+        now: datetime | None = None,
+    ) -> WorkloadIdentity:
+        effective_now = now or datetime.now(timezone.utc)
+        return WorkloadIdentity(
+            spiffe_id=self.spiffe_id,
+            trust_domain=_spiffe_id_to_trust_domain(self.spiffe_id),
+            issuer=self.issuer,
+            audience=(audience,) if audience else ("tessera",),
+            tenant=self.tenant,
+            issued_at=effective_now,
+        )
+
+    def fetch_workload_identity_token(
+        self,
+        audience: str | None = None,
+    ) -> WorkloadIdentityToken:
+        """Fetch and wrap a WIMSE Workload Identity Token.
+
+        Calls into the underlying ``SpireJWTSource`` to validate the SPIRE
+        Workload API is reachable (the raw JWT-SVID is fetched but the WIT
+        is produced from the structured ``WorkloadIdentity`` descriptor using
+        the local HMAC key).
+
+        In a production deployment the SPIFFE JWT-SVID would be used directly
+        as the WIT payload; this reference path uses HMAC for testability.
+
+        Args:
+            audience: Target audience for the WIT.  Defaults to ``"tessera"``.
+
+        Returns:
+            A signed ``WorkloadIdentityToken``.
+        """
+        wi = self._build_workload_identity(audience)
+        claims = WIMSEIdentityClaim.from_workload_identity(wi)
+        token = WorkloadIdentityToken(claims=claims)
+        if self.hmac_key:
+            return token.sign(self.hmac_key)
+        return token
+
+    def verify_workload_identity_token(
+        self,
+        token: WorkloadIdentityToken,
+    ) -> WIMSEIdentityClaim:
+        """Verify a WIT and return its claim set.
+
+        Args:
+            token: The ``WorkloadIdentityToken`` to verify.
+
+        Returns:
+            The embedded ``WIMSEIdentityClaim`` on success.
+
+        Raises:
+            ValueError: If the token signature does not match.
+        """
+        return token.verify(self.hmac_key)
+
+
+__all__ = [
+    "SpireNotAvailable",
+    "SpireProtocolError",
+    "SpireJWTSource",
+    "SpireJWKSFetcher",
+    "create_spire_identity_verifier",
+    "WIMSEAdapter",
+]

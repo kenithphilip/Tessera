@@ -1,0 +1,40 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tessera-mesh
+  namespace: tessera-mesh
+  labels:
+    app.kubernetes.io/name: tessera-mesh
+    app.kubernetes.io/version: "0.13.0"
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    tessera.dev/version: "0.13.0"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["tessera-mesh-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["tessera-mesh-signing"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tessera-mesh
+  namespace: tessera-mesh
+  labels:
+    app.kubernetes.io/name: tessera-mesh
+    app.kubernetes.io/version: "0.13.0"
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    tessera.dev/version: "0.13.0"
+subjects:
+  - kind: ServiceAccount
+    name: tessera-mesh
+    namespace: tessera-mesh
+roleRef:
+  kind: Role
+  name: tessera-mesh
+  apiGroup: rbac.authorization.k8s.io

@@ -4,7 +4,7 @@
 
 ![tests](https://img.shields.io/badge/tests-1409%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
-![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
+![license](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![status](https://img.shields.io/badge/status-experimental-orange)
 
 Tessera is a Python library of composable security primitives for LLM
@@ -517,12 +517,18 @@ should include tests that pin the invariant being added or changed.
 
 ## License
 
-GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE).
 
-The AGPL ensures that anyone running Tessera or AgentMesh as a network
-service must make their source code available to users of that service.
-This closes the SaaS loophole that permits companies to run open-source
-software as a service without contributing improvements back.
+Tessera (the primitives library at `src/tessera/`) is Apache-2.0
+under [ADR-0001](docs/adr/0001-license-split.md) so it can be
+bundled by default into framework middleware (LangChain, LangGraph,
+CrewAI, LlamaIndex, PydanticAI). Inbound contributions require a
+[Developer Certificate of Origin](CONTRIBUTING.md) sign-off.
+
+The companion AgentMesh service (separate repository) remains
+AGPL-3.0-or-later. The historical AGPL terms that previously
+covered Tessera are preserved at
+[LICENSE-AGPL-historical](LICENSE-AGPL-historical) for reference.
 
 The accompanying paper in [`papers/`](papers/) is licensed under
 CC BY 4.0.

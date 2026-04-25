@@ -160,3 +160,9 @@ class TesseraLangGraphGuard:
     def context(self) -> Context:
         """Expose the current session context for inspection."""
         return self._ctx
+
+
+# Wave 2H spec name (back-compat alias).
+MeshLangGraphGuard = TesseraLangGraphGuard
+
+__all__ = ["TesseraLangGraphGuard", "MeshLangGraphGuard"]

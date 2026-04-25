@@ -1,0 +1,16 @@
+# PodSecurity admission for Kubernetes 1.25+ (PSP is removed).
+# This manifest labels the namespace to enforce the "restricted" standard.
+# Apply it once per cluster setup, not on every Helm upgrade. The Deployment
+# template already sets the matching securityContext fields.
+#
+# If your cluster enforces a different policy label (e.g. "baseline"),
+# adjust the label values below and relax securityContext fields accordingly.
+#
+# This file is rendered but creates no Kubernetes resource; it serves as
+# documentation. To apply the namespace label separately, run:
+#   kubectl label namespace tessera-mesh \
+#     pod-security.kubernetes.io/enforce=restricted \
+#     pod-security.kubernetes.io/enforce-version=latest
+#
+# Omit this file from the Helm release if your cluster manages namespace
+# labels via a separate policy controller (OPA, Kyverno, etc.).

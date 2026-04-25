@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tessera-mesh
+  namespace: tessera-mesh
+  labels:
+    app.kubernetes.io/name: tessera-mesh
+    app.kubernetes.io/version: "0.13.0"
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    tessera.dev/version: "0.13.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tessera-mesh
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tessera-mesh
+        app.kubernetes.io/version: "0.13.0"
+      annotations:
+        tessera.dev/version: "0.13.0"
+    spec:
+      serviceAccountName: tessera-mesh
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: config
+          configMap:
+            name: tessera-mesh-config
+        - name: tmp
+          emptyDir: {}
+        - name: audit-log
+          persistentVolumeClaim:
+            claimName: tessera-mesh-audit
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+      containers:
+        # -------------------------------------------------------------------
+        # PLACEHOLDER: replace this container spec with your agent application.
+        # The tessera-mesh sidecar intercepts outbound tool calls on port 8443.
+        # Configure your agent to use http://localhost:8443 as its proxy.
+        # -------------------------------------------------------------------
+        - name: agent-app
+          image: busybox:stable
+          command: ["sh", "-c", "echo 'Replace with your agent app' && sleep infinity"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+        # -------------------------------------------------------------------
+        # Tessera-mesh sidecar.
+        # -------------------------------------------------------------------
+        - name: tessera-mesh
+          image: ghcr.io/kenithphilip/tessera-mesh:0.13.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: proxy
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: TESSERA_CONFIG
+              value: /etc/tessera/config.yaml
+            - name: TESSERA_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tessera-mesh-signing
+                  key: hmac-key
+            - name: TESSERA_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tessera-mesh-signing
+                  key: oauth-client-secret
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tessera
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: audit-log
+              mountPath: /var/tessera/audit
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: proxy
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: proxy
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: proxy
+              scheme: HTTPS
+            failureThreshold: 12
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi

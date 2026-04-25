@@ -1,0 +1,51 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tessera-mesh
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: tessera-mesh
+    app.kubernetes.io/version: "0.13.0"
+  annotations:
+    tessera.dev/version: "0.13.0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kenithphilip/Tessera
+    targetRevision: HEAD
+    path: deployment/helm
+    helm:
+      releaseName: tessera-mesh
+      valueFiles:
+        - values.yaml
+      # Override signing.existingSecret to point at the Secret provisioned
+      # by the secrets-store CSI driver (see README.md).
+      parameters:
+        - name: signing.existingSecret
+          value: tessera-mesh-signing
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tessera-mesh
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    # Ignore the Secret data field: it is managed externally via CSI driver
+    # and ArgoCD should not overwrite it.
+    - group: ""
+      kind: Secret
+      name: tessera-mesh-signing
+      jsonPointers:
+        - /data

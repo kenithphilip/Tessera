@@ -173,3 +173,9 @@ class TesseraLlamaIndexHandler:
     def context(self) -> Context:
         """Expose the current session context for inspection."""
         return self._ctx
+
+
+# Wave 2H spec name (back-compat alias).
+MeshLlamaIndexHandler = TesseraLlamaIndexHandler
+
+__all__ = ["TesseraLlamaIndexHandler", "MeshLlamaIndexHandler"]

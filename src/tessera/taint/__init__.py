@@ -27,39 +27,167 @@ from tessera.context import Context, LabeledSegment
 from tessera.labels import TrustLevel
 
 
-@dataclass(frozen=True)
+_LEGACY_SEGMENT_PREFIX = "legacy:segment:"
+
+
 class TaintedValue:
     """A value annotated with which context segments it depends on.
 
-    The value can be anything (str, int, dict). The sources set tracks
-    segment indices into the parent Context. If any source segment is
-    UNTRUSTED, the value is tainted.
+    Phase 1 wave 1A reshaped this class so the canonical source of
+    provenance is :class:`tessera.taint.label.ProvenanceLabel`. The
+    legacy ``sources: frozenset[int]`` constructor keyword still
+    works for backward compatibility; internally it synthesizes a
+    :class:`ProvenanceLabel` whose :class:`SegmentRef` ids are
+    namespaced under ``legacy:segment:<index>``. The
+    :attr:`sources` attribute is now a ``@property`` that returns
+    ``frozenset[int]`` derived from ``self.label.sources``, so old
+    callers continue to read the integer-index view they expect
+    while the underlying state moves to the richer label.
+
+    New callers should pass ``label=`` directly:
+
+        from tessera.taint.label import ProvenanceLabel
+        TaintedValue(value="abc", label=ProvenanceLabel.trusted_user("alice"))
     """
 
-    value: Any
-    sources: frozenset[int]  # indices into Context.segments
+    __slots__ = ("value", "_label")
+
+    def __init__(
+        self,
+        value: Any,
+        sources: frozenset[int] | None = None,
+        *,
+        label: Any = None,
+    ) -> None:
+        self.value = value
+        if label is not None and sources is not None:
+            raise ValueError(
+                "TaintedValue: pass either `sources=` (legacy) or `label=` "
+                "(v0.12+); not both"
+            )
+        if label is not None:
+            self._label = label
+        else:
+            self._label = _legacy_label_from_sources(sources or frozenset())
+
+    @property
+    def label(self) -> Any:
+        """The underlying :class:`ProvenanceLabel` source of truth."""
+        return self._label
+
+    @property
+    def sources(self) -> frozenset[int]:
+        """Legacy view: the segment-index frozenset derived from
+        ``self.label.sources``. Indices are extracted from
+        :class:`SegmentRef` ids under the ``legacy:segment:<i>``
+        namespace; non-legacy segments contribute the hash of their
+        id (``hash(id) & 0xFFFFFFFF``) so the legacy API never
+        crashes on a label that mixes new and legacy refs."""
+        out: set[int] = set()
+        for ref in self._label.sources:
+            seg_id = getattr(ref, "segment_id", str(ref))
+            if seg_id.startswith(_LEGACY_SEGMENT_PREFIX):
+                try:
+                    out.add(int(seg_id[len(_LEGACY_SEGMENT_PREFIX) :]))
+                except ValueError:
+                    out.add(hash(seg_id) & 0xFFFFFFFF)
+            else:
+                out.add(hash(seg_id) & 0xFFFFFFFF)
+        return frozenset(out)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TaintedValue):
+            return NotImplemented
+        return (
+            self.value == other.value
+            and self.sources == other.sources
+        )
+
+    def __hash__(self) -> int:
+        return hash((repr(self.value), self.sources))
+
+    def __repr__(self) -> str:
+        return (
+            f"TaintedValue(value={self.value!r}, "
+            f"sources={sorted(self.sources)!r})"
+        )
 
     def trust_level(self, context: Context) -> TrustLevel:
-        """Minimum trust across all source segments."""
+        """Minimum trust across all source segments.
+
+        Returns :attr:`TrustLevel.SYSTEM` when ``sources`` is empty
+        OR when every entry in ``sources`` falls outside the
+        context's segment range (the latter happens when a label is
+        attached to a value that was constructed against a different
+        context, e.g. after deserialization).
+        """
         if not self.sources:
             return TrustLevel.SYSTEM
-        return min(
+        in_range = [
             context.segments[i].label.trust_level
             for i in self.sources
             if i < len(context.segments)
-        )
+        ]
+        if not in_range:
+            return TrustLevel.SYSTEM
+        return min(in_range)
 
-    def is_tainted(self, context: Context, threshold: TrustLevel = TrustLevel.USER) -> bool:
+    def is_tainted(
+        self, context: Context, threshold: TrustLevel = TrustLevel.USER
+    ) -> bool:
         """True if any source segment is below the threshold."""
         return self.trust_level(context) < threshold
 
     def merge(self, other: TaintedValue) -> TaintedValue:
-        """Combine two values' source sets (union). Used when a value
-        is derived from multiple inputs."""
+        """Combine two values' source sets (union)."""
         return TaintedValue(
             value=self.value,
             sources=self.sources | other.sources,
         )
+
+
+def _legacy_label_from_sources(sources: frozenset[int]) -> Any:
+    """Build a :class:`ProvenanceLabel` from a legacy index frozenset.
+
+    Lazy import so this module works even when ``tessera.taint.label``
+    is not yet available during early bootstrap.
+    """
+    from tessera.taint.label import (
+        IntegrityLevel,
+        ProvenanceLabel,
+        Public,
+        SecrecyLevel,
+        SegmentRef,
+        TrustLevel as TaintTrustLevel,
+        InformationCapacity,
+    )
+
+    if not sources:
+        # Match the legacy semantics: empty sources == trusted-user
+        # value with no segment dependencies. ProvenanceLabel allows
+        # empty sources so the .sources property returns frozenset().
+        return ProvenanceLabel(
+            sources=frozenset(),
+            readers=Public.PUBLIC,
+            integrity=IntegrityLevel.TRUSTED,
+            secrecy=SecrecyLevel.PUBLIC,
+            capacity=InformationCapacity.STRING,
+        )
+    refs = frozenset(
+        SegmentRef(
+            segment_id=f"{_LEGACY_SEGMENT_PREFIX}{i}",
+            origin_uri=f"legacy://segment/{i}",
+            trust_level=TaintTrustLevel.UNTRUSTED,
+        )
+        for i in sources
+    )
+    return ProvenanceLabel(
+        sources=refs,
+        readers=Public.PUBLIC,
+        integrity=IntegrityLevel.UNTRUSTED,
+        secrecy=SecrecyLevel.PUBLIC,
+        capacity=InformationCapacity.STRING,
+    )
 
 
 def from_user(value: Any) -> TaintedValue:

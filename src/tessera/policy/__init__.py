@@ -303,7 +303,23 @@ class Policy:
         # Argument-level taint: if an accumulator is provided, check that
         # critical arguments trace back to user input. Only runs on
         # side-effecting tools when the context-level check passed.
-        if decision.allowed and accumulator is not None and args is not None:
+        # The TESSERA_ENFORCEMENT_MODE env var (Phase 1B-iii) gates
+        # which checks fire. ``scalar`` runs only the legacy min_trust
+        # floor; ``args`` runs only argument-level (and skips this
+        # block when the scalar floor would have re-checked the same
+        # state); ``both`` runs both (the v0.12 default).
+        from tessera.policy.tool_critical_args import (
+            EnforcementMode,
+            get_enforcement_mode,
+        )
+
+        mode = get_enforcement_mode()
+        if (
+            mode != EnforcementMode.SCALAR
+            and decision.allowed
+            and accumulator is not None
+            and args is not None
+        ):
             if req is None or req.side_effects:
                 from tessera.taint import CRITICAL_ARGS_SEND, CRITICAL_ARGS_TRANSFER
 
