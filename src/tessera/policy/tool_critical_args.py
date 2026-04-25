@@ -93,6 +93,9 @@ class EnforcementMode(StrEnum):
     BOTH = "both"
 
 
+_SCALAR_DEPRECATION_WARNED: bool = False
+
+
 def get_enforcement_mode() -> EnforcementMode:
     """Return the active enforcement mode.
 
@@ -105,12 +108,34 @@ def get_enforcement_mode() -> EnforcementMode:
     path). Unknown values fail safe to ``ARGS``: an operator with
     a typo gets the v1.0 default rather than silently falling back
     to legacy behavior.
+
+    The legacy ``scalar`` mode emits a one-time
+    :class:`DeprecationWarning` at first call so operators see the
+    cutover path. The mode itself remains supported through the
+    v1.x line; removal would land in v2.0 with a 12-month
+    deprecation window per ``docs/api_stability/v1.0_freeze.md``.
     """
+    global _SCALAR_DEPRECATION_WARNED
     raw = os.environ.get("TESSERA_ENFORCEMENT_MODE", "args").strip().lower()
     try:
-        return EnforcementMode(raw)
+        mode = EnforcementMode(raw)
     except ValueError:
         return EnforcementMode.ARGS
+    if mode == EnforcementMode.SCALAR and not _SCALAR_DEPRECATION_WARNED:
+        import warnings
+
+        warnings.warn(
+            "TESSERA_ENFORCEMENT_MODE=scalar is the v0.7-era legacy "
+            "path that relies on Context.min_trust as the only gate. "
+            "v1.0 default is 'args'; the 'scalar' path remains as a "
+            "back-compat shim through the v1.x line. See "
+            "docs/migration/v1.0-enforcement-mode.md for the cutover "
+            "path.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        _SCALAR_DEPRECATION_WARNED = True
+    return mode
 
 
 # ---------------------------------------------------------------------------

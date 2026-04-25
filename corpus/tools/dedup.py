@@ -173,7 +173,63 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_JACCARD_THRESHOLD,
         help=f"Jaccard threshold (default {_JACCARD_THRESHOLD}).",
     )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Write a JSON dedup report to PATH with per-file and global stats.",
+    )
     return parser.parse_args(argv)
+
+
+def _build_report(
+    inputs: list[Path],
+    probes: list[dict],
+    kept: list[dict],
+    duplicates: list[tuple[str, str, float]],
+) -> dict:
+    """Build a JSON-serializable dedup report.
+
+    Args:
+        inputs: Input JSONL paths.
+        probes: All loaded probes (with _source_file key).
+        kept: Probes that survived deduplication.
+        duplicates: Near-duplicate pairs as (id_a, id_b, similarity).
+
+    Returns:
+        Dict with per-file stats and global totals.
+    """
+    removed_ids: set[str] = {pid for _, pid, _ in duplicates}
+    kept_ids: set[str] = {p["probe_id"] for p in kept}
+
+    per_file: list[dict] = []
+    for path in inputs:
+        file_probes = [p for p in probes if p["_source_file"] == str(path)]
+        file_kept = [p for p in file_probes if p["probe_id"] in kept_ids]
+        file_removed_ids = [p["probe_id"] for p in file_probes if p["probe_id"] in removed_ids]
+        per_file.append(
+            {
+                "file": path.name,
+                "input_count": len(file_probes),
+                "deduped_count": len(file_kept),
+                "removed_count": len(file_removed_ids),
+                "removed_probe_ids": sorted(file_removed_ids),
+            }
+        )
+
+    return {
+        "global": {
+            "input_count": len(probes),
+            "deduped_count": len(kept),
+            "removed_count": len(duplicates),
+            "duplicate_pairs": [
+                {"probe_id_a": a, "probe_id_b": b, "jaccard": round(sim, 4)}
+                for a, b, sim in duplicates
+            ],
+        },
+        "per_file": per_file,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -202,6 +258,11 @@ def main(argv: list[str] | None = None) -> int:
         print("No near-duplicates found.")
 
     print(f"Kept {len(kept)} probes after dedup (removed {len(duplicates)} extra).")
+
+    if args.report:
+        report = _build_report(args.inputs, probes, kept, duplicates)
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
+        print(f"Wrote dedup report to {args.report}.")
 
     if args.dry_run:
         return 1 if duplicates else 0

@@ -197,7 +197,7 @@ Reference deployments:
   (`tessera-core`, `tessera-scanners`, `tessera-audit`, `tessera-policy`,
   `tessera-runtime`, `tessera-gateway`, `tessera-bench`) and a PyO3
   wheel `tessera-rs` published to PyPI for adapter authors who want
-  the fast path without leaving Python. Workspace at v0.11.0,
+  the fast path without leaving Python. Workspace at v1.0.0,
   PyPI wheel at 0.11.0, all tests green. Includes a Cranelift CEL
   JIT (12-80x interpreter speedup on int rules), simd-json body
   extractor, rate limiter port, and a PyScanner callback registry
@@ -464,11 +464,17 @@ Tessera is designed to slot into any agent mesh, not to replace one:
 
 ## Status
 
-**Experimental.** v0.7.0 ships ~26,800 lines of Python across 98
-implementation modules, 1409 passing tests, and a Rust reference
-gateway. The invariants are testable and the primitives compose, but the
-API will change, the ergonomics will change, and the integrations with
-existing mesh infrastructure are not yet battle-tested at scale.
+**General Availability** as of v1.0.0. The API and wire formats
+documented in `docs/api_stability/v1.0_freeze.md` are pinned for
+the v1.x line; breaking changes require v2.0 with a 12-month
+deprecation window. The release ships ~50,000 lines of Python
+across 130+ modules, 2018 passing tests, ~390 Rust unit tests
+across an 11-crate workspace (8 in-tree + 3 agentgateway upstream
+plugins), 1091 red-team payloads in the community corpus, three
+signed paired-model scorecards (Claude Sonnet 4.5 / GPT-5 /
+Gemini 2.5 Pro), and 8 compliance-taxonomy mappings (NIST 800-53,
+CWE, OWASP Agentic ASI, MITRE ATLAS, EU AI Act, ISO/IEC 42001,
+CSA AICM, NIST AI 600-1) on every event the runtime emits.
 
 What is stable:
 

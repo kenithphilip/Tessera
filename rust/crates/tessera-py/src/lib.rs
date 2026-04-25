@@ -32,6 +32,11 @@ use serde_json::Value;
 
 use tessera_audit::{canonical_json, AppendEntry, JsonlHashchainSink, ReplayEnvelope};
 use tessera_core::context::{make_segment as core_make_segment, Context as CoreContext};
+use tessera_core::label::{
+    InformationCapacity as CoreInformationCapacity, IntegrityLevel as CoreIntegrityLevel,
+    ProvenanceLabel as CoreProvenanceLabel, PublicMarker, Readers as CoreReaders,
+    SecrecyLevel as CoreSecrecyLevel, SegmentRef as CoreSegmentRef,
+};
 use tessera_core::labels::{HmacSigner, Origin, TrustLevel};
 use tessera_policy::cel::{
     CelAction, CelContext, CelDecision, CelPolicyEngine, CelRule,
@@ -770,6 +775,99 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyToolCallRateLimit>()?;
     m.add_class::<PySsrfGuard>()?;
     m.add_class::<PyUrlRulesEngine>()?;
+    // v1.0 wave 4B: ProvenanceLabel binding from tessera-core. The
+    // Python class at tessera.taint.label.ProvenanceLabel remains
+    // the canonical source of truth for in-process Python callers;
+    // this binding exposes the identically-shaped Rust struct so
+    // cross-language consumers and the AgentMesh fast-path can
+    // construct + serialize labels via Rust.
+    m.add_class::<PyProvenanceLabel>()?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
+
+
+// ---- v1.0 wave 4B: Rust-backed ProvenanceLabel binding -----------------
+
+/// PyO3 wrapper for :class:`tessera_core::label::ProvenanceLabel`.
+///
+/// The Python class at :class:`tessera.taint.label.ProvenanceLabel`
+/// is the canonical source of truth for in-process Python callers;
+/// this binding exposes the bit-identical Rust struct so the
+/// AgentMesh fast-path and cross-language consumers can construct
+/// and serialize labels via Rust without paying the Python-import
+/// cost.
+#[pyclass(name = "ProvenanceLabel", module = "tessera_rs.label", frozen)]
+struct PyProvenanceLabel {
+    inner: CoreProvenanceLabel,
+}
+
+#[pymethods]
+impl PyProvenanceLabel {
+    /// Construct a trusted-user label.
+    #[staticmethod]
+    fn trusted_user(principal: &str) -> Self {
+        Self {
+            inner: CoreProvenanceLabel::trusted_user(principal),
+        }
+    }
+
+    /// Construct an untrusted-tool-output label.
+    #[staticmethod]
+    #[pyo3(signature = (segment_id, origin_uri=None))]
+    fn untrusted_tool_output(segment_id: &str, origin_uri: Option<String>) -> Self {
+        Self {
+            inner: CoreProvenanceLabel::untrusted_tool_output(segment_id, origin_uri),
+        }
+    }
+
+    /// Lattice join. Returns a new label with max(integrity),
+    /// max(secrecy), max(capacity), and intersected readers.
+    fn join(&self, other: &PyProvenanceLabel) -> Self {
+        Self {
+            inner: self.inner.join(&other.inner),
+        }
+    }
+
+    /// Stable canonical-JSON encoding (same shape as the Python
+    /// ProvenanceJSONEncoder sidecar).
+    fn to_canonical_json(&self) -> String {
+        self.inner.to_canonical_json()
+    }
+
+    /// Numeric IntegrityLevel: 0 = TRUSTED, 1 = ENDORSED, 2 = UNTRUSTED.
+    fn integrity_numeric(&self) -> u8 {
+        self.inner.integrity.numeric()
+    }
+
+    /// Numeric SecrecyLevel: 0 = PUBLIC, 1 = INTERNAL, 2 = PRIVATE,
+    /// 3 = RESTRICTED.
+    fn secrecy_numeric(&self) -> u8 {
+        self.inner.secrecy.numeric()
+    }
+
+    /// Numeric InformationCapacity: 1 = BOOL, 2 = ENUM, 3 = NUMBER,
+    /// 4 = STRING.
+    fn capacity_numeric(&self) -> u8 {
+        self.inner.capacity.numeric()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProvenanceLabel(integrity={:?}, secrecy={:?}, capacity={:?})",
+            self.inner.integrity, self.inner.secrecy, self.inner.capacity
+        )
+    }
+}
+
+// Suppress dead-code warnings for re-exported symbols only used
+// when the binding is constructed via the static methods above.
+#[allow(dead_code)]
+type _ProvenanceLabelReexports = (
+    PublicMarker,
+    CoreReaders,
+    CoreSegmentRef,
+    CoreIntegrityLevel,
+    CoreSecrecyLevel,
+    CoreInformationCapacity,
+);

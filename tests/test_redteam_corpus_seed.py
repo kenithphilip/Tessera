@@ -44,7 +44,10 @@ _PROBE_ID_RE = re.compile(
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-_MIN_TOTAL = 200
+# v1.0 Phase 4 wave 4F target: >= 1000 raw payloads (the v2026.Q4
+# release). The dedup tool collapses near-duplicates; the raw
+# count is what the spec measures.
+_MIN_TOTAL = 1000
 _MIN_PER_CATEGORY = 5
 
 

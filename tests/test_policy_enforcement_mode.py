@@ -123,3 +123,26 @@ def test_policy_evaluate_runs_arg_check_in_args_mode(
         accumulator=accumulator,
     )
     assert decision.allowed is False
+
+
+def test_scalar_mode_emits_deprecation_warning_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.0 audit gap 1: the legacy scalar mode warns on first read."""
+    import warnings
+
+    import tessera.policy.tool_critical_args as tca
+
+    # Reset the one-time-flag so the warning fires in this test.
+    tca._SCALAR_DEPRECATION_WARNED = False
+    monkeypatch.setenv("TESSERA_ENFORCEMENT_MODE", "scalar")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        tca.get_enforcement_mode()
+        # Second call must NOT re-warn.
+        tca.get_enforcement_mode()
+
+    deprecation = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecation) == 1
+    assert "scalar" in str(deprecation[0].message)
