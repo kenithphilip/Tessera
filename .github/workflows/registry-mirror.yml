@@ -1,0 +1,102 @@
+name: MCP Registry Mirror
+
+# Wave 4D from the v0.12-to-v1.0 plan: nightly sync of the public MCP
+# registry with all manifests Sigstore-re-signed by the Tessera org and
+# republished to ghcr.io/kenithphilip/mcp-registry-mirror as OCI
+# artifacts. Consumers who trust the Tessera signing identity no longer
+# have to individually verify each upstream author's Sigstore identity.
+#
+# Triggers:
+#   - Nightly at 03:00 UTC.
+#   - Manual via Actions tab for one-off validation runs.
+#
+# Security note: the workflow_dispatch input flows into a job-level env
+# var, then into the shell as a quoted variable expansion (the SAFE
+# pattern from
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/).
+# Never embed the input directly in a `run:` block.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: "Upstream MCP registry URL"
+        required: false
+        default: "https://registry.modelcontextprotocol.io"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write   # ghcr.io push
+      id-token: write   # Sigstore OIDC
+
+    env:
+      MIRROR_IMAGE: ghcr.io/kenithphilip/mcp-registry-mirror
+      # workflow_dispatch input is interpolated once at job start, then
+      # treated as a shell variable in every step that uses it.
+      UPSTREAM: ${{ github.event.inputs.upstream || 'https://registry.modelcontextprotocol.io' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Tessera (with mcp + sessions extras)
+        run: pip install -e '.[dev,mcp,sessions]'
+
+      - name: Install oras CLI
+        run: |
+          ORAS_VERSION="1.2.0"
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin oras
+          oras version
+
+      - name: Sync upstream registry
+        env:
+          # HMAC key is the simpler signing path; Sigstore via OIDC is
+          # the production target. Use HMAC when the secret is set,
+          # otherwise fall back to Sigstore (OIDC is auto-provided by
+          # GitHub Actions when id-token: write is granted).
+          TESSERA_MIRROR_HMAC_KEY: ${{ secrets.TESSERA_MIRROR_HMAC_KEY }}
+        run: |
+          mkdir -p mirror-output
+          if [ -n "${TESSERA_MIRROR_HMAC_KEY}" ]; then
+            echo "Signing with HMAC"
+            python -m tessera.cli mcp mirror sync \
+              --upstream "${UPSTREAM}" \
+              --out mirror-output \
+              --sign hmac
+          else
+            echo "Signing with Sigstore (OIDC)"
+            python -m tessera.cli mcp mirror sync \
+              --upstream "${UPSTREAM}" \
+              --out mirror-output \
+              --sign sigstore
+          fi
+
+      - name: Print sync summary
+        run: |
+          python -m tessera.cli mcp mirror status --out mirror-output
+
+      - name: Authenticate to ghcr.io
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | oras login ghcr.io -u "$GH_ACTOR" --password-stdin
+
+      - name: Push OCI artifacts
+        run: bash deployment/registry-mirror/oras-push.sh mirror-output "${MIRROR_IMAGE}"
+
+      - name: Upload mirror-manifest.json as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-manifest
+          path: mirror-output/mirror-manifest.json
+          retention-days: 30
