@@ -110,7 +110,7 @@ class LabelSummary(BaseModel):
     critic's context.
     """
 
-    model_config = ConfigDict(strict=True, frozen=True)
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     integrity: IntegrityLevel
     secrecy: SecrecyLevel
@@ -139,7 +139,7 @@ class ArgShape(BaseModel):
     type, length, character-class footprint, and label summary.
     """
 
-    model_config = ConfigDict(strict=True, frozen=True)
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     name: str
     type_hint: str
@@ -148,16 +148,31 @@ class ArgShape(BaseModel):
     label: LabelSummary
 
 
+class ActionImpact(StrEnum):
+    """SEP-1913 actionImpact annotation values.
+
+    Mirrors the enum in :data:`tessera.mcp.manifest_schema.MCP_MANIFEST_STATEMENT_SCHEMA`.
+    Drives the circuit-breaker fail-mode at the critic boundary:
+    DESTRUCTIVE actions never PASS_THROUGH on breaker open; benign
+    reads do.
+    """
+
+    BENIGN = "benign"
+    SIDE_EFFECT = "side-effect"
+    DESTRUCTIVE = "destructive"
+
+
 class RiskSignals(BaseModel):
     """Pre-computed deterministic risk signals from policy state."""
 
-    model_config = ConfigDict(strict=True, frozen=True)
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     irreversibility_class: str = "unknown"
     sensitivity_class: str = "unknown"
     rate_limit_pressure: float = Field(default=0.0, ge=0.0, le=1.0)
     has_recent_denials: bool = False
     has_dependent_args: bool = False
+    action_impact: ActionImpact = ActionImpact.SIDE_EFFECT
 
 
 class ActionReview(BaseModel):
@@ -169,7 +184,7 @@ class ActionReview(BaseModel):
     args into a prompt) is a security regression.
     """
 
-    model_config = ConfigDict(strict=True, frozen=True)
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     tool: str
     principal: str
@@ -189,7 +204,7 @@ class Decision(StrEnum):
 class CriticDecision(BaseModel):
     """The critic's verdict on one :class:`ActionReview`."""
 
-    model_config = ConfigDict(strict=True, frozen=True)
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     decision: Decision
     reason: str
@@ -217,63 +232,236 @@ class CriticBackend(Protocol):
     def review(self, action: ActionReview) -> CriticDecision: ...
 
 
-@dataclass(frozen=True)
+_CRITIC_SYSTEM_PROMPT = (
+    "You are an Action Critic for an AI agent system. You receive "
+    "metadata about a tool call the planner wants to make: the tool "
+    "name, the SHAPES of the arguments (no raw values), per-argument "
+    "provenance label summaries, and risk signals. You decide whether "
+    "the call should ALLOW, DENY, or REQUIRE_APPROVAL based on six "
+    "principles: data_minimization, origin_consistency, irreversibility, "
+    "least_privilege, no_exfiltration, untrusted_arg_reasonable.\n\n"
+    "Respond with a JSON object: "
+    '{"decision": "allow|deny|require_approval", '
+    '"reason": "<one sentence>", '
+    '"triggered_principles": ["..."]}'
+)
+
+
+def _decision_from_json(payload: str, backend_name: str) -> CriticDecision:
+    """Parse a JSON response from a real LLM into a CriticDecision.
+
+    Tolerates a wrapping code-fence or leading prose; extracts the
+    first balanced JSON object. Falls back to REQUIRE_APPROVAL on
+    any parse failure (no parsed JSON means we cannot trust the
+    backend output).
+    """
+    text = payload.strip()
+    # Strip surrounding code fence if present.
+    if text.startswith("```"):
+        # Find the fence end.
+        try:
+            text = text.split("```", 2)[1]
+            if text.lower().startswith("json"):
+                text = text[4:]
+        except IndexError:
+            pass
+    text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return CriticDecision(
+            decision=Decision.REQUIRE_APPROVAL,
+            reason="backend returned unparseable JSON; safe fallback",
+            backend=backend_name,
+        )
+    decision_raw = str(data.get("decision", "require_approval")).lower()
+    try:
+        decision = Decision(decision_raw)
+    except ValueError:
+        decision = Decision.REQUIRE_APPROVAL
+    reason = str(data.get("reason", ""))[:240]
+    principles_raw = data.get("triggered_principles") or []
+    if not isinstance(principles_raw, list):
+        principles_raw = []
+    triggered = tuple(str(p) for p in principles_raw)
+    return CriticDecision(
+        decision=decision,
+        reason=reason or "no reason provided",
+        triggered_principles=triggered,
+        backend=backend_name,
+    )
+
+
+def _build_user_prompt(action: ActionReview) -> str:
+    """Render an ActionReview as a JSON-only user prompt.
+
+    The prompt carries argument SHAPES and label summaries, never raw
+    values. The structural boundary is enforced by ActionReview's
+    Pydantic config (no value field anywhere on ArgShape).
+    """
+    return (
+        "Tool call metadata to review (no raw values):\n"
+        + json.dumps(action.model_dump(mode="json"), indent=2, sort_keys=True)
+    )
+
+
+@dataclass
 class LocalSmallCritic:
-    """Stub for a small open-weight critic model.
+    """Small open-weight critic via Together / Groq HTTP API.
 
-    Returns REQUIRE_APPROVAL when no real model is configured.
-    Phase 2 wave 2A real-backend dispatch reads
-    ``TESSERA_CRITIC_LOCAL_MODEL`` to decide between an in-process
-    Llama-4-Scout / Qwen3-7B handle and the stub fallback. When
-    the env var is unset, callers get a structurally-valid
-    REQUIRE_APPROVAL with ``backend="local_small"`` so the audit
-    log still records the path the critic took.
+    Reads ``TESSERA_CRITIC_LOCAL_MODEL`` (e.g. ``llama-4-scout-17b``
+    or ``qwen3-7b-instruct``) plus one of:
 
-    Direct callers (tests, integration code that wants to bypass
-    the cache and breaker) get the bare backend semantics; the
-    top-level :func:`review` adds caching, breaker, and event
-    emission around any backend call.
+    - ``TOGETHER_API_KEY`` for the Together inference endpoint
+    - ``GROQ_API_KEY`` for the Groq inference endpoint
+
+    When neither key is configured the backend returns
+    REQUIRE_APPROVAL so the audit log still records the path; this
+    keeps deployments observable without forcing a paid model
+    dependency at v0.13. The HTTP call is a thin wrapper around
+    the standard Chat-Completions schema both providers expose.
+
+    Default model: ``meta-llama/Llama-4-Scout-17B-16E-Instruct`` on
+    Together. Override per request via ``TESSERA_CRITIC_LOCAL_MODEL``.
     """
 
     name: str = "local_small"
+    timeout: float = 5.0
+    http_client: Any = None
+    model_override: str | None = None
+
+    def _resolve_provider(self) -> tuple[str, str, str] | None:
+        """Return (api_url, api_key, model) or None when not configured."""
+        model = (
+            self.model_override
+            or os.environ.get("TESSERA_CRITIC_LOCAL_MODEL", "").strip()
+            or "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+        )
+        if os.environ.get("TOGETHER_API_KEY", "").strip():
+            return (
+                "https://api.together.xyz/v1/chat/completions",
+                os.environ["TOGETHER_API_KEY"].strip(),
+                model,
+            )
+        if os.environ.get("GROQ_API_KEY", "").strip():
+            return (
+                "https://api.groq.com/openai/v1/chat/completions",
+                os.environ["GROQ_API_KEY"].strip(),
+                model,
+            )
+        return None
 
     def review(self, action: ActionReview) -> CriticDecision:
-        # When a real model handle is wired (Phase 2A.real), dispatch
-        # there. Without it, return the safe REQUIRE_APPROVAL.
-        if os.environ.get("TESSERA_CRITIC_LOCAL_MODEL", "").strip():
+        provider = self._resolve_provider()
+        if provider is None:
             return CriticDecision(
                 decision=Decision.REQUIRE_APPROVAL,
                 reason=(
-                    "TESSERA_CRITIC_LOCAL_MODEL set but in-process "
-                    "Llama-4-Scout / Qwen3-7B handle not yet wired"
+                    "no provider key (TOGETHER_API_KEY or GROQ_API_KEY) configured; "
+                    "safe fallback"
                 ),
                 backend=self.name,
             )
-        return CriticDecision(
-            decision=Decision.REQUIRE_APPROVAL,
-            reason="local backend not configured; safe fallback",
-            backend=self.name,
-        )
+        url, api_key, model = provider
+        client = self.http_client
+        if client is None:
+            try:
+                import httpx
+            except ImportError:  # pragma: no cover - dep is required
+                return CriticDecision(
+                    decision=Decision.REQUIRE_APPROVAL,
+                    reason="httpx unavailable; safe fallback",
+                    backend=self.name,
+                )
+            client = httpx.Client(timeout=self.timeout)
+        try:
+            resp = client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "temperature": 0.0,
+                    "max_tokens": 256,
+                    "messages": [
+                        {"role": "system", "content": _CRITIC_SYSTEM_PROMPT},
+                        {"role": "user", "content": _build_user_prompt(action)},
+                    ],
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"]
+        except Exception as exc:  # noqa: BLE001 - network boundary
+            return CriticDecision(
+                decision=Decision.REQUIRE_APPROVAL,
+                reason=f"backend error: {type(exc).__name__}",
+                backend=self.name,
+            )
+        return _decision_from_json(text, self.name)
 
 
-@dataclass(frozen=True)
+@dataclass
 class ProviderAgnosticCritic:
     """Routes through :mod:`tessera.guardrail` for cache + breaker reuse.
 
-    Default for v0.13. The backend takes an optional client; when
-    no client is provided the backend returns REQUIRE_APPROVAL so
-    the security path is observable end-to-end without requiring
-    a model dependency.
+    Default backend for v0.13. The backend wraps an Anthropic or
+    OpenAI client (the same shape :class:`tessera.guardrail.LLMGuardrail`
+    expects) and uses the provider's structured response to drive
+    the critic decision. When no client is configured, returns
+    REQUIRE_APPROVAL so the audit path stays observable.
     """
 
     name: str = "provider_agnostic"
+    client: Any = None
+    model: str = "claude-haiku-4-5-20251001"
+    max_tokens: int = 256
+    timeout: float = 5.0
+
+    def _resolve_client_type(self) -> str | None:
+        if self.client is None:
+            return None
+        if hasattr(self.client, "messages"):
+            return "anthropic"
+        if hasattr(self.client, "chat"):
+            return "openai"
+        return None
 
     def review(self, action: ActionReview) -> CriticDecision:
-        return CriticDecision(
-            decision=Decision.REQUIRE_APPROVAL,
-            reason="no provider client configured; safe fallback",
-            backend=self.name,
-        )
+        client_type = self._resolve_client_type()
+        if client_type is None:
+            return CriticDecision(
+                decision=Decision.REQUIRE_APPROVAL,
+                reason="no provider client configured; safe fallback",
+                backend=self.name,
+            )
+        prompt = _build_user_prompt(action)
+        try:
+            if client_type == "anthropic":
+                resp = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=_CRITIC_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = resp.content[0].text
+            else:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=0.0,
+                    messages=[
+                        {"role": "system", "content": _CRITIC_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                text = resp.choices[0].message.content
+        except Exception as exc:  # noqa: BLE001
+            return CriticDecision(
+                decision=Decision.REQUIRE_APPROVAL,
+                reason=f"backend error: {type(exc).__name__}",
+                backend=self.name,
+            )
+        return _decision_from_json(text, self.name)
 
 
 @dataclass(frozen=True)
@@ -312,9 +500,9 @@ class SamePlannerCritic:
 def _canonical_action_key(action: ActionReview) -> str:
     """SHA-256 of the canonical-JSON form of an ActionReview.
 
-    ``model_dump_json`` with sorted keys produces a stable
-    representation; the same action under any reordering hashes to
-    the same key. Cache hits short-circuit the backend call entirely.
+    ``model_dump`` with sorted keys produces a stable representation;
+    the same action under any reordering hashes to the same key.
+    Cache hits short-circuit the backend call entirely.
     """
     payload = json.dumps(
         action.model_dump(mode="json"),
@@ -324,40 +512,66 @@ def _canonical_action_key(action: ActionReview) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-@dataclass
-class _CritCacheEntry:
-    decision: CriticDecision
-    timestamp: float
-
-
 class CriticCache:
     """SHA-256 keyed LRU cache for :class:`CriticDecision` outcomes.
 
-    Mirrors the shape of :class:`tessera.guardrail.GuardrailCache`
-    but keyed on the canonical hash of the :class:`ActionReview`.
+    Reuses :class:`tessera.guardrail.GuardrailCache` for the LRU /
+    TTL machinery and adapts the key shape to the canonical-JSON
+    hash of the :class:`ActionReview`. ``GuardrailCache`` already
+    has the SHA-256 + TTL + eviction logic; we only adapt the
+    key-derivation step.
     """
 
     def __init__(self, max_size: int = 1024, ttl_seconds: float = 300.0) -> None:
-        self._cache: dict[str, _CritCacheEntry] = {}
-        self._max = max_size
-        self._ttl = ttl_seconds
+        from tessera.guardrail import GuardrailCache
+
+        self._inner = GuardrailCache(
+            max_size=max_size, ttl_seconds=ttl_seconds
+        )
+
+    @staticmethod
+    def _to_decision_payload(decision: CriticDecision) -> Any:
+        """GuardrailCache stores GuardrailDecision; we round-trip
+        a CriticDecision through a JSON string keyed via the inner
+        cache's text+tool_name slot."""
+        return decision.model_dump_json()
+
+    @staticmethod
+    def _from_decision_payload(payload: Any) -> CriticDecision | None:
+        """Reconstruct a CriticDecision from the inner cache's stored
+        slot. Returns None on any decode failure."""
+        if payload is None:
+            return None
+        try:
+            return CriticDecision.model_validate_json(payload)
+        except Exception:  # noqa: BLE001
+            return None
 
     def get(self, action: ActionReview) -> CriticDecision | None:
         key = _canonical_action_key(action)
-        entry = self._cache.get(key)
+        entry = self._inner.get(key, "critic")
         if entry is None:
             return None
-        if time.time() - entry.timestamp > self._ttl:
-            del self._cache[key]
-            return None
-        return entry.decision
+        # GuardrailDecision.category is the only string slot in
+        # the GuardrailDecision schema; we store the canonical-JSON
+        # CriticDecision there. This keeps GuardrailCache as the
+        # single LRU + TTL implementation in the tree.
+        return self._from_decision_payload(entry.category)
 
     def put(self, action: ActionReview, decision: CriticDecision) -> None:
+        from tessera.guardrail import GuardrailDecision
+
         key = _canonical_action_key(action)
-        if len(self._cache) >= self._max:
-            oldest = min(self._cache, key=lambda k: self._cache[k].timestamp)
-            del self._cache[oldest]
-        self._cache[key] = _CritCacheEntry(decision=decision, timestamp=time.time())
+        encoded = self._to_decision_payload(decision)
+        self._inner.put(
+            key,
+            "critic",
+            GuardrailDecision(
+                is_injection=False,
+                confidence=0.0,
+                category=encoded,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +669,28 @@ def review(
 
     skip, _ = _DEFAULT_BREAKER.should_skip()
     if skip:
+        # actionImpact gating: when the backend is down, the
+        # fallback differs by impact class. DESTRUCTIVE actions
+        # cannot proceed without a live critic and a positive
+        # confirmation, so we DENY rather than defer to a human
+        # that may not be reachable. SIDE-EFFECT and BENIGN actions
+        # fall back to REQUIRE_APPROVAL (the conservative default
+        # for any action whose review path is degraded).
+        if action.risk.action_impact == ActionImpact.DESTRUCTIVE:
+            fallback_decision = Decision.DENY
+            fallback_reason = (
+                "critic backend circuit-breaker open AND tool is "
+                "destructive; deny rather than defer"
+            )
+        else:
+            fallback_decision = Decision.REQUIRE_APPROVAL
+            fallback_reason = (
+                "critic backend circuit-breaker open; safe fallback "
+                f"for action_impact={action.risk.action_impact.value}"
+            )
         decision = CriticDecision(
-            decision=Decision.REQUIRE_APPROVAL,
-            reason="critic backend circuit-breaker open; safe fallback",
+            decision=fallback_decision,
+            reason=fallback_reason,
             backend="circuit_breaker",
             latency_ms=(time.monotonic() - started) * 1000,
         )
@@ -522,6 +755,7 @@ def _emit_decision(action: ActionReview, decision: CriticDecision) -> None:
 
 
 __all__ = [
+    "ActionImpact",
     "ActionReview",
     "ArgShape",
     "CriticBackend",

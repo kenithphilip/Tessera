@@ -102,6 +102,15 @@ class MCPTrustProxy:
         registry: Optional org-level ToolRegistry; wins on inclusion.
         on_segment: Optional async callback invoked with
             (tool_name, LabeledSegment) after each successful call.
+        upstream_resource_indicator: RFC 8707 resource indicator for
+            the upstream MCP server. When set, every upstream token
+            request includes ``resource=<this value>`` and inbound
+            bearer tokens whose ``aud`` does not include the
+            indicator are rejected at :meth:`_handle_call`. Required
+            for the per-MCP audience binding control to engage.
+        inbound_token_audience: The audience this proxy advertises
+            for inbound bearer tokens (typically AgentMesh's own
+            resource indicator). Used by :meth:`enforce_inbound_audience`.
         _upstream_factory: Override the upstream connection factory.
             Used for testing. Defaults to an sse_client-based factory.
     """
@@ -113,10 +122,13 @@ class MCPTrustProxy:
     external_tools: frozenset[str] = frozenset()
     registry: ToolRegistry | None = None
     on_segment: OnSegmentFn | None = None
+    upstream_resource_indicator: str | None = None
+    inbound_token_audience: str | None = None
     _upstream_factory: UpstreamFactory | None = None
 
     # Populated after connecting to upstream.
     _cached_tools: list[Any] = field(default_factory=list, init=False, repr=False)
+    last_security_score: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         _require_mcp()
@@ -151,6 +163,89 @@ class MCPTrustProxy:
             else frozenset(self.external_tools)
         )
         return Origin.WEB if tool_name in effective else Origin.TOOL
+
+    # ------------------------------------------------------------------
+    # RFC 8707 audience binding (Wave 2C wiring)
+    # ------------------------------------------------------------------
+
+    def enforce_inbound_audience(
+        self,
+        token_audience: str | list[str] | None,
+        *,
+        correlation_id: str | None = None,
+    ) -> bool:
+        """Check that an inbound bearer token's ``aud`` names this proxy.
+
+        Returns True when the audience check passes (or when no
+        ``inbound_token_audience`` is configured, in which case the
+        check is opt-in and skipped). Returns False and emits
+        :attr:`tessera.events.EventKind.MCP_TOKEN_AUDIENCE_MISMATCH`
+        when the audience does not match. Callers MUST refuse to
+        forward calls when this returns False.
+        """
+        if self.inbound_token_audience is None:
+            return True
+        from tessera.mcp.oauth import token_audience_check
+
+        result = token_audience_check(
+            token_audience,
+            expected_resource=self.inbound_token_audience,
+            principal=self.principal,
+            correlation_id=correlation_id,
+        )
+        return bool(result)
+
+    def upstream_token_request(
+        self,
+        *,
+        scope: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        """Build the RFC 8707 form-body for an upstream token request.
+
+        Always includes ``resource=<upstream_resource_indicator>`` so
+        the upstream MCP server can verify the token was minted for
+        it. Raises :class:`ValueError` when no upstream resource
+        indicator is configured (a misconfiguration that would
+        otherwise allow pass-through tokens).
+        """
+        if not self.upstream_resource_indicator:
+            raise ValueError(
+                "upstream_resource_indicator is required for RFC 8707 "
+                "audience binding; configure the MCPTrustProxy field"
+            )
+        from tessera.mcp.oauth import mint_upstream_token_request
+
+        return mint_upstream_token_request(
+            self.upstream_resource_indicator,
+            scope=scope,
+            extra=extra,
+        )
+
+    def reject_passthrough(
+        self,
+        inbound_token: str | None,
+        upstream_token: str | None,
+        *,
+        correlation_id: str | None = None,
+    ) -> bool:
+        """Refuse to pass an inbound bearer token through to upstream.
+
+        Returns True when the call may proceed (tokens differ).
+        Returns False and emits a security event when the upstream
+        token equals the inbound token (the structural pass-through
+        indicator). Callers MUST refuse to forward when this
+        returns False.
+        """
+        from tessera.mcp.oauth import reject_token_passthrough
+
+        result = reject_token_passthrough(
+            inbound_token,
+            upstream_token,
+            principal=self.principal,
+            correlation_id=correlation_id,
+        )
+        return bool(result)
 
     async def _handle_call(
         self,
@@ -219,6 +314,44 @@ class MCPTrustProxy:
     async def _fetch_tools(self, session: Any) -> None:
         result = await session.list_tools()
         self._cached_tools = result.tools
+        # Wave 2B-iii: recompute the per-server MCP Security Score on
+        # every tools/list and stash it for OTel export. Pure math; no
+        # network calls. The downstream caller can read
+        # ``self.last_security_score`` for export to the OTel pipeline.
+        self.last_security_score = self._compute_security_score()
+
+    def _compute_security_score(self):
+        """Compute the per-server MCP Security Score for OTel export."""
+        from tessera.mcp.score import ScoreInputs, compute
+        from tessera.mcp.tier import TierAssignment, TrustTier
+
+        # Without a signed manifest we treat the upstream as
+        # COMMUNITY tier; once Wave 2B-i + 2B-ii are wired into the
+        # upstream registration flow the assignment travels through
+        # via :meth:`set_tier_assignment`.
+        assignment = getattr(
+            self,
+            "_tier_assignment",
+            TierAssignment(
+                tier=TrustTier.COMMUNITY,
+                reason="no signed manifest fetched",
+                verification=None,
+            ),
+        )
+        inputs = ScoreInputs(
+            server_id=self.upstream_url,
+            tier=assignment,
+            tools_count=len(self._cached_tools or []),
+            critical_args_specs_present=bool(
+                getattr(self, "_critical_args_present", False)
+            ),
+        )
+        return compute(inputs)
+
+    def set_tier_assignment(self, assignment) -> None:
+        """Store a verified-signed-manifest tier assignment so the
+        next :meth:`_compute_security_score` reflects it."""
+        self._tier_assignment = assignment
 
     # ------------------------------------------------------------------
     # Server construction

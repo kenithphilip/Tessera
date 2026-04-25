@@ -277,3 +277,11 @@ class TesseraCallbackHandler:
     ) -> None:
         """Chain errored. Context is preserved for inspection."""
         pass
+
+
+# Wave 2H spec name. The original ``Tessera*`` names remain for
+# back-compat; ``Mesh*`` is the recommended bundling name documented
+# in the integration guide and used in upstream-PR examples.
+MeshCallbackHandler = TesseraCallbackHandler
+
+__all__ = ["TesseraCallbackHandler", "MeshCallbackHandler"]

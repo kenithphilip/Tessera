@@ -27,6 +27,77 @@ from tessera.proxy import create_app
 from tessera.spire import create_spire_identity_verifier
 
 
+def _run_mcp_command(args: argparse.Namespace) -> int:
+    """Dispatch ``tessera mcp ...`` subcommands."""
+    if args.mcp_cmd == "fetch":
+        return _run_mcp_fetch(args)
+    print(f"unknown mcp subcommand: {args.mcp_cmd!r}", file=sys.stderr)
+    return 2
+
+
+def _run_mcp_fetch(args: argparse.Namespace) -> int:
+    """Implement ``tessera mcp fetch <registry_url> --min-tier=...``.
+
+    Fetches a signed in-toto MCP manifest from the registry, validates
+    the DSSE envelope + Statement, assigns a :class:`TrustTier`, and
+    enforces the ``--min-tier`` floor. Writes the manifest JSON to
+    stdout (or ``--out``) only when verification passes (or
+    ``--allow-unverified`` is set). Exit codes: 0 on success, 2 on
+    verification failure or tier below floor, 3 on transport error.
+    """
+    import json as _json
+
+    from tessera.mcp.manifest import SignedManifest, SigningMethod
+    from tessera.mcp.tier import TrustTier, assign_tier, tier_allows
+
+    try:
+        resp = httpx.get(args.registry_url, timeout=15.0)
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        print(f"fetch failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
+    try:
+        envelope = resp.json()
+    except ValueError as exc:
+        print(f"registry returned non-JSON body: {exc}", file=sys.stderr)
+        return 3
+    try:
+        manifest = SignedManifest.from_envelope(envelope)
+    except Exception as exc:  # noqa: BLE001
+        print(f"unable to parse signed manifest: {exc}", file=sys.stderr)
+        return 2
+    hmac_key: bytes | None = None
+    if args.hmac_key:
+        hmac_key = bytes.fromhex(args.hmac_key)
+    elif manifest.method == SigningMethod.HMAC:
+        env_key = os.environ.get("TESSERA_MCP_HMAC_KEY", "")
+        if env_key:
+            hmac_key = bytes.fromhex(env_key)
+    assignment = assign_tier(manifest, hmac_key=hmac_key)
+    floor = TrustTier[args.min_tier.upper()]
+    allowed = tier_allows(assignment, min_tier=floor)
+    summary = {
+        "registry_url": args.registry_url,
+        "method": str(manifest.method),
+        "tier": assignment.tier.name,
+        "tier_reason": assignment.reason,
+        "min_tier": floor.name,
+        "allowed": allowed,
+    }
+    if not allowed and not args.allow_unverified:
+        print(_json.dumps(summary, indent=2), file=sys.stderr)
+        return 2
+    payload = _json.dumps(
+        {"manifest": manifest.statement, "verification": summary}, indent=2
+    )
+    if args.out == "-":
+        print(payload)
+    else:
+        Path(args.out).write_text(payload, encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 0
+
+
 def _openai_upstream(api_key: str, base_url: str):
     async def call(payload: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -278,11 +349,45 @@ def main(argv: list[str] | None = None) -> int:
         help="SPIFFE Workload API socket, defaults to SPIFFE_ENDPOINT_SOCKET",
     )
 
+    mcp = sub.add_parser("mcp", help="MCP registry / manifest tooling")
+    mcp_sub = mcp.add_subparsers(dest="mcp_cmd", required=True)
+    mcp_fetch = mcp_sub.add_parser(
+        "fetch",
+        help=(
+            "fetch and verify a signed MCP manifest from a registry; "
+            "filter by minimum trust tier"
+        ),
+    )
+    mcp_fetch.add_argument(
+        "registry_url",
+        help="URL of the signed-manifest registry to fetch from",
+    )
+    mcp_fetch.add_argument(
+        "--min-tier",
+        choices=("community", "verified", "attested"),
+        default=os.environ.get("TESSERA_MCP_MIN_TIER", "community"),
+        help="minimum acceptable trust tier (default: community or env)",
+    )
+    mcp_fetch.add_argument(
+        "--hmac-key",
+        help="HMAC key (hex) for HMAC-signed envelopes; default uses sigstore",
+    )
+    mcp_fetch.add_argument(
+        "--out", default="-", help="write fetched manifest to file (default: stdout)"
+    )
+    mcp_fetch.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help="exit 0 even when the manifest fails verification (audit-only)",
+    )
+
     args = parser.parse_args(argv)
     if args.cmd == "bench":
         from tessera.evaluate.cli import main as bench_main
 
         return bench_main(args.bench_args or [])
+    if args.cmd == "mcp":
+        return _run_mcp_command(args)
     if args.cmd == "control-plane":
         if not args.auth_token and not args.allow_unauthenticated:
             print(

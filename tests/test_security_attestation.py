@@ -286,3 +286,16 @@ def test_cli_emit_scorecard_with_version_flag(tmp_path):
     assert rc == 0
     data = json.loads(out.read_text(encoding="utf-8").strip())
     assert data["predicate"]["tessera_version"] == "1.2.3"
+
+
+def test_attestation_embeds_atlas_navigator_reference() -> None:
+    """Wave 2M audit: the ATLAS Navigator layer reference must
+    appear in every attestation predicate."""
+    from tessera.evaluate.scorecard.emitter import ScorecardEmitter
+
+    attestation = ScorecardEmitter(version="0.13.1").build()
+    layer = attestation["predicate"]["mitre_atlas_navigator_layer"]
+    assert layer["schema_version"] == "tessera.atlas_navigator.v1"
+    assert "atlas_navigator_layer.json" in layer["relative_path"]
+    # technique_count is loaded from the static layer file when present.
+    assert isinstance(layer["technique_count"], int)

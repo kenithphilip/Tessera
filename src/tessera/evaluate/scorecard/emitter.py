@@ -173,6 +173,43 @@ def _default_compliance() -> dict[str, Any]:
     return {name: {"covered": True} for name in _TAXONOMIES}
 
 
+def _atlas_navigator_layer() -> dict[str, Any]:
+    """Return a compact reference to the MITRE ATLAS Navigator layer.
+
+    Wave 2M ships a static layer at
+    ``docs/security/atlas_navigator_layer.json``. Embed a reference
+    (URI + on-disk relative path + technique count) here so a
+    consumer of the attestation can pivot directly to the layer
+    without re-deriving it from the compliance tables.
+
+    The full layer JSON is NOT inlined to keep the attestation
+    payload bounded; the reference points at the addressable
+    artifact, which is what a SOC team imports into the ATLAS
+    Navigator UI.
+    """
+    layer_uri = (
+        "https://github.com/kenithphilip/Tessera/blob/main/"
+        "docs/security/atlas_navigator_layer.json"
+    )
+    relative_path = "docs/security/atlas_navigator_layer.json"
+    technique_count = 0
+    layer_path = (
+        Path(__file__).resolve().parents[3] / relative_path
+    )
+    if layer_path.exists():
+        try:
+            data = json.loads(layer_path.read_text(encoding="utf-8"))
+            technique_count = len(data.get("techniques", []))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {
+        "schema_version": "tessera.atlas_navigator.v1",
+        "layer_uri": layer_uri,
+        "relative_path": relative_path,
+        "technique_count": technique_count,
+    }
+
+
 @dataclass
 class ScorecardEmitter:
     """Builds a Tessera Security Attestation from local data sources.
@@ -233,6 +270,10 @@ class ScorecardEmitter:
             "audit_summary": _audit_summary(self.audit_log_path),
             "compliance_taxonomies": _default_compliance(),
             "principles_revision": self.principles_revision,
+            # Wave 2M: embed the MITRE ATLAS Navigator layer reference
+            # so SOC teams can pivot from a scorecard back to ATLAS
+            # technique coverage without a second hop.
+            "mitre_atlas_navigator_layer": _atlas_navigator_layer(),
         }
 
         if self.scanner_report_path:
