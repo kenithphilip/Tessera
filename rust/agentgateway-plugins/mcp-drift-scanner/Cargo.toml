@@ -1,0 +1,20 @@
+[package]
+name = "tessera-agentgateway-mcp-drift-scanner"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "MCP behavioral drift scanner plugin for upstream agentgateway. In-tree until the upstream PR merges."
+
+[lib]
+name = "tessera_agentgateway_mcp_drift_scanner"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+# Audit gap 4: alignment with the Tessera workspace primitives.
+# The drift scanner classifies samples by Origin so an upstream
+# MCP server's responses can be tracked alongside its origin.
+tessera-core = { path = "../../crates/tessera-core" }

@@ -1,0 +1,38 @@
+# Helm values overlay for cilium/tetragon.
+# Apply with: helm upgrade tetragon cilium/tetragon -n kube-system -f tetragon-values.yaml
+#
+# These values enable the feature set required by the tessera TracingPolicy.
+
+tetragon:
+  # Enable the BTF (BPF Type Format) features for CO-RE support.
+  btf: ""  # leave empty to auto-detect from /sys/kernel/btf/vmlinux
+
+  # Export Tetragon events to stdout for log aggregation.
+  exportFilename: /var/run/cilium/tetragon/tetragon.log
+
+  # Enable the process monitor (required for kprobe selectors).
+  enableProcessCred: true
+  enableProcessNs: true
+
+  # Resource limits for the tetragon daemonset container.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+tetragonOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Annotate daemonset pods so Tessera can identify Tetragon nodes.
+podAnnotations:
+  tessera.dev/runtime-tier: "3"
+  tessera.dev/component: "tetragon"

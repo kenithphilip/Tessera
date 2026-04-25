@@ -1,0 +1,15 @@
+[package]
+name = "tessera-agentgateway-spiffe-svid-validator"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "SPIFFE SVID validator plugin shaped for upstream agentgateway. In-tree until the upstream PR merges."
+
+[lib]
+name = "tessera_agentgateway_spiffe_svid_validator"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"

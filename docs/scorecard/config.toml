@@ -1,0 +1,11 @@
+baseURL = "https://tessera-ai.github.io/scorecard/"
+languageCode = "en-us"
+title = "Tessera Scorecards"
+
+[params]
+  description = "Security attestations for the Tessera primitives library."
+  attestation_schema = "https://tessera.dev/security-attestation/v1"
+  predicate_type = "https://tessera.dev/security-attestation/v1"
+
+[markup.goldmark.renderer]
+  unsafe = false

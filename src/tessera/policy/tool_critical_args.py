@@ -93,21 +93,49 @@ class EnforcementMode(StrEnum):
     BOTH = "both"
 
 
+_SCALAR_DEPRECATION_WARNED: bool = False
+
+
 def get_enforcement_mode() -> EnforcementMode:
     """Return the active enforcement mode.
 
     Reads ``TESSERA_ENFORCEMENT_MODE`` from the environment with
-    case-insensitive matching. Falls back to :attr:`EnforcementMode.BOTH`
-    (the v0.12 default; Phase 4 wave 4A will flip the default to
-    :attr:`EnforcementMode.ARGS` per ADR 0006).
+    case-insensitive matching. The v1.0 default is
+    :attr:`EnforcementMode.ARGS` per ADR 0006; operators upgrading
+    from v0.x can pin the v0.12 behavior with
+    ``TESSERA_ENFORCEMENT_MODE=both`` (or the legacy
+    ``TESSERA_ENFORCEMENT_MODE=scalar`` for the v0.7 single-floor
+    path). Unknown values fail safe to ``ARGS``: an operator with
+    a typo gets the v1.0 default rather than silently falling back
+    to legacy behavior.
+
+    The legacy ``scalar`` mode emits a one-time
+    :class:`DeprecationWarning` at first call so operators see the
+    cutover path. The mode itself remains supported through the
+    v1.x line; removal would land in v2.0 with a 12-month
+    deprecation window per ``docs/api_stability/v1.0_freeze.md``.
     """
-    raw = os.environ.get("TESSERA_ENFORCEMENT_MODE", "both").strip().lower()
+    global _SCALAR_DEPRECATION_WARNED
+    raw = os.environ.get("TESSERA_ENFORCEMENT_MODE", "args").strip().lower()
     try:
-        return EnforcementMode(raw)
+        mode = EnforcementMode(raw)
     except ValueError:
-        # Unknown value: fail safe to BOTH (most strict). Operator
-        # who set a typo should see both checks fire.
-        return EnforcementMode.BOTH
+        return EnforcementMode.ARGS
+    if mode == EnforcementMode.SCALAR and not _SCALAR_DEPRECATION_WARNED:
+        import warnings
+
+        warnings.warn(
+            "TESSERA_ENFORCEMENT_MODE=scalar is the v0.7-era legacy "
+            "path that relies on Context.min_trust as the only gate. "
+            "v1.0 default is 'args'; the 'scalar' path remains as a "
+            "back-compat shim through the v1.x line. See "
+            "docs/migration/v1.0-enforcement-mode.md for the cutover "
+            "path.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        _SCALAR_DEPRECATION_WARNED = True
+    return mode
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tessera-mesh"
-version = "0.13.2"
+version = "1.0.1"
 description = "Signed provenance labels and taint-tracking policy for LLM context windows."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -20,6 +20,11 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    # Phase 1 wave 1A property-based tests for the label lattice
+    # algebraic laws live under tests/invariants/. Without this,
+    # `pip install -e '.[dev]'` in CI cannot import hypothesis and
+    # pytest fails at collection time.
+    "hypothesis>=6.100",
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
     "pyjwt[crypto]>=2.8",
@@ -89,6 +94,14 @@ guardrail = [
 ]
 guardrail-openai = [
     "openai>=1.0",
+]
+datalog = [
+    # Phase 3 wave 3A: pure-Python Datalog with stratified negation.
+    # The default DatalogPolicyEngine ships an in-tree evaluator;
+    # this extra installs pyDatalog for higher-throughput rule sets.
+    # The spec called for "ascent", a Rust crate; pyDatalog is the
+    # established Python equivalent (PyPI, MIT-licensed).
+    "pyDatalog>=0.17",
 ]
 
 [project.scripts]

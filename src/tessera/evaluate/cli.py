@@ -88,6 +88,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Integer revision of the principles/v1.yaml document (default: 1).",
     )
+    emit.add_argument(
+        "--paired-model",
+        default=None,
+        help=(
+            "Wave 4E: emit a paired Tessera + model scorecard. The "
+            "paired model identifier (e.g. 'claude-sonnet-4.5', "
+            "'gpt-5', 'gemini-2.5-pro') is recorded in the "
+            "attestation's `paired_model` field; the rendered "
+            "filename gets a `+<model>` suffix."
+        ),
+    )
     return parser
 
 
@@ -115,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             benchmark_runs=[Path(p) for p in args.benchmark_runs],
             principles_revision=args.principles_revision,
+            paired_model=args.paired_model,
         )
 
         out_path = emitter.emit(Path(args.out))

@@ -1,0 +1,58 @@
+# firecracker@.service
+# Parametric systemd unit for per-instance Firecracker microVM management.
+# Enable a VM instance with: systemctl enable --now firecracker@<vm_id>
+# The vm_id is the %i specifier.
+#
+# Prerequisites:
+#   - /var/tessera/vmlinux and /var/tessera/rootfs.ext4 must exist
+#   - /etc/tessera/firecracker/%i/vm-config.json must exist (copy vm-config.json
+#     from this directory and customize per instance)
+#   - firecracker and jailer must be on PATH
+#
+# The unit runs firecracker under jailer for proper namespace isolation.
+# Remove the jailer ExecStart and substitute the simple firecracker invocation
+# (shown in the comment below) only in development environments.
+
+[Unit]
+Description=Tessera Firecracker microVM instance %i
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=tessera
+
+# Production: run under jailer.
+# Replace <uid> and <gid> with the tessera service account numeric IDs.
+ExecStart=/usr/bin/jailer \
+  --id %i \
+  --uid 10001 \
+  --gid 10001 \
+  --exec-file /usr/bin/firecracker \
+  --cgroup-version 2 \
+  -- \
+  --no-api \
+  --config-file /etc/tessera/firecracker/%i/vm-config.json
+
+# Development (no jailer):
+# ExecStart=/usr/bin/firecracker --no-api --config-file /etc/tessera/firecracker/%i/vm-config.json --id %i
+
+Restart=no
+RestartSec=1s
+TimeoutStartSec=10s
+TimeoutStopSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tessera-fc-%i
+
+# Lock down the host surface exposed to this unit.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

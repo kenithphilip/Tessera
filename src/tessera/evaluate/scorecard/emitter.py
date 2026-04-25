@@ -244,6 +244,11 @@ class ScorecardEmitter:
     claims: list[dict[str, Any]] = field(default_factory=list)
     mcp_security_score: dict[str, float] = field(default_factory=dict)
     principles_revision: int = 1
+    # Wave 4E: paired-model identifier (claude-sonnet-4.5, gpt-5,
+    # gemini-2.5-pro). When set, the attestation predicate carries
+    # a `paired_model` field and the rendered subject name gets a
+    # `+<model>` suffix so paired scorecards are addressable.
+    paired_model: str | None = None
 
     def build(self) -> dict[str, Any]:
         """Construct the attestation dict without writing it to disk.
@@ -251,9 +256,14 @@ class ScorecardEmitter:
         Returns:
             A Python dict matching the security_attestation_v1 JSON-Schema.
         """
+        subject_suffix = (
+            f"+{self.paired_model}" if self.paired_model else ""
+        )
         subjects = list(self.subjects) or [
             {
-                "name": f"tessera_mesh-{self.version}-py3-none-any.whl",
+                "name": (
+                    f"tessera_mesh-{self.version}{subject_suffix}-py3-none-any.whl"
+                ),
                 "digest": {"sha256": _GENESIS_HASH},
             }
         ]
@@ -275,6 +285,8 @@ class ScorecardEmitter:
             # technique coverage without a second hop.
             "mitre_atlas_navigator_layer": _atlas_navigator_layer(),
         }
+        if self.paired_model:
+            predicate["paired_model"] = self.paired_model
 
         if self.scanner_report_path:
             scanner = _scanner_metrics(self.scanner_report_path)

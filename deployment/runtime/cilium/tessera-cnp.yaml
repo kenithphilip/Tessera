@@ -1,0 +1,52 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: tessera-egress-cnp
+  namespace: tessera
+  labels:
+    app.kubernetes.io/part-of: tessera
+    tessera.dev/tier: "3"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: tessera
+
+  egress:
+    # Allow DNS resolution to kube-dns.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow outbound HTTPS to named FQDNs.
+    # Extend this list to match the tool endpoints your agent calls.
+    - toFQDNs:
+        - matchName: api.openai.com
+        - matchName: api.anthropic.com
+        - matchName: otel-collector.observability.svc.cluster.local
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "4317"
+              protocol: TCP
+
+    # Allow intra-cluster traffic on the pod CIDR.
+    - toCIDR:
+        - "10.0.0.0/8"
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+
+    # All other egress is implicitly denied by Cilium when at least one
+    # egress rule is present. An explicit deny is shown below for clarity.
+    # Remove the comment to make the deny explicit in the policy log.
+    # - toEntities:
+    #     - all

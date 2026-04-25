@@ -1,0 +1,315 @@
+# Action Critic principles v2
+#
+# Extends v1 (6 principles) to 20 principles.
+# P01-P06 are the original P1-P6 with stable ids and ASI/ATLAS codes
+# unchanged. P07-P20 are new; each carries an engineering rationale
+# grounded in the Phase 3 Wave 3G threat model (indirect prompt
+# injection, confused-deputy, GCG adversarial attacks, audit gaps).
+#
+# GCG resistance: every principle has a corresponding stub-GCG test
+# in tests/adversarial/test_principles_gcg_resistance.py.
+# Per-principle pass rates are published in
+# scanners/REPORT_principles_gcg_resistance.json after each run.
+#
+# References:
+#   - docs/strategy/principles_evolution.md
+#   - docs/strategy/2026-04-engineering-brief.md Section 2.3
+#   - arXiv:2510.17276 (multi-objective GCG)
+#   - docs/adr/0006-arg-level-provenance-primary.md
+schema_version: "tessera.principles.v2"
+revision: 1
+issued: "2026-04-25"
+
+principles:
+  - id: data_minimization
+    description: >-
+      The minimum information required to perform the action must
+      reach the tool. Excessive scope (e.g., full conversation
+      context handed to a single-purpose API) increases blast
+      radius if the tool is compromised.
+    asi_codes: [ASI-02, ASI-07]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Bounds disclosure on the recipient side and reduces what a
+      future drift / signature-failure event can ex-filtrate.
+
+  - id: origin_consistency
+    description: >-
+      Critical arguments must originate from a labeled source whose
+      integrity matches the tool's expectation (transfer_funds.amount
+      from TRUSTED, send_email.body from at most ENDORSED).
+    asi_codes: [ASI-01, ASI-04]
+    atlas_codes: [AML.T0051.001, AML.T0051.002]
+    rationale: >-
+      Captures the CaMeL invariant: an action's controlling inputs
+      must trace to a trusted origin. Aligns with the
+      tool_critical_args.required_integrity field.
+
+  - id: irreversibility
+    description: >-
+      Actions whose effect cannot be cleanly undone (file deletion,
+      fund transfer, message send) require a stronger evidence
+      gradient than reversible reads. The critic flags
+      irreversibility-class actions for human approval whenever the
+      origin-consistency check is borderline.
+    asi_codes: [ASI-03, ASI-04]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Mirrors the existing tessera.risk.IrreversibilityClass; the
+      critic surfaces it explicitly so humans see the choice.
+
+  - id: least_privilege
+    description: >-
+      The principal performing the action must hold the minimum
+      delegation required, with no scope inflation between context
+      authorization and tool invocation.
+    asi_codes: [ASI-04, ASI-10]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Catches delegation widening (a USER token used to invoke a
+      SYSTEM-only tool) and the same-planner-as-critic anti-pattern.
+
+  - id: no_exfiltration
+    description: >-
+      Tool calls whose effect is to ship data to an external
+      destination (send_email recipient, write_file path beyond a
+      permitted base, transfer_funds beneficiary) must not include
+      data with a more restrictive secrecy label than the
+      destination's audience.
+    asi_codes: [ASI-02, ASI-07]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Aligns with the audience_check field on
+      CriticalArgSpec; the critic flags violations even when policy
+      misses them due to label-recovery over-tainting.
+
+  - id: untrusted_arg_reasonable
+    description: >-
+      When a critical argument's label is UNTRUSTED, the critic
+      examines whether the value's character class and length
+      shape (from ArgShape) are plausible for the tool's documented
+      purpose. A 4 KiB UNTRUSTED string in transfer_funds.amount
+      is rejected on shape alone.
+    asi_codes: [ASI-01, ASI-09]
+    atlas_codes: [AML.T0043]
+    rationale: >-
+      Last-mile defense against AST instrumentation gaps and
+      label-recovery false positives.
+
+  - id: tool_audit_trail_integrity
+    description: >-
+      Every action must be reversible-by-audit: the audit log entry
+      for the call carries enough state (tool name, argument shapes,
+      label summaries, principal, correlation_id, decision) to
+      reconstruct the call context without replaying the original
+      inputs. Actions that would produce an incomplete audit record
+      are flagged before dispatch.
+    asi_codes: [ASI-05, ASI-08]
+    atlas_codes: [AML.T0054]
+    rationale: >-
+      Incomplete audit records break post-incident forensics and
+      compliance verification (NIST SP 800-53 AU-3). The critic
+      enforces the structural completeness requirement so operators
+      can guarantee audit fidelity before execution, not after.
+
+  - id: input_format_consistency
+    description: >-
+      Argument values must match the documented input schema's
+      character class. A numeric field receiving arbitrary Unicode,
+      or an enum field receiving a string outside the declared set,
+      signals injection or schema mismatch and must be rejected.
+    asi_codes: [ASI-01, ASI-09]
+    atlas_codes: [AML.T0043, AML.T0051.001]
+    rationale: >-
+      Character-class mismatches are the earliest detectable signal
+      for template-injection and prompt-stuffing attacks. The ArgShape
+      char_classes field enables this check without touching raw values.
+
+  - id: cross_tool_dependency_check
+    description: >-
+      When an argument's value depends on the output of a prior tool
+      call, that dependency must be explicit in the ActionReview
+      (has_dependent_args=true in RiskSignals). Implicit chaining
+      hides data flows from the audit log and allows tainted data to
+      propagate silently across tool boundaries.
+    asi_codes: [ASI-04, ASI-06]
+    atlas_codes: [AML.T0051.002]
+    rationale: >-
+      CaMeL's key invariant is that data flows are visible. An
+      undeclared cross-tool dependency breaks this: if the critic
+      cannot see that arg B came from tool A, it cannot enforce
+      origin_consistency transitively. Requiring explicit declaration
+      closes that gap.
+
+  - id: ratelimit_respect
+    description: >-
+      Actions must hold an explicit rate-limit budget (rate_limit_pressure
+      < 1.0 in RiskSignals) before dispatch. Calls that exceed the
+      declared budget are denied; calls that approach the limit
+      (pressure >= 0.9) require approval so a human can confirm the
+      urgency.
+    asi_codes: [ASI-08, ASI-10]
+    atlas_codes: [AML.T0029]
+    rationale: >-
+      Resource exhaustion via repeated agent tool calls is a documented
+      DoS vector. Surfacing rate-limit pressure at the critic boundary
+      prevents runaway loops from draining quotas before a human
+      notices.
+
+  - id: secrecy_dont_export
+    description: >-
+      Arguments labeled with secrecy level PRIVATE or above cannot
+      reach external destinations. The critic evaluates destination
+      type from the tool name and blocks any call where a PRIVATE-
+      labeled arg would cross the trust boundary to a third-party
+      endpoint.
+    asi_codes: [ASI-02, ASI-07]
+    atlas_codes: [AML.T0024, AML.T0036]
+    rationale: >-
+      no_exfiltration (P05) checks audience sets; secrecy_dont_export
+      is the complementary check on the secrecy dimension. Together
+      they cover both the audience axis (who may read) and the secrecy
+      axis (how sensitive the data is) of the label lattice.
+
+  - id: capability_minimization
+    description: >-
+      The required capability granted to the tool must be the minimum
+      necessary to complete the declared action. A tool granted write
+      access when the action is read-only, or network access when the
+      action is local-only, violates this principle. The critic
+      evaluates the action_impact and capability set in the manifest.
+    asi_codes: [ASI-04, ASI-10]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      Complements least_privilege at the capability (not delegation)
+      layer. A principal may hold the correct delegation token but
+      still invoke a tool with excess capability. Both checks are
+      needed.
+
+  - id: confused_deputy_check
+    description: >-
+      Actions executed on behalf of one principal cannot be
+      authorized using a delegation token issued for a different
+      principal. The critic verifies that the ActionReview.principal
+      matches the subject of any delegation token in scope, blocking
+      cross-principal impersonation at the critic boundary.
+    asi_codes: [ASI-04, ASI-06]
+    atlas_codes: [AML.T0051.001]
+    rationale: >-
+      The confused-deputy problem is a classical ambient-authority
+      failure. In agent systems it manifests when an injected payload
+      causes the planner to act under a different identity than the
+      one that authorized the session. Checking principal alignment at
+      the critic closes this path structurally.
+
+  - id: deterministic_under_replay
+    description: >-
+      The critic's decision on any given ActionReview must be
+      reproducible from the same inputs with no jitter introduced
+      by model sampling or non-deterministic state. The cache key
+      is a SHA-256 of the canonical-JSON action; cache hits must
+      return the same decision. Divergence between the live decision
+      and the cached decision is a regression.
+    asi_codes: [ASI-05, ASI-08]
+    atlas_codes: [AML.T0054]
+    rationale: >-
+      An attacker who can cause the critic to produce different
+      outcomes on semantically identical inputs can probe for
+      approval via repeated submission. Determinism is also required
+      for audit reproducibility and compliance replay. This principle
+      is directly tested by the GCG near-duplicate suite.
+
+  - id: readers_audience_match
+    description: >-
+      The reader_principals set on every exfiltration-class argument
+      must include every recipient of the resulting network call. If
+      the destination recipient is not in the reader set, the call is
+      a data leak regardless of secrecy level. The critic enforces
+      this even when the policy layer misses it due to over-tainting.
+    asi_codes: [ASI-02, ASI-07]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      no_exfiltration (P05) blocks calls with an empty reader set;
+      readers_audience_match is the positive-direction check: the
+      destination must appear in the reader set. Together the two
+      principles are a complete audience-consistency gate.
+
+  - id: unsafe_template_render
+    description: >-
+      Templates or format strings carrying UNTRUSTED segments cannot
+      be rendered into HTML, shell command, or SQL contexts. The
+      critic rejects any render-class tool call whose template arg
+      is labeled UNTRUSTED and whose target context is one of the
+      three injection-prone rendering types.
+    asi_codes: [ASI-01, ASI-09]
+    atlas_codes: [AML.T0043]
+    rationale: >-
+      Template injection is the most common concrete form of indirect
+      prompt injection. Blocking the render call at the critic boundary
+      is more reliable than sanitizing at the template engine, because
+      the critic has access to the label provenance the engine does not.
+
+  - id: destructive_requires_approval
+    description: >-
+      Tool calls with action_impact=DESTRUCTIVE require explicit human
+      approval unless the ActionReview carries a pre-approval token
+      issued by an authorized principal. Without a pre-approval token
+      the critic returns REQUIRE_APPROVAL. An ALLOW for a DESTRUCTIVE
+      call with no pre-approval is a security regression.
+    asi_codes: [ASI-03, ASI-04]
+    atlas_codes: [AML.T0024]
+    rationale: >-
+      The most dangerous agent actions (delete, wipe, decommission,
+      wire transfer) must never proceed on model judgment alone.
+      Requiring a pre-approval token creates an auditable human
+      decision point that cannot be bypassed by an injected payload.
+
+  - id: mcp_tier_floor
+    description: >-
+      Actions dispatched to COMMUNITY-tier MCP servers (servers not
+      published by a verified organization or not explicitly allow-
+      listed by the operator) require human approval before execution.
+      VERIFIED and OFFICIAL tiers may proceed without this gate if
+      other principles pass.
+    asi_codes: [ASI-06, ASI-10]
+    atlas_codes: [AML.T0024, AML.T0029]
+    rationale: >-
+      Community MCP servers have not undergone the same provenance
+      and security vetting as official servers. Requiring approval
+      for community-tier calls gives operators a natural
+      quarantine boundary without banning community servers entirely.
+
+  - id: critic_self_consistency
+    description: >-
+      The critic's decisions on near-identical ActionReviews (differing
+      only in fields that should not affect the outcome, such as
+      correlation_id or monotone-increasing timestamps) cannot diverge
+      beyond the configured tolerance. Divergence signals model jitter
+      or cache poisoning and triggers a REQUIRE_APPROVAL fallback with
+      an audit event.
+    asi_codes: [ASI-05, ASI-08]
+    atlas_codes: [AML.T0054]
+    rationale: >-
+      An attacker can exploit non-determinism by submitting near-
+      duplicate actions until one is ALLOWed. Self-consistency
+      enforcement collapses the attack surface to the class of inputs
+      where the critic is genuinely ambiguous, where REQUIRE_APPROVAL
+      is the correct conservative outcome.
+
+  - id: emergency_brake
+    description: >-
+      When the global DENY rate across all critic decisions exceeds
+      the configured threshold within any 5-minute sliding window,
+      all DESTRUCTIVE-impact actions are automatically denied without
+      consulting the backend. The brake engages as a circuit-level
+      protection when anomalous denial patterns suggest an active
+      attack or a systematic policy misconfiguration.
+    asi_codes: [ASI-08, ASI-10]
+    atlas_codes: [AML.T0029, AML.T0054]
+    rationale: >-
+      A high denial rate is the leading indicator of an active
+      injection campaign. The emergency brake converts that signal
+      into a hard stop for the highest-risk action class before
+      an operator can manually intervene. The 5-minute window is
+      short enough to react to real attacks and long enough to
+      avoid false positives from brief policy reloads.

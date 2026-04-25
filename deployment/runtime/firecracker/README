@@ -1,0 +1,56 @@
+Firecracker microVM deployment (Tier 2 runtime isolation)
+==========================================================
+
+Overview
+--------
+Tier 2 isolates each destructive tool call inside a fresh Firecracker microVM.
+The Python wrapper in tessera.runtime.firecracker provides the API; this
+directory supplies the operator-facing artifacts.
+
+Prerequisites
+-------------
+- Linux host (x86_64 or aarch64). Firecracker does not run on macOS.
+- firecracker >= 1.5 binary on PATH (https://github.com/firecracker-microvm/firecracker/releases)
+- jailer (bundled with the firecracker release) for production isolation.
+- A vmlinux-format kernel image (5.10 LTS recommended).
+- An ext4 root filesystem image containing the tessera-guest-agent binary.
+
+Files in this directory
+-----------------------
+  vm-config.json          Reference VM configuration for a single microVM
+                          instance. Pass to firecracker --config-file.
+  firecracker@.service    systemd unit for per-instance VM management.
+                          Parametrize with the vm_id: firecracker@<vm_id>.service
+
+Environment variables consumed by tessera.runtime.firecracker
+--------------------------------------------------------------
+  TESSERA_RUNTIME_TIER    Set to "2" to enable microVM isolation. Default: "1".
+  TESSERA_FC_KERNEL       Absolute path to the vmlinux kernel image.
+  TESSERA_FC_ROOTFS       Absolute path to the ext4 root filesystem image.
+
+VM snapshot workflow (production)
+-----------------------------------
+Pre-warm a base VM snapshot and restore it per call to keep gate overhead
+below 5 ms. The rough flow:
+
+  1. Start a base VM from vm-config.json:
+       firecracker --no-api --config-file vm-config.json --id base
+
+  2. When the guest is ready, create a snapshot:
+       curl -X PUT http://${FIRECRACKER_SOCK}/snapshot/create \
+         -H 'Content-Type: application/json' \
+         -d '{"snapshot_type":"Full","snapshot_path":"/var/tessera/base.snap","mem_file_path":"/var/tessera/base.mem"}'
+
+  3. For each tool call, restore from snapshot:
+       curl -X PUT http://${FIRECRACKER_SOCK}/snapshot/load \
+         -H 'Content-Type: application/json' \
+         -d '{"snapshot_path":"/var/tessera/base.snap","mem_backend":{"backend_type":"File","backend_path":"/var/tessera/base.mem"}}'
+
+Security notes
+--------------
+- Run firecracker under jailer to confine it to its own mount + network + PID
+  namespace. See the jailer documentation at:
+  https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md
+- The root filesystem image should be built with a minimal read-only base.
+  The guest agent binary and its dependencies are the only executables needed.
+- Do not share kernel images or rootfs images across security domains.

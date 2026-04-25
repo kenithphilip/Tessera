@@ -54,6 +54,9 @@ NIST_CONTROLS: dict[str, tuple[str, ...]] = {
     # v0.12 migration + delegation exec telemetry
     EventKind.CLAIM_PROVENANCE_FAIL: ("AU-10", "SI-10"),
     EventKind.DELEGATION_EXEC: ("AC-4", "AC-6", "AU-12"),
+    # v0.14 Phase 3 wave 3B-i: Tier 1 runtime isolation telemetry
+    EventKind.RUNTIME_EGRESS_DENY: ("SC-7", "AC-4"),
+    EventKind.RUNTIME_FS_DENY: ("AC-3", "AC-6", "SC-7"),
 }
 
 CWE_CODES: dict[str, tuple[str, ...]] = {

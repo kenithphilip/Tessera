@@ -1,0 +1,20 @@
+[package]
+name = "tessera-agentgateway-audit-event-sink"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "Hash-chained audit event sink plugin for upstream agentgateway. In-tree until the upstream PR merges."
+
+[lib]
+name = "tessera_agentgateway_audit_event_sink"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+# Audit gap 4: reuse tessera-audit's canonical-JSON + verify_chain
+# helpers so the plugin and the in-tree audit log produce
+# bit-identical chained records.
+tessera-audit = { path = "../../crates/tessera-audit" }

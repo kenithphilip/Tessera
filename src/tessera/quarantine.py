@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypeVar
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tessera.context import Context
 from tessera.events import EventKind, SecurityEvent, emit as emit_event
@@ -79,6 +79,13 @@ class WorkerReport(BaseModel):
     uncertainty. When False, the QuarantinedExecutor re-queries with
     more context rather than acting on partial or hallucinated output.
     """
+
+    # v1.0 wave 4A audit: extra="forbid" so a worker that returns an
+    # unknown field (e.g. ``summary``, ``notes``) raises a
+    # ValidationError instead of silently dropping the field. This
+    # matches the CLAUDE.md invariant ("WorkerReport has no free-form
+    # string fields") at runtime, not just at design time.
+    model_config = ConfigDict(extra="forbid")
 
     have_enough_information: bool = True
     entities: list[str] = Field(default_factory=list)

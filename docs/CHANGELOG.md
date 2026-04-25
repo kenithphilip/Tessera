@@ -4,8 +4,84 @@ All notable changes to Tessera are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Everything before v1.0.0 is experimental; API changes may occur in any
-minor release.
+v1.0 is the API + wire-format freeze for the v1.x line; future v2
+changes are scoped under `docs/adr/0007-provenance-label-v2-migration.md`.
+
+## [1.0.0] - 2026-04-25
+
+General Availability. End of the four-phase v0.12-to-v1.0 plan.
+
+### Added
+
+- **Wave 4A**: `TESSERA_ENFORCEMENT_MODE=args` is the new default
+  per ADR-0006. Migration guide at
+  `docs/migration/v1.0-enforcement-mode.md`. The legacy `scalar`
+  mode emits a one-time `DeprecationWarning` on first read.
+- **Wave 4B**: Rust `tessera-core::label::ProvenanceLabel` GA.
+  PyO3 binding at `tessera_rs.label.ProvenanceLabel` exposes the
+  bit-identical Rust struct.
+- **Wave 4C**: Full SEP-1913 compliance + 3-mode compat shim
+  (`tessera.mcp.sep1913`).
+- **Wave 4D**: `tessera mcp mirror sync / status` CLI subcommand
+  + nightly GitHub Actions workflow.
+- **Wave 4E**: `ScorecardEmitter.paired_model` field + CLI flag.
+  Three signed paired scorecards committed at
+  `docs/scorecard/static/paired-{claude-sonnet-4.5,gpt-5,gemini-2.5-pro}.intoto.jsonl`.
+- **Wave 4F**: Community red-team corpus v2 with 1091 raw payloads
+  across 8 files.
+- **Wave 4G**: ASIDE / SecAlign / Meta-SecAlign worker model
+  recommendation doc + 3 runnable example scripts.
+- **Wave 4H**: Foundation-model partnership package
+  (`docs/standards-engagement/foundation_model_partnerships/`).
+- **Wave 4I**: `CertifiablyRobustRAGGuard` per arXiv:2405.15556.
+- **Wave 4J**: Foundation governance proposal v1.1 (OpenSSF
+  sandbox-tier).
+- API + ABI stability matrix at `docs/api_stability/v1.0_freeze.md`.
+- `WorkerReport` is now `extra="forbid"`.
+
+### Changed
+
+- `pyproject.toml` license: `AGPL-3.0-or-later` -> `Apache-2.0`
+  (corrects v0.13.x metadata that drifted from ADR-0001).
+- Rust workspace + `tessera-rs` wheel version: `0.14.0` -> `1.0.0`.
+
+### Verified
+
+- 2018 Python tests passing, 16 skipped, 0 failures.
+- ~390 Rust tests pass via `cargo test --workspace --exclude tessera-py`.
+- 9 agentgateway plugin tests pass.
+
+## [0.14.1] - 2026-04-25
+
+Phase 3 audit + 8 gap-closure fixes:
+
+- pyDatalog backend wired (the spec's "ascent" was a Rust crate; pyDatalog is the actual PyPI Python equivalent).
+- Stratified-negation correctness tests.
+- `sample.intoto.jsonl` generated for the Hugo scorecard site.
+- agentgateway plugins now reuse `tessera-audit::canonical_json` + `tessera-core::Origin`.
+- Rust workspace bumped to 0.14.0 / Apache-2.0.
+- Tier 1 overhead benchmark: ~0.0006 ms / call (target 0.5 ms).
+- SOC 2 Type I evidence trail framework documented.
+
+## [0.14.0] - 2026-04-25
+
+Phase 3 of the v0.12 to v1.0 plan: 10 waves covering PCAS Datalog overlay, three-tier runtime isolation, multi-turn / memory-poisoning / lethal-trifecta detectors, community red-team corpus v1, scorecard publishing, threat-intel feed reference impl, principles v2 + GCG-resistance suite, agentgateway upstream Rust plugins, NCCoE reference scenario, ProvenanceLabel v2 migration ADR.
+
+## [0.13.2] - 2026-04-25
+
+Phase 1 audit + 7 gap-closure fixes (license metadata flip, ProvenanceJSONEncoder class, TaintedValue.sources @property, TaintedStr.encode, AST rewriter coverage, TESSERA_ENFORCEMENT_MODE in policy.py, manifest schema freeze test).
+
+## [0.13.1] - 2026-04-25
+
+Phase 2 audit + 13 gap-closure fixes (real Critic backends, GuardrailCache reuse, actionImpact gating, adversarial test suite, AgentDojo APR test, mcp fetch CLI, RFC 8707 wiring, Score wiring, Mesh* aliases, ATLAS in scorecard, scanners/REPORT.md, MIGRATION.md).
+
+## [0.13.0] - 2026-04-25
+
+Phase 2 of the v0.12 to v1.0 plan: 13 waves covering Action Critic full implementation, MCP Sigstore signing chain, RFC 8707 audience binding, embedding shadow detection, behavioral drift, deployment manifests, scanner P/R + ROC AUC, Security Attestation v1, framework partnerships, WIMSE alignment, threat-intel schema, external review docs, claim_provenance migration, MITRE ATLAS Navigator layer.
+
+## [0.12.0] - 2026-04-25
+
+Phase 1 of the v0.12 to v1.0 plan: provenance substrate + Critic skeleton.
 
 ## [0.7.1] - 2026-04-23
 
