@@ -30,7 +30,11 @@ from tessera.taint.label import SecrecyLevel
 
 KEY = b"wimse-test-key-not-for-production"
 
-_NOW = datetime(2026, 4, 25, 12, 0, tzinfo=timezone.utc)
+# Use a timestamp computed at import so tests do not flake when the
+# wall-clock crosses any hard-coded "now". Microseconds are zeroed
+# so dict round-trips that serialize via ISO-8601 second-precision
+# compare equal.
+_NOW = datetime.now(timezone.utc).replace(microsecond=0)
 _EXPIRES = _NOW + timedelta(hours=1)
 
 _WORKLOAD = WorkloadIdentity(

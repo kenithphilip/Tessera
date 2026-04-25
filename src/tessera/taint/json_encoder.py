@@ -226,7 +226,48 @@ def decode(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+class ProvenanceJSONEncoder(json.JSONEncoder):
+    """``json.JSONEncoder`` subclass that emits the ``__tessera_labels__`` sidecar.
+
+    Drop-in replacement for the stdlib ``json.JSONEncoder``. Use it
+    via the ``cls=`` argument of :func:`json.dumps` / :func:`json.dump`
+    to serialize labeled trees with sidecars at every mapping level.
+
+    Example::
+
+        import json
+        from tessera.taint.json_encoder import ProvenanceJSONEncoder
+
+        wire = json.dumps(report, cls=ProvenanceJSONEncoder)
+
+    Round-trip via :func:`decode`::
+
+        from tessera.taint.json_encoder import decode
+
+        revived = decode(json.loads(wire))
+
+    The sidecar shape is wire-compatible with the SEP-1913
+    ``attribution`` field. Frozen 2026-04 under Phase 1 wave 1A.
+    """
+
+    def encode(self, o: Any) -> str:  # type: ignore[override]
+        return json.dumps(
+            _encode(o),
+            sort_keys=self.sort_keys,
+            indent=self.indent,
+            separators=(self.item_separator, self.key_separator),
+            ensure_ascii=self.ensure_ascii,
+        )
+
+    def iterencode(self, o: Any, _one_shot: bool = False):  # type: ignore[override]
+        # iterencode is the chunked variant. Delegate to encode() so
+        # the sidecar handling stays in one place; for any payload
+        # Tessera produces, the size makes a single dump fine.
+        yield self.encode(o)
+
+
 __all__ = [
+    "ProvenanceJSONEncoder",
     "SIDECAR_KEY",
     "encode",
     "decode",

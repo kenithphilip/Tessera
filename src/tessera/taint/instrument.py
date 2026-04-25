@@ -64,23 +64,39 @@ TRACKED_FUNCTIONS: set[str] = set()
 
 
 class _LabelPropagator(ast.NodeTransformer):
-    """Rewrite f-string nodes to ``taint_fstring`` calls.
+    """Rewrite label-touching AST nodes into label-preserving calls.
 
-    Walks every :class:`ast.JoinedStr` (Python's f-string node) in
-    the function body. For each one, replaces it with a call to
-    :func:`tessera.taint.tstr.taint_fstring` whose positional
-    arguments are the constituent parts of the f-string. The
-    helper rewraps the result as a :class:`TaintedStr` if any
-    interpolated value carries a label.
+    Today most of the rewrites are no-ops because the corresponding
+    operation already routes through a :class:`TaintedStr` dunder
+    (``__add__`` for ``BinOp(Add)``, ``__getitem__`` for
+    ``Subscript``, ``__eq__`` for ``Compare``, ``__contains__`` for
+    ``Compare(In)``, etc.). Visiting them and recording the visit
+    in :data:`REWRITE_COUNTS` lets the lint check confirm the
+    rewriter is reaching every label-touching site, which is the
+    spec's invariant. The active rewrites are:
+
+    - :class:`ast.JoinedStr` (f-strings): rewritten to
+      ``tessera.taint.tstr.taint_fstring(...)`` because
+      ``BUILD_STRING`` bytecode bypasses the str MRO.
+    - All other listed nodes are visited (so subtrees descend into
+      f-strings) and counted for observability.
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.rewrite_counts: dict[str, int] = {}
+
+    def _bump(self, kind: str) -> None:
+        self.rewrite_counts[kind] = self.rewrite_counts.get(kind, 0) + 1
+
     def visit_JoinedStr(self, node: ast.JoinedStr) -> ast.expr:
-        # Build the call: tessera.taint.tstr.taint_fstring(*parts).
+        self._bump("JoinedStr")
         parts: list[ast.expr] = []
         for value in node.values:
             if isinstance(value, ast.Constant):
                 parts.append(value)
             elif isinstance(value, ast.FormattedValue):
+                self._bump("FormattedValue")
                 fmt_spec = value.format_spec
                 if fmt_spec is None:
                     spec_arg: ast.expr = ast.Constant(value="")
@@ -113,6 +129,49 @@ class _LabelPropagator(ast.NodeTransformer):
             keywords=[],
         )
         return ast.copy_location(call, node)
+
+    # The remaining visit_* methods are observation-only: they count
+    # the visit so :func:`tessera.lint.check_provenance_coverage` can
+    # confirm the rewriter reached the node, and they recurse so
+    # nested f-strings are still rewritten.
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        self._bump("BinOp")
+        return self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        self._bump("Subscript")
+        return self.generic_visit(node)
+
+    def visit_Compare(self, node: ast.Compare) -> ast.AST:
+        self._bump("Compare")
+        return self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self._bump("Call")
+        return self.generic_visit(node)
+
+    def visit_Dict(self, node: ast.Dict) -> ast.AST:
+        self._bump("Dict")
+        return self.generic_visit(node)
+
+    def visit_List(self, node: ast.List) -> ast.AST:
+        self._bump("List")
+        return self.generic_visit(node)
+
+    def visit_Set(self, node: ast.Set) -> ast.AST:
+        self._bump("Set")
+        return self.generic_visit(node)
+
+    def visit_Tuple(self, node: ast.Tuple) -> ast.AST:
+        self._bump("Tuple")
+        return self.generic_visit(node)
+
+    def visit_FormattedValue(self, node: ast.FormattedValue) -> ast.AST:
+        # Stand-alone FormattedValue (outside an f-string body) is rare
+        # but possible; count it so coverage lint sees it.
+        self._bump("FormattedValue")
+        return self.generic_visit(node)
 
 
 def _qualname(func: Callable[..., Any]) -> str:

@@ -253,3 +253,50 @@ def test_lint_format_includes_actionable_message() -> None:
     assert "pkg/adapter.py:12" in msg
     assert "handle_message" in msg
     assert "@provenance_tracked" in msg
+
+
+# ---------------------------------------------------------------------------
+# Phase 1B-ii audit gap 4: rewriter visits all listed AST node kinds
+# ---------------------------------------------------------------------------
+
+
+def test_rewriter_counts_visited_node_kinds() -> None:
+    """The rewriter exposes per-kind visit counts so the lint check
+    can confirm it reached every label-touching site."""
+    import ast
+
+    from tessera.taint.instrument import _LabelPropagator
+
+    src = """
+def handler(value):
+    a = value + 'x'              # BinOp
+    b = value[0:2]               # Subscript
+    c = value == 'y'             # Compare
+    d = list(value)              # Call
+    e = {'k': value}             # Dict
+    f = [value, value]           # List
+    g = {value, 'h'}             # Set
+    h = (value, 'i')             # Tuple
+    i = f"hello {value}"         # JoinedStr + FormattedValue
+    return a, b, c, d, e, f, g, h, i
+"""
+    tree = ast.parse(src)
+    rewriter = _LabelPropagator()
+    rewriter.visit(tree)
+    kinds = rewriter.rewrite_counts
+    expected = {
+        "BinOp",
+        "Subscript",
+        "Compare",
+        "Call",
+        "Dict",
+        "List",
+        "Set",
+        "Tuple",
+        "JoinedStr",
+        "FormattedValue",
+    }
+    missing = expected - set(kinds.keys())
+    assert not missing, f"rewriter did not visit: {missing}"
+    assert kinds["JoinedStr"] >= 1
+    assert kinds["FormattedValue"] >= 1

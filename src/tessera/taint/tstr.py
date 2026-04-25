@@ -266,15 +266,63 @@ class TaintedStr(str):
     def translate(self, table: Any) -> str:  # type: ignore[override]
         return TaintedStr(str.translate(self, table), self._label)
 
-    # ---- Encoding (labels travel via bytes' own path in the future;
-    # for v0.12 we drop to bare bytes at encode() and rely on the
-    # Phase 1B-ii `@provenance_tracked` boundary for recovery). ----
+    # ---- Encoding --------------------------------------------------
+    # CPython's ``str.encode`` returns a bare ``bytes`` object that
+    # has no place to carry a label. Phase 1B-i ships a
+    # :class:`TaintedBytes` wrapper that subclasses ``bytes`` and
+    # mirrors the str-side rewrap pattern. For operations that
+    # bottom out in C extensions Tessera does not control
+    # (``base64``, ``binascii``, etc.), the label drops and the
+    # next provenance boundary recovers it via literal-substring
+    # matching (see :mod:`tessera.worker.recovery`).
+
+    def encode(  # type: ignore[override]
+        self, encoding: str = "utf-8", errors: str = "strict"
+    ) -> bytes:
+        raw = str.encode(self, encoding, errors)
+        return TaintedBytes(raw, self._label)
 
     # ---- Iteration -------------------------------------------------
 
     def __iter__(self):
         for ch in str.__str__(self):
             yield TaintedStr(ch, self._label)
+
+
+class TaintedBytes(bytes):
+    """``bytes`` subclass carrying a :class:`ProvenanceLabel`.
+
+    Returned by :meth:`TaintedStr.encode`. Operations that decode
+    back to text rewrap as :class:`TaintedStr`. Operations that
+    bottom out in C extensions Tessera does not control
+    (``base64.b64encode``, ``binascii.hexlify``, etc.) drop the
+    label; the next provenance boundary in
+    :mod:`tessera.worker.recovery` restores via literal-substring
+    matching.
+
+    Note: CPython does not allow non-empty ``__slots__`` on a
+    ``bytes`` subclass, so ``_label`` lives in the instance dict.
+    """
+
+    def __new__(cls, value: Any, label: ProvenanceLabel) -> TaintedBytes:
+        obj = bytes.__new__(cls, value)
+        obj._label = label  # type: ignore[attr-defined]
+        return obj
+
+    def __repr__(self) -> str:
+        return (
+            f"TaintedBytes({bytes.__repr__(self)}, "
+            f"integrity={self._label.integrity.name})"
+        )
+
+    def __reduce__(self) -> tuple:
+        return (self.__class__, (bytes(self), self._label))
+
+    def decode(  # type: ignore[override]
+        self, encoding: str = "utf-8", errors: str = "strict"
+    ) -> str:
+        raw = bytes.decode(self, encoding, errors)
+        return TaintedStr(raw, self._label)
 
 
 # Helpers recommended alongside TaintedStr.
@@ -309,4 +357,4 @@ def taint_fstring(*parts: Any) -> str:
     return _rewrap(rendered, *parts)
 
 
-__all__ = ["TaintedStr", "tjoin", "taint_fstring"]
+__all__ = ["TaintedBytes", "TaintedStr", "taint_fstring", "tjoin"]

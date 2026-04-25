@@ -335,3 +335,33 @@ def test_secrecy_preserves_through_all_operations() -> None:
     assert s.upper()._label.secrecy == SecrecyLevel.PRIVATE
     assert (s + s)._label.secrecy == SecrecyLevel.PRIVATE
     assert s.split(" ")[0]._label.secrecy == SecrecyLevel.PRIVATE
+
+
+# ---------------------------------------------------------------------------
+# Encoding (Phase 1A audit gap 3): str.encode preserves label via TaintedBytes
+# ---------------------------------------------------------------------------
+
+
+def test_encode_returns_tainted_bytes(web_str: TaintedStr) -> None:
+    encoded = web_str.encode("utf-8")
+    from tessera.taint.tstr import TaintedBytes
+
+    assert isinstance(encoded, TaintedBytes)
+    assert bytes(encoded) == b"payload from web"
+    assert encoded._label.integrity == IntegrityLevel.UNTRUSTED
+
+
+def test_decode_round_trips_through_tainted_bytes(user_str: TaintedStr) -> None:
+    encoded = user_str.encode("utf-8")
+    decoded = encoded.decode("utf-8")
+    assert isinstance(decoded, TaintedStr)
+    assert decoded == "user-typed text"
+    assert decoded._label.integrity == IntegrityLevel.TRUSTED
+
+
+def test_encode_with_non_default_encoding(user_str: TaintedStr) -> None:
+    encoded = user_str.encode("utf-16")
+    from tessera.taint.tstr import TaintedBytes
+
+    assert isinstance(encoded, TaintedBytes)
+    assert encoded._label.integrity == IntegrityLevel.TRUSTED
