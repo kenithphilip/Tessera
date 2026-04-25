@@ -105,6 +105,30 @@ jobs:
         working-directory: deployment/spire
         run: bash ci-setup.sh
 
+      - name: Wait for agent to receive workload entry
+        run: |
+          # SPIRE agent polls the server for entries every 5s by
+          # default. Without this wait, tests run before the
+          # newly-created test-runner entry has been pushed to the
+          # agent and fail with "no identity issued"
+          # (PERMISSION_DENIED). Poll the local Workload API until
+          # an x509-SVID is issuable for our UID.
+          for i in $(seq 1 20); do
+            if docker exec spire-agent-ci \
+              /opt/spire/bin/spire-agent api fetch x509 \
+              -socketPath /tmp/spire-agent-api/api.sock 2>/dev/null \
+              | grep -q "SPIFFE ID:"; then
+              echo "Agent has workload entry (iteration $i)"
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "Agent never received the workload entry"
+              docker logs spire-agent-ci | tail -50
+              exit 1
+            fi
+            sleep 1
+          done
+
       - name: Run SPIRE integration tests
         env:
           SPIFFE_ENDPOINT_SOCKET: unix:///tmp/spire-agent-api/api.sock
