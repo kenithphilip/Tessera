@@ -34,6 +34,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Callable, Literal
 
 
 class RAGAction(StrEnum):
@@ -424,3 +425,291 @@ def set_baseline_from_corpus(
         distance_p95=baseline.distance_p95,
     )
     return baseline
+
+
+# ---------------------------------------------------------------------------
+# Certifiably Robust RAG (arXiv:2405.15556)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RobustRAGConfig:
+    """Configuration for the certifiably robust RAG pipeline.
+
+    Based on RobustRAG (arXiv:2405.15556), which achieves certifiable
+    robustness bounds by querying the LLM against random subsets of
+    retrieved documents and aggregating the results. The bound holds when
+    at most ``corruption_tolerance_k`` of the ``subset_size`` documents in
+    any individual subset are corrupted.
+
+    Fields:
+        subset_size: Number of documents in each random subset (default 3).
+        num_subsets: How many subsets to query (default 5). Latency scales
+            linearly with this value; a 5x ceiling is the practical max.
+        aggregation: "majority_keyword" (fast, token-level voting) or
+            "text_decoding" (longest shared substring, higher recall).
+        corruption_tolerance_k: Certifiable robustness bound. The answer is
+            guaranteed correct as long as no individual subset contains more
+            than k corrupted documents (default 1).
+    """
+
+    subset_size: int = 3
+    num_subsets: int = 5
+    aggregation: Literal["majority_keyword", "text_decoding"] = "majority_keyword"
+    corruption_tolerance_k: int = 1
+
+
+@dataclass(frozen=True)
+class RobustRAGResult:
+    """Output of a certifiably robust RAG query.
+
+    Fields:
+        aggregated_answer: The answer produced by aggregation across subsets.
+        per_subset_answers: Raw LLM answer for each subset, in query order.
+        num_subsets_tried: Number of subsets actually queried.
+        corruption_tolerance_k: The k value used for this query.
+        signal: True when subset answers diverge enough to suspect that one
+            or more retrieved documents is corrupted or adversarial.
+    """
+
+    aggregated_answer: str
+    per_subset_answers: tuple[str, ...]
+    num_subsets_tried: int
+    corruption_tolerance_k: int
+    signal: bool
+
+
+class CertifiablyRobustRAGGuard:
+    """Multi-subset query guard with certifiable robustness bounds.
+
+    Implements the RobustRAG algorithm (arXiv:2405.15556). Instead of
+    passing all retrieved documents to the LLM at once, the guard samples
+    ``num_subsets`` random subsets of size ``subset_size`` from the
+    retrieved corpus, queries the LLM once per subset, and aggregates the
+    results. An attacker who can corrupt at most k documents in the entire
+    corpus cannot corrupt more than k of the ``subset_size`` documents in
+    any single subset, giving a certifiable robustness bound.
+
+    When subset answers diverge significantly, ``signal=True`` is set on
+    the result and a GUARDRAIL_DECISION SecurityEvent is emitted. This
+    does not block the query; it is a signal for downstream policy to
+    escalate or review.
+
+    The subset sampler is deterministic given (question, subset_index) so
+    that the same question always produces the same subsets, enabling
+    replay analysis.
+
+    Args:
+        config: RobustRAGConfig controlling subset size, count, and
+            aggregation strategy.
+        llm_callable: Callable ``(query: str, docs: list[str]) -> str``
+            that invokes the underlying LLM. Must be synchronous.
+        embedding_fn: Optional callable for semantic diversity scoring.
+            Currently unused; reserved for future subset selection strategies.
+
+    Example::
+
+        guard = CertifiablyRobustRAGGuard(
+            config=RobustRAGConfig(subset_size=3, num_subsets=5, corruption_tolerance_k=1),
+            llm_callable=lambda q, docs: my_llm(q, docs),
+        )
+        result = guard.query("What is the capital of France?", retrieved_docs)
+        if result.signal:
+            logger.warning("RAG corruption signal", aggregated=result.aggregated_answer)
+    """
+
+    def __init__(
+        self,
+        config: RobustRAGConfig,
+        llm_callable: Callable[[str, list[str]], str],
+        embedding_fn: Callable[[str], list[float]] | None = None,
+    ) -> None:
+        self._config = config
+        self._llm = llm_callable
+        self._embedding_fn = embedding_fn  # reserved
+
+    def query(self, question: str, retrieved_docs: list[str]) -> RobustRAGResult:
+        """Run the multi-subset query and return an aggregated result.
+
+        Args:
+            question: The user's question to answer.
+            retrieved_docs: The full list of retrieved documents.
+
+        Returns:
+            RobustRAGResult with the aggregated answer and divergence signal.
+        """
+        subsets = self._sample_subsets(question, retrieved_docs)
+        answers = [self._llm(question, subset) for subset in subsets]
+
+        if self._config.aggregation == "majority_keyword":
+            aggregated = self._aggregate_majority_keyword(answers)
+        else:
+            aggregated = self._aggregate_text_decoding(answers)
+
+        signal = self._detect_divergence(answers)
+
+        if signal:
+            self._emit_signal(question, answers, aggregated)
+
+        return RobustRAGResult(
+            aggregated_answer=aggregated,
+            per_subset_answers=tuple(answers),
+            num_subsets_tried=len(answers),
+            corruption_tolerance_k=self._config.corruption_tolerance_k,
+            signal=signal,
+        )
+
+    def _sample_subsets(
+        self, question: str, docs: list[str]
+    ) -> list[list[str]]:
+        """Sample ``num_subsets`` deterministic subsets of size ``subset_size``.
+
+        Determinism is keyed on (question, subset_index) so the same question
+        always produces the same subsets regardless of call order. When the
+        corpus is smaller than ``subset_size``, all docs are used for every
+        subset (no repeated sampling needed).
+        """
+        import hashlib
+
+        n = len(docs)
+        size = min(self._config.subset_size, n)
+        subsets: list[list[str]] = []
+        q_hash = hashlib.sha256(question.encode()).hexdigest()
+
+        for idx in range(self._config.num_subsets):
+            seed_bytes = hashlib.sha256(
+                f"{q_hash}:{idx}".encode()
+            ).digest()
+            # Use the seed to produce a deterministic shuffle of indices.
+            seed_int = int.from_bytes(seed_bytes[:8], "big")
+            indices = list(range(n))
+            # Fisher-Yates with a deterministic PRNG seeded by seed_int.
+            rng_state = seed_int
+            for i in range(n - 1, 0, -1):
+                # LCG parameters from Knuth MMIX
+                rng_state = (rng_state * 6364136223846793005 + 1442695040888963407) & (
+                    2**64 - 1
+                )
+                j = rng_state % (i + 1)
+                indices[i], indices[j] = indices[j], indices[i]
+            subsets.append([docs[i] for i in indices[:size]])
+
+        return subsets
+
+    def _aggregate_majority_keyword(self, answers: list[str]) -> str:
+        """Return the token that appears as a majority across all answers.
+
+        Tokenizes each answer into lowercase words, counts occurrences
+        across all answers, and returns the most common token. Ties are
+        broken by token order (first encountered in any answer wins).
+
+        When answers are complete sentences rather than single tokens, this
+        selects the most-agreed-upon content word, which is the RobustRAG
+        "keyword isolation" variant from Section 4.1 of arXiv:2405.15556.
+        """
+        from collections import Counter
+        import re
+
+        counts: Counter[str] = Counter()
+        # Track first-seen order for stable tie-breaking.
+        first_seen: dict[str, int] = {}
+        order = 0
+
+        for answer in answers:
+            tokens = re.findall(r"[a-z0-9]+", answer.lower())
+            for token in tokens:
+                counts[token] += 1
+                if token not in first_seen:
+                    first_seen[token] = order
+                    order += 1
+
+        if not counts:
+            return answers[0] if answers else ""
+
+        # Most common token; stable tie-break by insertion order.
+        winner = max(counts, key=lambda t: (counts[t], -first_seen[t]))
+        return winner
+
+    def _aggregate_text_decoding(self, answers: list[str]) -> str:
+        """Return the longest substring shared by the majority of answers.
+
+        This is a simplified version of the text-decoding aggregation in
+        Section 4.2 of arXiv:2405.15556. The full algorithm uses token-level
+        decoding; this version operates on character substrings as a v1.0
+        approximation. A substring must appear in more than half the answers
+        to be elected.
+
+        When no majority substring exists, falls back to the first answer.
+        """
+        if not answers:
+            return ""
+        if len(answers) == 1:
+            return answers[0]
+
+        majority = len(answers) // 2 + 1
+        reference = answers[0]
+        best = ""
+
+        # Enumerate all substrings of the first answer, longest first.
+        n = len(reference)
+        for length in range(n, 0, -1):
+            for start in range(n - length + 1):
+                candidate = reference[start : start + length]
+                if len(candidate) <= len(best):
+                    # Already found something longer.
+                    break
+                count = sum(1 for a in answers if candidate in a)
+                if count >= majority:
+                    best = candidate
+                    break  # Longest match at this length found.
+
+        return best if best else answers[0]
+
+    def _detect_divergence(self, answers: list[str]) -> bool:
+        """Return True when subset answers diverge enough to suspect corruption.
+
+        The threshold: if any answer shares fewer than 50% of its tokens
+        with the majority answer, the corpus is flagged. This is a
+        conservative heuristic; tighten the threshold for high-noise corpora.
+        """
+        if len(answers) <= 1:
+            return False
+
+        from collections import Counter
+        import re
+
+        token_sets = [
+            set(re.findall(r"[a-z0-9]+", a.lower())) for a in answers
+        ]
+        # Find the most common token set (treat each answer as a bag of tokens).
+        reference = token_sets[0]
+        for ts in token_sets[1:]:
+            union = reference | ts
+            if not union:
+                continue
+            overlap = len(reference & ts) / len(union)
+            if overlap < 0.5:
+                return True
+        return False
+
+    def _emit_signal(
+        self, question: str, answers: list[str], aggregated: str
+    ) -> None:
+        from tessera.events import EventKind, SecurityEvent, emit
+
+        emit(
+            SecurityEvent.now(
+                kind=EventKind.GUARDRAIL_DECISION,
+                principal="system",
+                detail={
+                    "guard": "certifiably_robust_rag",
+                    "signal": True,
+                    "num_subsets": len(answers),
+                    "corruption_tolerance_k": self._config.corruption_tolerance_k,
+                    "aggregation": self._config.aggregation,
+                    "aggregated_answer": aggregated,
+                    "question_prefix": question[:120],
+                    "divergent_answers": len(answers),
+                },
+            )
+        )

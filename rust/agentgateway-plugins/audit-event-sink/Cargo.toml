@@ -1,6 +1,6 @@
 [package]
 name = "tessera-agentgateway-audit-event-sink"
-version = "0.14.0"
+version = "1.0.0"
 edition = "2021"
 publish = false
 description = "Hash-chained audit event sink plugin for upstream agentgateway. In-tree until the upstream PR merges."

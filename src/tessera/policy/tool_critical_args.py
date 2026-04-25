@@ -97,17 +97,20 @@ def get_enforcement_mode() -> EnforcementMode:
     """Return the active enforcement mode.
 
     Reads ``TESSERA_ENFORCEMENT_MODE`` from the environment with
-    case-insensitive matching. Falls back to :attr:`EnforcementMode.BOTH`
-    (the v0.12 default; Phase 4 wave 4A will flip the default to
-    :attr:`EnforcementMode.ARGS` per ADR 0006).
+    case-insensitive matching. The v1.0 default is
+    :attr:`EnforcementMode.ARGS` per ADR 0006; operators upgrading
+    from v0.x can pin the v0.12 behavior with
+    ``TESSERA_ENFORCEMENT_MODE=both`` (or the legacy
+    ``TESSERA_ENFORCEMENT_MODE=scalar`` for the v0.7 single-floor
+    path). Unknown values fail safe to ``ARGS``: an operator with
+    a typo gets the v1.0 default rather than silently falling back
+    to legacy behavior.
     """
-    raw = os.environ.get("TESSERA_ENFORCEMENT_MODE", "both").strip().lower()
+    raw = os.environ.get("TESSERA_ENFORCEMENT_MODE", "args").strip().lower()
     try:
         return EnforcementMode(raw)
     except ValueError:
-        # Unknown value: fail safe to BOTH (most strict). Operator
-        # who set a typo should see both checks fire.
-        return EnforcementMode.BOTH
+        return EnforcementMode.ARGS
 
 
 # ---------------------------------------------------------------------------

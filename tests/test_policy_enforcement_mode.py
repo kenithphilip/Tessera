@@ -45,8 +45,9 @@ def _build_policy() -> Policy:
 
 
 def test_get_enforcement_mode_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.0 wave 4A flipped the default from BOTH to ARGS."""
     monkeypatch.delenv("TESSERA_ENFORCEMENT_MODE", raising=False)
-    assert get_enforcement_mode() == EnforcementMode.BOTH
+    assert get_enforcement_mode() == EnforcementMode.ARGS
 
 
 @pytest.mark.parametrize(
@@ -56,7 +57,8 @@ def test_get_enforcement_mode_default(monkeypatch: pytest.MonkeyPatch) -> None:
         ("args", EnforcementMode.ARGS),
         ("both", EnforcementMode.BOTH),
         ("ARGS", EnforcementMode.ARGS),
-        ("totally-bogus", EnforcementMode.BOTH),
+        # v1.0 default: unknown values fall back to ARGS, not BOTH.
+        ("totally-bogus", EnforcementMode.ARGS),
     ],
 )
 def test_enforcement_mode_env_parsing(

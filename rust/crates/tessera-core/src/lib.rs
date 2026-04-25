@@ -10,9 +10,14 @@
 //! the whole Tessera Rust workspace; everything else builds on it.
 
 pub mod context;
+pub mod label;
 pub mod labels;
 
 pub use context::{make_segment, Context, LabeledSegment};
+pub use label::{
+    InformationCapacity, IntegrityLevel, ProvenanceLabel, PublicMarker, Readers,
+    SecrecyLevel, SegmentRef,
+};
 pub use labels::{
     HmacSigner, HmacVerifier, Origin, TrustLabel, TrustLevel, VerifyError, SYSTEM, TOOL,
     UNTRUSTED, USER,

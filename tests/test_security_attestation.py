@@ -299,3 +299,37 @@ def test_attestation_embeds_atlas_navigator_reference() -> None:
     assert "atlas_navigator_layer.json" in layer["relative_path"]
     # technique_count is loaded from the static layer file when present.
     assert isinstance(layer["technique_count"], int)
+
+
+# ---------------------------------------------------------------------------
+# Wave 4E: paired-model scorecards
+# ---------------------------------------------------------------------------
+
+
+def test_paired_model_predicate_and_subject_suffix() -> None:
+    from tessera.evaluate.scorecard.emitter import ScorecardEmitter
+
+    attestation = ScorecardEmitter(
+        version="1.0.0", paired_model="claude-sonnet-4.5"
+    ).build()
+    assert attestation["predicate"]["paired_model"] == "claude-sonnet-4.5"
+    subject_name = attestation["subject"][0]["name"]
+    assert "+claude-sonnet-4.5" in subject_name
+
+
+def test_paired_model_omitted_when_not_set() -> None:
+    from tessera.evaluate.scorecard.emitter import ScorecardEmitter
+
+    attestation = ScorecardEmitter(version="1.0.0").build()
+    assert "paired_model" not in attestation["predicate"]
+
+
+def test_cli_paired_model_flag(tmp_path) -> None:
+    from tessera.evaluate.cli import main
+
+    out = tmp_path / "paired.intoto.jsonl"
+    rc = main(["emit-scorecard", "--out", str(out), "--paired-model", "gpt-5"])
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8").strip())
+    assert data["predicate"]["paired_model"] == "gpt-5"
+    assert "+gpt-5" in data["subject"][0]["name"]

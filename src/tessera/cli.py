@@ -31,6 +31,10 @@ def _run_mcp_command(args: argparse.Namespace) -> int:
     """Dispatch ``tessera mcp ...`` subcommands."""
     if args.mcp_cmd == "fetch":
         return _run_mcp_fetch(args)
+    if args.mcp_cmd == "mirror":
+        from tessera.mcp.registry_mirror_cli import dispatch as mirror_dispatch
+
+        return mirror_dispatch(args)
     print(f"unknown mcp subcommand: {args.mcp_cmd!r}", file=sys.stderr)
     return 2
 
@@ -351,6 +355,12 @@ def main(argv: list[str] | None = None) -> int:
 
     mcp = sub.add_parser("mcp", help="MCP registry / manifest tooling")
     mcp_sub = mcp.add_subparsers(dest="mcp_cmd", required=True)
+
+    # Wire in the mirror subcommand tree.
+    from tessera.mcp.registry_mirror_cli import register_mirror_subcommand
+
+    register_mirror_subcommand(mcp_sub)
+
     mcp_fetch = mcp_sub.add_parser(
         "fetch",
         help=(
