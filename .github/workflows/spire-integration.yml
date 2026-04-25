@@ -77,9 +77,14 @@ jobs:
             -config /opt/spire/conf/agent/agent.conf \
             -joinToken "${JOIN_TOKEN}"
 
+          # The healthcheck command defaults to
+          # /tmp/spire-agent/public/api.sock; our agent.conf binds the
+          # Workload API to /tmp/spire-agent-api/api.sock so we need to
+          # pass --socketPath explicitly.
           for i in $(seq 1 30); do
             if docker exec spire-agent-ci \
-              /opt/spire/bin/spire-agent healthcheck 2>/dev/null; then
+              /opt/spire/bin/spire-agent healthcheck \
+              --socketPath /tmp/spire-agent-api/api.sock 2>/dev/null; then
               echo "SPIRE agent ready"
               break
             fi
