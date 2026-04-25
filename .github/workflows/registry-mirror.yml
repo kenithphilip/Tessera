@@ -69,13 +69,13 @@ jobs:
           mkdir -p mirror-output
           if [ -n "${TESSERA_MIRROR_HMAC_KEY}" ]; then
             echo "Signing with HMAC"
-            python -m tessera.cli mcp mirror sync \
+            python -m tessera mcp mirror sync \
               --upstream "${UPSTREAM}" \
               --out mirror-output \
               --sign hmac
           else
             echo "Signing with Sigstore (OIDC)"
-            python -m tessera.cli mcp mirror sync \
+            python -m tessera mcp mirror sync \
               --upstream "${UPSTREAM}" \
               --out mirror-output \
               --sign sigstore
@@ -83,7 +83,7 @@ jobs:
 
       - name: Print sync summary
         run: |
-          python -m tessera.cli mcp mirror status --out mirror-output
+          python -m tessera mcp mirror status --out mirror-output
 
       - name: Authenticate to ghcr.io
         env:
