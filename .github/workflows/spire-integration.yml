@@ -44,7 +44,23 @@ jobs:
             -spiffeID spiffe://example.org/agent \
             -output json | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
 
+          # The agent needs the server's trust bundle to bootstrap,
+          # but our published docker-compose.yml does not share a
+          # volume between server and agent (so the example stays
+          # self-contained for users who run them on separate
+          # nodes). Extract the bundle and mount it for CI.
+          mkdir -p /tmp/spire-bundle
+          docker compose exec -T spire-server \
+            /opt/spire/bin/spire-server bundle show -format pem \
+            > /tmp/spire-bundle/bundle.crt
+          if [ ! -s /tmp/spire-bundle/bundle.crt ]; then
+            echo "Failed to extract trust bundle from spire-server"
+            docker compose logs spire-server
+            exit 1
+          fi
+
           docker compose run -d --name spire-agent-ci \
+            -v /tmp/spire-bundle/bundle.crt:/run/spire/bundle.crt:ro \
             spire-agent \
             /opt/spire/bin/spire-agent run \
             -config /opt/spire/conf/agent/agent.conf \
