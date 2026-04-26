@@ -1,18 +1,18 @@
 name: SPIRE Integration
-# Manual-trigger only. The SPIRE bring-up here was iterated to a
-# working state through six layered fixes (trust-bundle extract,
-# correct -joinToken propagation, healthcheck socket path,
-# spiffe_id signature inspection, parent-ID matching the agent's
-# real SPIFFE ID, and entry-propagation polling). The remaining
-# unresolved issue is unix workload attestation: the agent sees
-# uid=0 for docker-exec'd processes and the host's PEERCRED for
-# bind-mounted-socket connections from pytest, and the
-# registration's selector path needs both. Until that is sorted
-# out we do not block every push to main on a workflow that has
-# been broken for many releases per CLAUDE.md ("the
-# deployment/spire/ reference has not been stood up end-to-end
-# in CI"). Trigger manually via the Actions tab when iterating.
+# Re-enabled on push after the unix workload attestor uid mismatch
+# was resolved by registering BOTH host UID and uid:0 entries
+# (deployment/spire/ci-setup.sh) plus a JWT bundle walker fix in
+# tessera.spire (commit 3dccb97). 3 consecutive green dispatches
+# (24968698602 + 24968817449 + 24968840908) confirmed end-to-end
+# bring-up before the push trigger was added. Earlier history of
+# 6 layered fixes (trust-bundle extract, correct -joinToken
+# propagation, healthcheck socket path, spiffe_id signature
+# inspection, parent-ID matching the agent's real SPIFFE ID,
+# entry-propagation polling) all still apply and live in this
+# file's existing steps.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
