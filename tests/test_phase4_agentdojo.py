@@ -199,5 +199,14 @@ def test_render_markdown_contains_suite_rows(apr_report: APRReport) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_agentdojo_not_available() -> None:
-    assert AGENTDOJO_AVAILABLE is False
+def test_agentdojo_availability_flag_matches_install() -> None:
+    """AGENTDOJO_AVAILABLE reflects whether the upstream `agentdojo`
+    package is importable. Used to guard the live-trial harness
+    behind the optional [agentdojo] extra. Either polarity is
+    valid; the assertion keeps the flag honest in both states."""
+    try:
+        import agentdojo  # noqa: F401
+        installed = True
+    except ImportError:
+        installed = False
+    assert AGENTDOJO_AVAILABLE is installed

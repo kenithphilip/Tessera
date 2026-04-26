@@ -140,29 +140,6 @@ def generate_cells(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_anthropic_model(model: str) -> str | None:
-    """Map a submit.py model alias to the actual Anthropic model id.
-
-    submit.py uses friendly aliases (``claude-sonnet-4-5``,
-    ``claude-haiku-4-5``); the real Anthropic API expects fully
-    qualified ids. Returns ``None`` when the model is not an
-    Anthropic model so the caller can route elsewhere.
-    """
-    table = {
-        "claude-haiku-4-5": "claude-3-5-haiku-20241022",
-        "claude-sonnet-4-5": "claude-3-5-sonnet-20241022",
-        # Aliases users sometimes pass:
-        "claude-3-5-haiku": "claude-3-5-haiku-20241022",
-        "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-    }
-    if model in table:
-        return table[model]
-    if model.startswith("claude-"):
-        # Trust the operator: pass-through any other claude-* id.
-        return model
-    return None
-
-
 def run_cell(
     cell: CellSpec,
     *,
@@ -175,14 +152,13 @@ def run_cell(
     returns deterministic placeholder metrics suitable for matrix
     validation.
 
-    Real dispatch (Wave 2A leftover, wired here):
-
-    - Anthropic models (``claude-*``) route through
-      :func:`benchmarks.agentdojo_live.run_haiku.run_anthropic_cell`.
-    - OpenAI / Gemini models return a clear "runner not yet
-      implemented" error; the caller can fan out via the
-      per-provider runner directly while waiting for the unified
-      dispatcher to grow those backends.
+    Real dispatch routes through
+    :func:`benchmarks.agentdojo_live.runners.run_provider_cell`,
+    which supports every major provider AgentDojo wraps natively
+    (Anthropic, OpenAI, Google, Cohere) plus an OpenAI-compatible
+    fallback for Llama / Qwen / DeepSeek / Mistral via Together
+    AI / Groq / OpenRouter / DeepInfra / vLLM. See
+    ``runners.detect_provider`` for the full prefix table.
     """
     started = time.monotonic()
     if dry_run:
@@ -196,54 +172,40 @@ def run_cell(
             elapsed_seconds=0.0,
         )
 
-    anthropic_model = _resolve_anthropic_model(cell.model)
-    if anthropic_model is not None:
-        try:
-            from benchmarks.agentdojo_live.run_haiku import run_anthropic_cell
-        except ImportError as exc:
-            return CellResult(
-                cell=cell,
-                error=(
-                    f"agentdojo not installed: {exc}. "
-                    f"Run `pip install -e '.[agentdojo]'` first."
-                ),
-                elapsed_seconds=time.monotonic() - started,
-            )
-        try:
-            metrics = run_anthropic_cell(
-                model=anthropic_model,
-                suite_name=cell.suite,
-                attack_name=cell.attack,
-                seed=cell.seed,
-                max_pairs=max_pairs,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return CellResult(
-                cell=cell,
-                error=f"trial failed: {type(exc).__name__}: {exc}",
-                elapsed_seconds=time.monotonic() - started,
-            )
+    try:
+        from benchmarks.agentdojo_live.runners import run_provider_cell
+    except ImportError as exc:
         return CellResult(
             cell=cell,
-            utility_attempt=metrics["utility_attempt"],
-            targeted_asr=metrics["targeted_asr"],
-            attack_prevention_rate=metrics["attack_prevention_rate"],
-            utility_delta=metrics["utility_delta"],
-            raw_runs=metrics["raw_runs"],
-            elapsed_seconds=metrics["elapsed_seconds"],
-            error=metrics["error"],
+            error=(
+                f"agentdojo not installed: {exc}. "
+                f"Run `pip install -e '.[agentdojo]'` first."
+            ),
+            elapsed_seconds=time.monotonic() - started,
         )
-
-    # OpenAI / Gemini / other: clear unimplemented error.
+    try:
+        metrics = run_provider_cell(
+            model=cell.model,
+            suite_name=cell.suite,
+            attack_name=cell.attack,
+            seed=cell.seed,
+            max_pairs=max_pairs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return CellResult(
+            cell=cell,
+            error=f"trial failed: {type(exc).__name__}: {exc}",
+            elapsed_seconds=time.monotonic() - started,
+        )
     return CellResult(
         cell=cell,
-        error=(
-            f"runner for {cell.model!r} is not yet implemented. "
-            f"Anthropic models work today via run_anthropic_cell; "
-            f"OpenAI and Gemini paths are still pending. See "
-            f"docs/benchmarks/REAL_RUN_RUNBOOK.md."
-        ),
-        elapsed_seconds=time.monotonic() - started,
+        utility_attempt=metrics["utility_attempt"],
+        targeted_asr=metrics["targeted_asr"],
+        attack_prevention_rate=metrics["attack_prevention_rate"],
+        utility_delta=metrics["utility_delta"],
+        raw_runs=metrics["raw_runs"],
+        elapsed_seconds=metrics["elapsed_seconds"],
+        error=metrics["error"],
     )
 
 
@@ -385,15 +347,42 @@ def main(argv: list[str] | None = None) -> int:
         f"Matrix: {len(args.models)} models x {len(args.suites)} suites x "
         f"{len(args.attacks)} attacks x {len(args.seeds)} seeds = {len(cells)} cells"
     )
-    needs_anthropic = any(
-        _resolve_anthropic_model(cell.model) is not None for cell in cells
-    )
-    if not args.dry_run and needs_anthropic and not os.environ.get("ANTHROPIC_API_KEY"):
-        print(
-            "ANTHROPIC_API_KEY not set; export it or use --dry-run.",
-            file=sys.stderr,
+    if not args.dry_run:
+        # Provider-aware env-var preflight: tally which providers
+        # the matrix touches and check the env vars upfront so the
+        # user gets one clear error before any cells run instead of
+        # N identical per-cell failures.
+        from benchmarks.agentdojo_live.runners import (
+            PROVIDER_ANTHROPIC, PROVIDER_COHERE, PROVIDER_GOOGLE,
+            PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE, detect_provider,
         )
-        return 2
+        providers_used: set[str] = set()
+        for cell in cells:
+            route = detect_provider(cell.model)
+            if route is not None:
+                providers_used.add(route.provider)
+        provider_env_keys = {
+            PROVIDER_ANTHROPIC: ["ANTHROPIC_API_KEY"],
+            PROVIDER_OPENAI: ["OPENAI_API_KEY"],
+            PROVIDER_GOOGLE: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+            PROVIDER_COHERE: ["COHERE_API_KEY"],
+            PROVIDER_OPENAI_COMPATIBLE: [
+                "TESSERA_BENCH_OPENAI_COMPATIBLE_KEY", "OPENAI_API_KEY",
+            ],
+        }
+        missing: list[str] = []
+        for provider in providers_used:
+            keys = provider_env_keys.get(provider, [])
+            if keys and not any(os.environ.get(k) for k in keys):
+                missing.append(f"{provider} requires one of: {', '.join(keys)}")
+        if missing:
+            print(
+                "Provider env vars missing for matrix; export them or use --dry-run:",
+                file=sys.stderr,
+            )
+            for m in missing:
+                print(f"  - {m}", file=sys.stderr)
+            return 2
     started = time.monotonic()
     results: list[CellResult] = []
     for cell in cells:

@@ -62,18 +62,16 @@ def test_run_cell_dry_run_returns_placeholders() -> None:
 
 
 def test_run_cell_unknown_model_is_recorded_as_error() -> None:
-    """A model the dispatcher can't route (not claude-*, not yet wired
-    for openai/gemini) records a clear 'not yet implemented' error
-    rather than crashing. Behavior changed when the dispatcher moved
-    from defense-name routing to model-name routing."""
+    """A model the dispatcher can't route to any provider records a
+    clear 'no provider routing' error rather than crashing."""
     cell = submit.CellSpec(
-        model="bogus-model-7b", suite="travel", attack="important_instructions",
+        model="totally-unknown-7b", suite="travel", attack="important_instructions",
         seed=0, defense="tessera",
     )
     result = submit.run_cell(cell, dry_run=False)
     assert result.error is not None
-    assert "bogus-model-7b" in result.error
-    assert "not yet implemented" in result.error
+    assert "totally-unknown-7b" in result.error
+    assert "no provider routing" in result.error
 
 
 # --- Aggregation ------------------------------------------------------------
@@ -160,16 +158,21 @@ def test_main_anthropic_model_without_api_key_returns_2(
     assert rc == 2
 
 
-def test_main_non_anthropic_model_runs_without_anthropic_key(
+def test_main_unrecognised_model_runs_without_any_keys(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A matrix containing only non-Anthropic models is allowed to
-    proceed without ANTHROPIC_API_KEY; per-cell errors record that
-    the runner is unimplemented."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    """A matrix that uses only unrecognised model names (no provider
+    routing) doesn't trigger any provider env-var preflight, so it
+    proceeds and records per-cell unimplemented errors."""
+    for k in (
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+        "GEMINI_API_KEY", "COHERE_API_KEY",
+        "TESSERA_BENCH_OPENAI_COMPATIBLE_KEY",
+    ):
+        monkeypatch.delenv(k, raising=False)
     out = tmp_path / "noimpl.jsonl"
     rc = submit.main([
-        "--models", "gpt-5",
+        "--models", "totally-unknown-model-xyz",
         "--suites", "travel",
         "--attacks", "important_instructions",
         "--seeds", "0",
@@ -178,6 +181,23 @@ def test_main_non_anthropic_model_runs_without_anthropic_key(
     assert rc == 0
     summary_path = out.with_suffix(".summary.json")
     assert summary_path.exists()
+
+
+def test_main_openai_model_without_openai_key_returns_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gpt-* in the matrix without OPENAI_API_KEY is rejected by the
+    provider-aware preflight."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    out = tmp_path / "no.jsonl"
+    rc = submit.main([
+        "--models", "gpt-4o",
+        "--suites", "travel",
+        "--attacks", "important_instructions",
+        "--seeds", "0",
+        "--out", str(out),
+    ])
+    assert rc == 2
 
 
 # --- Defense adapter --------------------------------------------------------
