@@ -83,9 +83,66 @@ def _looks_like_jwk(value: Mapping[str, Any]) -> bool:
     return "kty" in value and any(field in value for field in ("kid", "n", "x", "k"))
 
 
+def _public_key_to_jwk(public_key: Any, kid: str | None = None) -> dict[str, Any] | None:
+    """Convert a ``cryptography.hazmat.primitives.asymmetric.*.PublicKey``
+    into a JWK dict using PyJWT's algorithm helpers.
+
+    The modern ``spiffe`` package returns ``JwtBundle.jwt_authorities``
+    as ``Mapping[kid, PublicKey]`` where ``PublicKey`` is a
+    ``cryptography`` library object. The walker can't introspect these
+    directly, so this helper round-trips through JWK JSON.
+
+    Returns ``None`` when the input doesn't look like a public key the
+    helpers know how to serialise. The walker treats ``None`` as "skip
+    this entry" so unknown shapes don't crash the verifier build path.
+    """
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+        from jwt.algorithms import ECAlgorithm, OKPAlgorithm, RSAAlgorithm
+    except ImportError:
+        return None
+
+    try:
+        if isinstance(public_key, rsa.RSAPublicKey):
+            jwk_str = RSAAlgorithm.to_jwk(public_key)
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            jwk_str = ECAlgorithm.to_jwk(public_key)
+        elif isinstance(public_key, ed25519.Ed25519PublicKey):
+            jwk_str = OKPAlgorithm.to_jwk(public_key)
+        else:
+            return None
+    except Exception:
+        return None
+
+    import json
+    try:
+        jwk = json.loads(jwk_str) if isinstance(jwk_str, str) else dict(jwk_str)
+    except (TypeError, ValueError):
+        return None
+    if kid is not None and "kid" not in jwk:
+        jwk["kid"] = kid
+    return jwk
+
+
 def _extract_jwk_dicts(value: Any) -> list[dict[str, Any]]:
     if value is None:
         return []
+    # Modern spiffe JwtBundle exposes .jwt_authorities as a
+    # Mapping[kid, cryptography.PublicKey]. Detect that shape and
+    # convert each public key to a JWK dict via PyJWT helpers.
+    if isinstance(value, Mapping):
+        all_pubkeys = bool(value) and all(
+            hasattr(v, "public_bytes") and not isinstance(v, (str, bytes, dict))
+            for v in value.values()
+        )
+        if all_pubkeys:
+            jwks: list[dict[str, Any]] = []
+            for kid, pk in value.items():
+                jwk = _public_key_to_jwk(pk, kid=str(kid) if kid else None)
+                if jwk is not None:
+                    jwks.append(jwk)
+            if jwks:
+                return jwks
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return _extract_jwk_dicts(value.to_dict())
     if isinstance(value, Mapping):
@@ -107,6 +164,12 @@ def _extract_jwk_dicts(value: Any) -> list[dict[str, Any]]:
         for item in value:
             jwks.extend(_extract_jwk_dicts(item))
         return jwks
+    # Single PublicKey not in a Mapping (rare; covers JwtBundle.jwt_authorities()
+    # callable returning a single key instead of a mapping).
+    if hasattr(value, "public_bytes") and not isinstance(value, (str, bytes)):
+        jwk = _public_key_to_jwk(value)
+        if jwk is not None:
+            return [jwk]
     for attr in ("bundles", "jwt_bundles", "jwt_authorities", "authorities", "jwk"):
         if hasattr(value, attr):
             return _extract_jwk_dicts(getattr(value, attr))
