@@ -100,7 +100,7 @@ The compliance trail is emitted as SARIF on every
 | --- | --- |
 | Hosted infrastructure | None: Tessera is a library + reference data plane. AgentMesh Cloud (separate project, separate org) hosts. |
 | Mailing list / forum | GitHub Discussions (to be enabled at sandbox acceptance) |
-| Slack / Discord channel | OpenSSF Slack channel #tessera (to be created at sandbox acceptance) |
+| Slack / Discord channel | OpenSSF Slack workspace channel for the project, name TBD; created via TAC channel-creation request after sandbox acceptance |
 | CNAME / domains owned | none |
 | Trademark | none registered |
 
@@ -151,21 +151,62 @@ contributions. Sandbox tier is the correct fit for a project at
 Tessera's current point and is the on-ramp to incubation as
 contributors join.
 
-## Filing checklist
+## Filing process (corrected)
 
-- [ ] Solicit a TAC sponsor in `#project-lifecycle` on OpenSSF
-      Slack. Pre-written message at
-      [`openssf_slack_post.md`](./openssf_slack_post.md). Paste
-      verbatim or edit before sending.
-- [ ] Submit the sandbox application via the form at
-      https://openssf.org/projects/.
-- [ ] Open a tracking issue in `kenithphilip/Tessera` so the
-      community can follow progress: already done at
-      [#19](https://github.com/kenithphilip/Tessera/issues/19).
-- [ ] Once accepted, file the additional artifacts (Charter,
-      CoC, security-disclosure boilerplate adoption PRs) per
-      Step 1 of the transition plan in
-      `foundation_proposal_v1_1.md`.
+The actual OpenSSF application process is a GitHub PR to
+[`ossf/tac`](https://github.com/ossf/tac), not a Slack post.
+Per
+[`process/project-lifecycle.md`](https://github.com/ossf/tac/blob/main/process/project-lifecycle.md):
+
+1. Fork `ossf/tac`.
+2. Add a new file
+   `process/project-lifecycle-documents/tessera_sandbox_stage.md`
+   using the template structure (already drafted at
+   [`tessera_sandbox_stage.md`](./tessera_sandbox_stage.md) in
+   this repo; copy-paste verbatim).
+3. Update the project list table in the `ossf/tac` README to
+   add a row for Tessera with the `Status` cell linking back to
+   the new file.
+4. Open the PR; it's reviewed by the TAC.
+5. Sponsoring WG (Supply Chain Integrity WG or Security Tooling
+   WG; see Sponsor section in the application doc) confirms
+   willingness to host the project in their working group.
+
+## Submission gate (single-maintainer blocker)
+
+OpenSSF Sandbox tier requires **a minimum of three maintainers
+across at least two different organisational affiliations**.
+
+Tessera currently has one maintainer (Kenith Philip). The PR
+above cannot land until two additional maintainers from a
+different organisation have agreed to maintain the project.
+
+Recruiting plan (companion to the PR; do this before opening it):
+
+1. Reach out to potential co-maintainers via:
+   - The 4 framework PR threads currently open (LangChain,
+     LlamaIndex, PydanticAI, CrewAI) once they get reviewer
+     attention.
+   - The
+     [`agentgateway/agentgateway#1665`](https://github.com/agentgateway/agentgateway/issues/1665)
+     plugin discussion.
+   - Direct outreach to the AppSec Working Group at the user's
+     employer (Fivetran) and other organisations with stated
+     interest in agent security.
+2. Document the second-maintainer commit in a public issue at
+   `kenithphilip/Tessera` so the OpenSSF TAC can verify when
+   reviewing the application PR.
+3. Open the `ossf/tac` PR only when the maintainer table in the
+   application has 3 names with 2+ orgs.
+
+## After the PR is accepted
+
+- File follow-on PRs in `kenithphilip/Tessera` for OpenSSF
+  Charter / Code of Conduct / security-disclosure boilerplate
+  adoption per Step 1 of
+  [`foundation_proposal_v1_1.md`](./foundation_proposal_v1_1.md).
+- Run the public Steering Committee CFP (3-5 members) for 30
+  days, per the proposal.
 
 ## References
 
