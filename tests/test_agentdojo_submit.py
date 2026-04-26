@@ -61,13 +61,19 @@ def test_run_cell_dry_run_returns_placeholders() -> None:
     assert result.raw_runs == [{"dry_run": True}]
 
 
-def test_run_cell_unknown_defense_is_recorded_as_error() -> None:
+def test_run_cell_unknown_model_is_recorded_as_error() -> None:
+    """A model the dispatcher can't route (not claude-*, not yet wired
+    for openai/gemini) records a clear 'not yet implemented' error
+    rather than crashing. Behavior changed when the dispatcher moved
+    from defense-name routing to model-name routing."""
     cell = submit.CellSpec(
-        model="m", suite="travel", attack="ii", seed=0, defense="bogus"
+        model="bogus-model-7b", suite="travel", attack="important_instructions",
+        seed=0, defense="tessera",
     )
     result = submit.run_cell(cell, dry_run=False)
     assert result.error is not None
-    assert "bogus" in result.error
+    assert "bogus-model-7b" in result.error
+    assert "not yet implemented" in result.error
 
 
 # --- Aggregation ------------------------------------------------------------
@@ -137,19 +143,41 @@ def test_main_dry_run_succeeds(
     assert out.exists()
 
 
-def test_main_without_api_key_and_no_dry_run_returns_2(
+def test_main_anthropic_model_without_api_key_returns_2(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """An Anthropic model in the matrix without the key set bails out
+    with rc=2. Non-Anthropic models bypass the check."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     out = tmp_path / "no.jsonl"
     rc = submit.main([
-        "--models", "m1",
+        "--models", "claude-haiku-4-5",
         "--suites", "travel",
         "--attacks", "important_instructions",
         "--seeds", "0",
         "--out", str(out),
     ])
     assert rc == 2
+
+
+def test_main_non_anthropic_model_runs_without_anthropic_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A matrix containing only non-Anthropic models is allowed to
+    proceed without ANTHROPIC_API_KEY; per-cell errors record that
+    the runner is unimplemented."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    out = tmp_path / "noimpl.jsonl"
+    rc = submit.main([
+        "--models", "gpt-5",
+        "--suites", "travel",
+        "--attacks", "important_instructions",
+        "--seeds", "0",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    summary_path = out.with_suffix(".summary.json")
+    assert summary_path.exists()
 
 
 # --- Defense adapter --------------------------------------------------------

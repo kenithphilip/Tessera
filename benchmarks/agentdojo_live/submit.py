@@ -140,34 +140,49 @@ def generate_cells(
 # ---------------------------------------------------------------------------
 
 
-def _import_runner(defense: str):
-    """Resolve the in-tree runner module for a defense name.
+def _resolve_anthropic_model(model: str) -> str | None:
+    """Map a submit.py model alias to the actual Anthropic model id.
 
-    For ``tessera`` we currently use the ``run_haiku`` runner; for
-    ``none`` (baseline) we use ``run_baseline``. Phase 2 will route
-    Llama / GPT / Gemini through their dedicated runners.
+    submit.py uses friendly aliases (``claude-sonnet-4-5``,
+    ``claude-haiku-4-5``); the real Anthropic API expects fully
+    qualified ids. Returns ``None`` when the model is not an
+    Anthropic model so the caller can route elsewhere.
     """
-    if defense == "none":
-        from benchmarks.agentdojo_live import run_baseline
-
-        return run_baseline
-    if defense == DEFAULT_DEFENSE:
-        from benchmarks.agentdojo_live import run_haiku
-
-        return run_haiku
-    raise ValueError(f"unknown defense: {defense!r}")
+    table = {
+        "claude-haiku-4-5": "claude-3-5-haiku-20241022",
+        "claude-sonnet-4-5": "claude-3-5-sonnet-20241022",
+        # Aliases users sometimes pass:
+        "claude-3-5-haiku": "claude-3-5-haiku-20241022",
+        "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
+    }
+    if model in table:
+        return table[model]
+    if model.startswith("claude-"):
+        # Trust the operator: pass-through any other claude-* id.
+        return model
+    return None
 
 
 def run_cell(
     cell: CellSpec,
     *,
     dry_run: bool = False,
+    max_pairs: int = 2,
 ) -> CellResult:
     """Execute one cell and return its aggregated metrics.
 
     In ``dry_run`` mode no model API call is made; the function
     returns deterministic placeholder metrics suitable for matrix
     validation.
+
+    Real dispatch (Wave 2A leftover, wired here):
+
+    - Anthropic models (``claude-*``) route through
+      :func:`benchmarks.agentdojo_live.run_haiku.run_anthropic_cell`.
+    - OpenAI / Gemini models return a clear "runner not yet
+      implemented" error; the caller can fan out via the
+      per-provider runner directly while waiting for the unified
+      dispatcher to grow those backends.
     """
     started = time.monotonic()
     if dry_run:
@@ -180,16 +195,54 @@ def run_cell(
             raw_runs=[{"dry_run": True}],
             elapsed_seconds=0.0,
         )
-    try:
-        runner = _import_runner(cell.defense)
-    except ValueError as exc:
-        return CellResult(cell=cell, error=str(exc))
-    # Real dispatch is wired in Phase 2 wave 2A; today we record a
-    # SKIP so the driver verifies the matrix shape without forcing
-    # API keys at v0.12.
+
+    anthropic_model = _resolve_anthropic_model(cell.model)
+    if anthropic_model is not None:
+        try:
+            from benchmarks.agentdojo_live.run_haiku import run_anthropic_cell
+        except ImportError as exc:
+            return CellResult(
+                cell=cell,
+                error=(
+                    f"agentdojo not installed: {exc}. "
+                    f"Run `pip install -e '.[agentdojo]'` first."
+                ),
+                elapsed_seconds=time.monotonic() - started,
+            )
+        try:
+            metrics = run_anthropic_cell(
+                model=anthropic_model,
+                suite_name=cell.suite,
+                attack_name=cell.attack,
+                seed=cell.seed,
+                max_pairs=max_pairs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return CellResult(
+                cell=cell,
+                error=f"trial failed: {type(exc).__name__}: {exc}",
+                elapsed_seconds=time.monotonic() - started,
+            )
+        return CellResult(
+            cell=cell,
+            utility_attempt=metrics["utility_attempt"],
+            targeted_asr=metrics["targeted_asr"],
+            attack_prevention_rate=metrics["attack_prevention_rate"],
+            utility_delta=metrics["utility_delta"],
+            raw_runs=metrics["raw_runs"],
+            elapsed_seconds=metrics["elapsed_seconds"],
+            error=metrics["error"],
+        )
+
+    # OpenAI / Gemini / other: clear unimplemented error.
     return CellResult(
         cell=cell,
-        error="real-trial dispatch not wired until Phase 2 wave 2A",
+        error=(
+            f"runner for {cell.model!r} is not yet implemented. "
+            f"Anthropic models work today via run_anthropic_cell; "
+            f"OpenAI and Gemini paths are still pending. See "
+            f"docs/benchmarks/REAL_RUN_RUNBOOK.md."
+        ),
         elapsed_seconds=time.monotonic() - started,
     )
 
@@ -241,6 +294,34 @@ def write_jsonl(path: Path, results: list[CellResult], summary: dict[str, Any]) 
         for r in results:
             fh.write(json.dumps(r.to_dict(), separators=(",", ":")) + "\n")
         fh.write(json.dumps({"_summary": summary}, separators=(",", ":")) + "\n")
+    # Also emit an emitter-friendly summary that
+    # tessera.evaluate.scorecard.emitter._benchmark_metrics can
+    # consume directly via `tessera bench emit-scorecard
+    # --benchmark-run <summary.json>`. Schema:
+    #   {"suite": "agentdojo", "utility_accuracy": float,
+    #    "attack_success_rate": float, "run_id": str}
+    summary_path = path.with_suffix(".summary.json")
+    completed = sum(1 for r in results if r.error is None)
+    if completed:
+        utility = sum(r.utility_attempt for r in results if r.error is None) / completed
+        asr = sum(r.targeted_asr for r in results if r.error is None) / completed
+    else:
+        utility = 0.0
+        asr = 0.0
+    summary_path.write_text(
+        json.dumps(
+            {
+                "suite": "agentdojo",
+                "utility_accuracy": utility,
+                "attack_success_rate": asr,
+                "run_id": summary.get("generated_at", ""),
+                "cells_total": summary.get("total_cells", 0),
+                "cells_completed": summary.get("completed_cells", 0),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +362,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run", action="store_true",
         help="Exercise the matrix and aggregator without calling models.",
     )
+    parser.add_argument(
+        "--max-pairs", type=int, default=2,
+        help=(
+            "Max (user_task, injection_task) pairs per cell. Bounds "
+            "wall time; default 2 keeps a single Anthropic cell at "
+            "roughly 2-4 minutes."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -296,16 +385,19 @@ def main(argv: list[str] | None = None) -> int:
         f"Matrix: {len(args.models)} models x {len(args.suites)} suites x "
         f"{len(args.attacks)} attacks x {len(args.seeds)} seeds = {len(cells)} cells"
     )
-    if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
+    needs_anthropic = any(
+        _resolve_anthropic_model(cell.model) is not None for cell in cells
+    )
+    if not args.dry_run and needs_anthropic and not os.environ.get("ANTHROPIC_API_KEY"):
         print(
-            "ANTHROPIC_API_KEY not set; use --dry-run to validate the matrix.",
+            "ANTHROPIC_API_KEY not set; export it or use --dry-run.",
             file=sys.stderr,
         )
         return 2
     started = time.monotonic()
     results: list[CellResult] = []
     for cell in cells:
-        result = run_cell(cell, dry_run=args.dry_run)
+        result = run_cell(cell, dry_run=args.dry_run, max_pairs=args.max_pairs)
         results.append(result)
         status = "OK" if result.error is None else f"ERR ({result.error[:60]})"
         print(

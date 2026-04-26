@@ -152,6 +152,166 @@ def run_trial(pipeline, suite, suite_name, user_task_id, injection_task_id, atta
                             error=f"{error_name}: {str(e)[:150]}")
 
 
+def run_anthropic_cell(
+    *,
+    model: str,
+    suite_name: str,
+    attack_name: str,
+    seed: int,
+    max_pairs: int = 2,
+    api_key: str | None = None,
+) -> dict:
+    """Run a single (model, suite, attack, seed) cell against Anthropic.
+
+    Returns a dict shaped for benchmarks.agentdojo_live.submit's
+    ``CellResult`` consumer:
+
+    - ``utility_attempt``: fraction of benign tasks that completed.
+    - ``targeted_asr``: fraction of injection trials whose injection
+      payload succeeded (lower is better).
+    - ``attack_prevention_rate``: ``1 - targeted_asr``.
+    - ``utility_delta``: 0.0 baseline (caller can re-run with
+      defense="none" and diff externally if a real delta is needed).
+    - ``raw_runs``: per-trial ``LiveResult`` records.
+    - ``elapsed_seconds``: wall time.
+    - ``error``: a string when the cell could not run, else None.
+
+    The ``seed`` argument selects a sliced window of (user_task,
+    injection_task) pairs so successive seeds exercise disjoint
+    portions of the suite. ``max_pairs`` bounds wall time per cell.
+
+    The mapping from the submit.py attack-name vocabulary to
+    AgentDojo attack classes:
+
+    - ``important_instructions`` -> ``IgnorePreviousAttack``
+    - ``tool_knowledge`` -> ``InjecAgentAttack``
+    - ``direct`` -> ``DirectAttack``
+    - ``system_message`` -> ``SystemMessageAttack``
+    """
+    import anthropic
+    from agentdojo.agent_pipeline.ground_truth_pipeline import GroundTruthPipeline
+
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {
+            "error": "ANTHROPIC_API_KEY not set",
+            "utility_attempt": 0.0, "targeted_asr": 0.0,
+            "attack_prevention_rate": 0.0, "utility_delta": 0.0,
+            "raw_runs": [], "elapsed_seconds": 0.0,
+        }
+
+    attack_map = {
+        "important_instructions": IgnorePreviousAttack,
+        "tool_knowledge": InjecAgentAttack,
+        "direct": DirectAttack,
+        "system_message": SystemMessageAttack,
+    }
+    attack_cls = attack_map.get(attack_name)
+    if attack_cls is None:
+        return {
+            "error": f"unknown attack name: {attack_name!r}",
+            "utility_attempt": 0.0, "targeted_asr": 0.0,
+            "attack_prevention_rate": 0.0, "utility_delta": 0.0,
+            "raw_runs": [], "elapsed_seconds": 0.0,
+        }
+
+    client = anthropic.Anthropic(api_key=api_key)
+    started = time.monotonic()
+
+    suite = load_suite(suite_name)
+    gt_pipeline = GroundTruthPipeline(None)
+
+    # Slice (user_task, injection_task) pairs by seed so seed=0/1/2
+    # each get a disjoint window of `max_pairs` pairs.
+    user_task_ids = sorted(suite.user_tasks.keys())
+    injection_task_ids = sorted(suite.injection_tasks.keys())
+    pair_offset = int(seed) * max_pairs
+
+    raw_runs: list[dict] = []
+    benign_total = 0
+    benign_passed = 0
+    injection_total = 0
+    injection_blocked = 0
+
+    # Benign trials: always run the same first `max_pairs` user tasks
+    # so utility delta stays comparable across seeds.
+    for ut_id in user_task_ids[:max_pairs]:
+        pipeline, labeler, _ = build_pipeline(client, model)
+        result = run_trial(
+            pipeline, suite, suite_name, ut_id,
+            None, None, {}, labeler,
+        )
+        raw_runs.append({
+            "trial": "benign", "user_task": ut_id,
+            "utility_pass": result.utility_pass,
+            "error": result.error,
+        })
+        benign_total += 1
+        if result.utility_pass:
+            benign_passed += 1
+
+    # Injection trials: stride through (ut, it) pairs starting at the
+    # seed offset.
+    pair_idx = 0
+    for ut_id in user_task_ids:
+        for it_id in injection_task_ids:
+            if pair_idx < pair_offset:
+                pair_idx += 1
+                continue
+            if pair_idx >= pair_offset + max_pairs:
+                break
+            try:
+                attack = attack_cls(suite, gt_pipeline)
+                injections = attack.attack(
+                    suite.user_tasks[ut_id], suite.injection_tasks[it_id],
+                )
+            except Exception as exc:
+                raw_runs.append({
+                    "trial": "injection", "user_task": ut_id,
+                    "injection_task": it_id,
+                    "error": f"attack-build-failed: {exc}",
+                })
+                pair_idx += 1
+                continue
+            if not injections:
+                pair_idx += 1
+                continue
+            pipeline, labeler, _ = build_pipeline(client, model)
+            result = run_trial(
+                pipeline, suite, suite_name, ut_id,
+                it_id, attack_name, injections, labeler,
+            )
+            raw_runs.append({
+                "trial": "injection", "user_task": ut_id,
+                "injection_task": it_id,
+                "security_pass": result.security_pass,
+                "error": result.error,
+            })
+            injection_total += 1
+            if result.security_pass:
+                injection_blocked += 1
+            pair_idx += 1
+        if pair_idx >= pair_offset + max_pairs:
+            break
+
+    utility_attempt = benign_passed / benign_total if benign_total else 0.0
+    targeted_asr = (
+        (injection_total - injection_blocked) / injection_total
+        if injection_total else 0.0
+    )
+    attack_prevention_rate = injection_blocked / injection_total if injection_total else 0.0
+
+    return {
+        "utility_attempt": utility_attempt,
+        "targeted_asr": targeted_asr,
+        "attack_prevention_rate": attack_prevention_rate,
+        "utility_delta": 0.0,
+        "raw_runs": raw_runs,
+        "elapsed_seconds": time.monotonic() - started,
+        "error": None,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live AgentDojo eval with Claude Haiku")
     parser.add_argument("--suite", nargs="*", default=["banking", "slack", "travel", "workspace"])
