@@ -82,8 +82,9 @@ def run_mirror_sync(args) -> int:  # type: ignore[no-untyped-def]
         output_dir=out_path,
     )
 
+    limit = int(getattr(args, "limit", 0) or 0)
     try:
-        summary = mirror.mirror_all()
+        summary = mirror.mirror_all(limit=limit) if limit else mirror.mirror_all()
     except Exception as exc:  # noqa: BLE001
         print(f"mirror sync failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 3
@@ -162,6 +163,18 @@ def register_mirror_subcommand(mcp_sub) -> None:  # type: ignore[no-untyped-def]
             "signing method: hmac for air-gapped / test runs "
             "(reads TESSERA_MIRROR_HMAC_KEY), "
             "sigstore for production (reads TESSERA_MIRROR_SIGSTORE_TOKEN)"
+        ),
+    )
+    sync_parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help=(
+            "process at most this many upstream manifests (0 = no cap). "
+            "The official MCP registry has ~20k entries; full Sigstore "
+            "signing + OCI push of every manifest does not fit in a "
+            "20-minute CI cron, so production cron runs typically pass "
+            "--limit 50 and rotate which subset is processed each night."
         ),
     )
 

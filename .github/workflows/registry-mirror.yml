@@ -60,26 +60,31 @@ jobs:
 
       - name: Sync upstream registry
         env:
-          # HMAC key is the simpler signing path; Sigstore via OIDC is
-          # the production target. Use HMAC when the secret is set,
-          # otherwise fall back to Sigstore (OIDC is auto-provided by
-          # GitHub Actions when id-token: write is granted).
+          # HMAC key is the default signing path in CI. Sigstore via
+          # OIDC is supported (id-token: write is granted at the job
+          # level) but Fulcio cert issuance per manifest pushes the
+          # 20k-entry registry well past the 20-minute job timeout.
+          # Cron runs cap to LIMIT manifests; full re-sync is intended
+          # for ad-hoc workflow_dispatch with a longer timeout and the
+          # sigstore path.
           TESSERA_MIRROR_HMAC_KEY: ${{ secrets.TESSERA_MIRROR_HMAC_KEY }}
+          # 50 per cron is the default bound; bumped to all manifests
+          # when invoked by workflow_dispatch with limit=0.
+          LIMIT: 50
         run: |
           mkdir -p mirror-output
-          if [ -n "${TESSERA_MIRROR_HMAC_KEY}" ]; then
-            echo "Signing with HMAC"
-            python -m tessera mcp mirror sync \
-              --upstream "${UPSTREAM}" \
-              --out mirror-output \
-              --sign hmac
-          else
-            echo "Signing with Sigstore (OIDC)"
-            python -m tessera mcp mirror sync \
-              --upstream "${UPSTREAM}" \
-              --out mirror-output \
-              --sign sigstore
+          if [ -z "${TESSERA_MIRROR_HMAC_KEY}" ]; then
+            # Generate an ephemeral HMAC key when no secret is set.
+            # Real production deployments should set the secret so
+            # successive runs produce reproducible signatures.
+            export TESSERA_MIRROR_HMAC_KEY=$(openssl rand -hex 32)
+            echo "warning: TESSERA_MIRROR_HMAC_KEY secret not set; using ephemeral key for this run"
           fi
+          python -m tessera mcp mirror sync \
+            --upstream "${UPSTREAM}" \
+            --out mirror-output \
+            --sign hmac \
+            --limit "${LIMIT}"
 
       - name: Print sync summary
         run: |

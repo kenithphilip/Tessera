@@ -272,7 +272,7 @@ def _utcnow() -> str:
     return datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _write_oci_layer(signed: SignedManifest, dest: Path) -> None:
+def _write_oci_layer(signed: SignedManifest, dest: Path, tag: str | None = None) -> None:
     """Write a minimal single-layer OCI artifact to ``dest``.
 
     When the ``oras`` library is importable the artifact is written in the
@@ -322,16 +322,21 @@ def _write_oci_layer(signed: SignedManifest, dest: Path) -> None:
     oci_manifest_digest = _sha256_hex(oci_manifest_bytes)
     (blobs_dir / oci_manifest_digest).write_bytes(oci_manifest_bytes)
 
+    # OCI image index entry. The annotations.org.opencontainers.image.ref.name
+    # is required for `oras copy --from-oci-layout PATH ...` to resolve the
+    # layout to a single named manifest. Without it, oras errors with "no tag
+    # or digest specified" and the push step fails.
+    index_entry: dict[str, Any] = {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "size": len(oci_manifest_bytes),
+        "digest": f"sha256:{oci_manifest_digest}",
+    }
+    if tag:
+        index_entry["annotations"] = {"org.opencontainers.image.ref.name": tag}
     index = {
         "schemaVersion": 2,
         "mediaType": "application/vnd.oci.image.index.v1+json",
-        "manifests": [
-            {
-                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "size": len(oci_manifest_bytes),
-                "digest": f"sha256:{oci_manifest_digest}",
-            }
-        ],
+        "manifests": [index_entry],
     }
     (dest / "oci-layout").write_text(
         json.dumps({"imageLayoutVersion": "1.0.0"}), encoding="utf-8"
@@ -544,15 +549,21 @@ class RegistryMirror:
         envelope_path.write_text(signed.to_json(), encoding="utf-8")
 
         oci_dir = self._output_dir / "oci" / tag
-        _write_oci_layer(signed, oci_dir)
+        _write_oci_layer(signed, oci_dir, tag=tag)
         return oci_dir
 
-    def mirror_all(self) -> MirrorManifest:
+    def mirror_all(self, limit: int = 0) -> MirrorManifest:
         """Run the full pull -> re-sign -> package pipeline.
 
         Fetches the upstream manifest list, re-signs each entry,
         packages each as an OCI artifact, and writes
         ``mirror-manifest.json`` to :attr:`output_dir`.
+
+        Args:
+            limit: When > 0, process at most this many upstream
+                manifests. Useful for CI cron runs that have a
+                bounded execution budget. Default 0 means process
+                everything.
 
         Returns:
             A :class:`MirrorManifest` summarising every processed entry.
@@ -563,6 +574,8 @@ class RegistryMirror:
                 response shape.
         """
         raw_manifests = self.fetch_upstream()
+        if limit > 0:
+            raw_manifests = raw_manifests[:limit]
         entries: list[MirrorEntry] = []
         now = _utcnow()
 
