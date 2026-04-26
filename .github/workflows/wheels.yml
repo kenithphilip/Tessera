@@ -109,11 +109,20 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
+  # TestPyPI publish is opt-in via workflow_dispatch only.
+  # Auto-publishing on every push to main has two problems:
+  #   1. PyO3/maturin-action's wrapping of `maturin upload --repository testpypi`
+  #      strips the --repository flag value, so the job always failed with
+  #      "a value is required for '--repository <REPOSITORY>' but none was supplied".
+  #   2. Even when fixed, the right gating signal is "we want this build on
+  #      TestPyPI", not "every commit to main lands a wheel on TestPyPI".
+  # Production releases land on PyPI via the tag-triggered publish-pypi job
+  # below (Trusted Publishing).
   publish-testpypi:
     name: Publish to TestPyPI
     needs: [linux, macos, windows, sdist]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch'
     environment: testpypi
     permissions:
       id-token: write
@@ -123,10 +132,10 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Publish to TestPyPI
-        uses: PyO3/maturin-action@v1
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          command: upload
-          args: --repository testpypi --skip-existing dist/*
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   publish-pypi:
     name: Publish to PyPI
@@ -142,7 +151,6 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          command: upload
-          args: --skip-existing dist/*
+          skip-existing: true
