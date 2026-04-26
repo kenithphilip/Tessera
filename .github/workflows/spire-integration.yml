@@ -140,6 +140,50 @@ jobs:
             sleep 1
           done
 
+      - name: PEERCRED diagnostic (uid 0 vs host uid)
+        # The Workload API socket is bind-mounted between host and the
+        # spire-agent container. Tests run as the host runner UID
+        # (typically 1001 on ubuntu-latest), but `docker exec` calls
+        # connect as the container's default user (uid 0). The agent
+        # only issues an identity for selectors registered on the
+        # observed PEERCRED uid, so both must succeed for the workflow
+        # to be trustworthy. This step exercises both paths and captures
+        # the agent's logged PEERCRED reading for any future regression.
+        run: |
+          set +e
+          echo "=== uid 0 path: docker exec -> spire-agent api fetch x509 ==="
+          docker exec spire-agent-ci \
+            /opt/spire/bin/spire-agent api fetch x509 \
+            -socketPath /tmp/spire-agent-api/api.sock 2>&1 \
+            | grep -E "SPIFFE ID:|received .* svid|no identity" \
+            | head -5
+          echo ""
+          echo "=== host uid $(id -u) path: spire-agent CLI from host (best-effort) ==="
+          # The spire-agent CLI is shipped in the agent image, not on
+          # the host runner. Use `python` + the spiffe SDK as a stand-in
+          # so this step works without installing the SPIRE binaries on
+          # the runner. The actual integration tests use the same socket
+          # via the spiffe SDK, so this proves the host-uid path before
+          # pytest runs.
+          python3 - <<'PY'
+          import os, sys
+          try:
+              from spiffe.workloadapi.default_x509_source import DefaultX509Source
+              src = DefaultX509Source(socket_path="unix:///tmp/spire-agent-api/api.sock")
+              svid = src.svid
+              print(f"  host SVID: {svid.spiffe_id}")
+              src.close()
+          except Exception as exc:
+              print(f"  host SVID fetch failed: {type(exc).__name__}: {exc}")
+              sys.exit(0)  # diagnostic only; do not fail the job here
+          PY
+          echo ""
+          echo "=== agent log (peer/workload/attest lines, last 30) ==="
+          docker logs spire-agent-ci 2>&1 \
+            | grep -iE "peer|workload|attest" \
+            | tail -30 || true
+          set -e
+
       - name: Run SPIRE integration tests
         env:
           SPIFFE_ENDPOINT_SOCKET: unix:///tmp/spire-agent-api/api.sock

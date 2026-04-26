@@ -22,9 +22,21 @@ if [ -z "${SPIRE_JOIN_TOKEN:-}" ]; then
 fi
 
 PARENT_ID="spiffe://${TRUST_DOMAIN}/spire/agent/join_token/${SPIRE_JOIN_TOKEN}"
-echo "Registering workload entry for UID ${TEST_UID} under parent ${PARENT_ID}..."
+echo "Registering workload entries under parent ${PARENT_ID}..."
+echo "  host runner UID: ${TEST_UID}"
 
-# Test runner workload
+# The Workload API socket is bind-mounted between host and the
+# spire-agent container. Tests run as the host runner UID
+# (typically 1001 on GitHub Actions ubuntu-latest), but
+# `docker exec spire-agent-ci ...` calls connect as the
+# container's default user (uid 0). Both paths need a workload
+# entry against the same SPIFFE ID so the agent issues an
+# identity regardless of which side opens the socket. Without
+# the uid 0 entry the in-container PEERCRED diagnostic step
+# fails with "no identity issued" (PERMISSION_DENIED) even when
+# the host-side test would succeed.
+
+# Test runner workload (host UID, normally 1001)
 docker compose exec -T spire-server \
   /opt/spire/bin/spire-server entry create \
   -parentID "${PARENT_ID}" \
@@ -32,6 +44,18 @@ docker compose exec -T spire-server \
   -selector "unix:uid:${TEST_UID}" \
   -ttl 300
 
-echo "Workload entry registered. Listing for verification:"
+# Container-side workload (uid 0) - same SPIFFE ID so any
+# downstream consumer treats them as the same identity. Skip
+# duplicate when the runner happens to also be uid 0 (unusual).
+if [ "${TEST_UID}" != "0" ]; then
+  docker compose exec -T spire-server \
+    /opt/spire/bin/spire-server entry create \
+    -parentID "${PARENT_ID}" \
+    -spiffeID "spiffe://${TRUST_DOMAIN}/ci/test-runner" \
+    -selector "unix:uid:0" \
+    -ttl 300
+fi
+
+echo "Workload entries registered. Listing for verification:"
 docker compose exec -T spire-server \
   /opt/spire/bin/spire-server entry show -parentID "${PARENT_ID}"
