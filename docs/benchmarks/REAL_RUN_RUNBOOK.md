@@ -1,36 +1,39 @@
-# AgentDojo real-model benchmark: runbook + honest gap report
+# AgentDojo real-model benchmark: runbook
 
 This is the runbook for converting the placeholder paired
 scorecards (`docs/scorecard/static/paired-*.intoto.jsonl`,
 which currently contain `"benchmarks": {}`) into signed
 attestations carrying real measured numbers.
 
-## Honest gap: submit.py is not wired to real models
+## Quick smoke (no API key required)
 
-`benchmarks/agentdojo_live/submit.py` is the matrix +
-aggregator. Its `run_cell` function is **not** dispatching to a
-model even with an API key:
+Verify the matrix dispatcher and Tessera defense pipeline shape
+without spending API credits:
 
-```python
-# benchmarks/agentdojo_live/submit.py:187
-# Real dispatch is wired in Phase 2 wave 2A; today we record a
-# SKIP so the driver verifies the matrix shape without forcing
-# API keys at v0.12.
-return CellResult(
-    cell=cell,
-    error="real-trial dispatch not wired until Phase 2 wave 2A",
-    elapsed_seconds=time.monotonic() - started,
-)
+```bash
+make smoke
 ```
 
-Wave 2A from the v0.12-to-v1.0 plan was supposed to land that
-dispatch. It did not. So `python -m benchmarks.agentdojo_live.submit`
-without `--dry-run` returns SKIP errors for every cell.
+Equivalent to `python -m benchmarks.agentdojo_live.submit
+--models claude-haiku-4-5 --suites travel
+--attacks important_instructions --seeds 0 --max-pairs 1
+--dry-run`. Exits zero with deterministic placeholder metrics so
+you can wire CI without exposing keys.
 
-**What does work today**: `run_haiku.py`, `run_mistral.py`, and
-`run_baseline.py` are real, working harnesses. Each takes its
-own `--suite` flag, calls the real model API, and writes a JSON
-report. They're the path to real numbers right now.
+## What changed
+
+`benchmarks/agentdojo_live/submit.py:run_cell` now dispatches
+through `benchmarks.agentdojo_live.runners.run_provider_cell`,
+which routes by model-name prefix to the per-provider standalone
+runners (`run_haiku.py`, `run_openai.py`, `run_gemini.py`,
+`run_cohere.py`, plus an OpenAI-compatible fallback for Llama /
+Qwen / DeepSeek / Mistral via Together / Groq / OpenRouter /
+DeepInfra / vLLM). The earlier "real-trial dispatch not wired"
+gap closed in commit `3dccb97`.
+
+Each per-provider runner is also reachable directly for one-off
+operator harnesses without the matrix overhead; see
+`benchmarks/agentdojo_live/run_*.py --help`.
 
 ## What you need
 
@@ -51,11 +54,14 @@ without committing to the full matrix.
 export ANTHROPIC_API_KEY=sk-ant-...
 cd /path/to/Tessera
 
-python -m benchmarks.agentdojo_live.run_haiku \
-    --suite travel \
-    --max-injection-pairs 2 \
-    --output benchmarks/agentdojo_live/results_haiku_smoke.json
+make smoke-real
 ```
+
+Equivalent to `python3 -m benchmarks.agentdojo_live.run_haiku
+--suite travel --max-injection-pairs 1
+--output benchmarks/agentdojo_live/results_haiku_smoke.json`.
+Bump `--max-injection-pairs` past 1 by editing the Makefile
+target if you want a wider sweep at smoke time.
 
 Expected runtime: 3-5 minutes. Expected output: a JSON file
 with per-(user_task, injection_task, attack) outcomes plus a
@@ -101,24 +107,23 @@ emit_paired_scorecard(
 )
 ```
 
-## What we still owe
+## What still needs polish
 
-To make `python -m benchmarks.agentdojo_live.submit ...`
-actually call models (the unified driver the plan called for),
-we need:
+The dispatcher (item-2/3/4 of the post-v1.0 plan) closed the
+"submit.py doesn't dispatch" gap. Three smaller follow-ups
+remain:
 
-1. A `submit_dispatcher.py` that maps `cell.model` to a
-   per-model runner module (e.g. `claude-3-5-haiku` ->
-   `run_haiku`, `claude-sonnet-4.5` -> a new
-   `run_sonnet.py` that doesn't exist yet, etc.).
-2. A subprocess wrapper or in-process import that runs one
-   trial and returns a `CellResult` shaped object.
-3. The emit-scorecard CLI gaining a `--from-runs <jsonl>`
-   flag so the scorecard JSON pulls real numbers from disk
-   rather than `{}`.
-
-These three pieces are the actual Wave 2A work. They're a
-~half-day of focused engineering, not a deferred-forever item.
+1. The emit-scorecard CLI still hardcodes `benchmarks={}`. It
+   needs a `--from-runs <results.json>` flag so scorecards pull
+   real measured numbers from a per-provider runner JSON rather
+   than inheriting the placeholder.
+2. `run_sonnet.py` is not a separate module; sonnet runs go
+   through `run_haiku.py` with `--model claude-sonnet-4-5`. If
+   sonnet ever needs sonnet-specific quirks, mirror the
+   pattern from `run_openai.py`.
+3. The Real Numbers Action ([RNA](#) ticket TBD) needs to land
+   the run from Step 2 into `paired-claude-sonnet-4.5.intoto.jsonl`
+   with the new flag, then re-sign.
 
 ## Cost / risk notes
 

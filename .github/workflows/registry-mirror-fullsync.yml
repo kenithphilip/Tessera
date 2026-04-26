@@ -1,0 +1,103 @@
+name: MCP Registry Mirror (Full sync)
+
+# One-shot full re-sync of the MCP registry. Cloned from
+# registry-mirror.yml with two changes:
+#   1. LIMIT=0   (sync every upstream manifest, not just the cron's 50)
+#   2. timeout-minutes: 90   (the upstream catalogue is ~20k manifests)
+#
+# This is a separate workflow file (not a workflow_dispatch input on
+# the cron file) so an accidental dispatch can never disable the cron's
+# 50-per-run cap, which is the production safety guard.
+#
+# When to use:
+#   - Initial population of the mirror after standing up a new GHCR repo.
+#   - Re-baseline after a known-bad cron run.
+#   - Annual / semi-annual full audit refresh.
+#
+# Trigger via the Actions tab. There is no schedule entry; this is
+# explicitly manual.
+#
+# Security note: the workflow_dispatch input flows into a job-level env
+# var (UPSTREAM), then into the shell as a quoted variable expansion
+# (the SAFE pattern from
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/).
+# Never embed the input directly in a `run:` block.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: "Upstream MCP registry URL"
+        required: false
+        default: "https://registry.modelcontextprotocol.io"
+
+jobs:
+  fullsync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write   # ghcr.io push
+      id-token: write   # Sigstore OIDC (kept; HMAC remains the default)
+
+    env:
+      MIRROR_IMAGE: ghcr.io/kenithphilip/mcp-registry-mirror
+      # workflow_dispatch input is interpolated once at job start, then
+      # treated as a shell variable in every step that uses it.
+      UPSTREAM: ${{ github.event.inputs.upstream || 'https://registry.modelcontextprotocol.io' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Tessera (with mcp + sessions extras)
+        run: pip install -e '.[dev,mcp,sessions]'
+
+      - name: Install oras CLI
+        run: |
+          ORAS_VERSION="1.2.0"
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin oras
+          oras version
+
+      - name: Sync upstream registry (full)
+        env:
+          TESSERA_MIRROR_HMAC_KEY: ${{ secrets.TESSERA_MIRROR_HMAC_KEY }}
+          # 0 = no per-run cap; sync every manifest the upstream
+          # catalogue exposes. Combined with the 90-minute job timeout
+          # this is enough for ~20k manifests.
+          LIMIT: 0
+        run: |
+          mkdir -p mirror-output
+          if [ -z "${TESSERA_MIRROR_HMAC_KEY}" ]; then
+            export TESSERA_MIRROR_HMAC_KEY=$(openssl rand -hex 32)
+            echo "warning: TESSERA_MIRROR_HMAC_KEY secret not set; using ephemeral key for this run"
+          fi
+          python -m tessera mcp mirror sync \
+            --upstream "${UPSTREAM}" \
+            --out mirror-output \
+            --sign hmac \
+            --limit "${LIMIT}"
+
+      - name: Print sync summary
+        run: |
+          python -m tessera mcp mirror status --out mirror-output
+
+      - name: Authenticate to ghcr.io
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | oras login ghcr.io -u "$GH_ACTOR" --password-stdin
+
+      - name: Push OCI artifacts
+        run: bash deployment/registry-mirror/oras-push.sh mirror-output "${MIRROR_IMAGE}"
+
+      - name: Upload mirror-manifest.json as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-manifest-fullsync
+          path: mirror-output/mirror-manifest.json
+          retention-days: 90

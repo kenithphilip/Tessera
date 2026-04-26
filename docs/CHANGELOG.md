@@ -468,7 +468,42 @@ of the paper for the full list with test names.
 
 ---
 
-## [Unreleased]
+## [Unreleased] - planned for v1.1.0-alpha
 
-No unreleased changes. Next planned items are tracked in
-[`ROADMAP.md`](ROADMAP.md).
+The v1.1 line opens once the OpenSSF Sandbox application is
+accepted (3-maintainer / 2-organisation gate) and the initial
+Steering Committee is seated. See
+[`docs/governance/v1.1.0-alpha-roadmap.md`](governance/v1.1.0-alpha-roadmap.md)
+for the milestone gates. The forward items below are the SC's
+inherited candidate set; ordering and scope are SC decisions,
+not maintainer commitments.
+
+### Planned
+
+- **Governance**: Tessera Steering Committee seated; repo
+  migrated to a `tessera-ai` GitHub org; ICLA path live alongside
+  the existing DCO sign-off.
+- **TPS-001 Critic v2 budget governor**: per-session circuit
+  breaker tuned from real-deployment telemetry.
+- **TPS-002 Multi-org delegation chaining**: extend
+  `DelegationToken` chains beyond 2 hops with auditable hop
+  attestation.
+- **TPS-003 ProvenanceLabel v2 design study**: ADR-only;
+  captures field-shape changes discovered during Phase 3
+  principles v2.
+- **TPS-004 Eval-as-product harness**: bundle `corpus/probes/`
+  with a reproducible runner so auditors can re-run scorecards
+  end-to-end.
+- **TPS-005 Adapter conformance suite**: pin a per-framework
+  conformance contract for the LangChain / LlamaIndex /
+  PydanticAI / CrewAI adapters.
+- **TPS-006 Drift-monitor Prometheus exporter**: surface
+  `MCP_DRIFT_*` events without forcing OTel adoption.
+
+### Not changing in v1.1
+
+- v1.0 wire format (any v2 changes are gated on
+  [`docs/adr/0007-provenance-label-v2-migration.md`](adr/0007-provenance-label-v2-migration.md)).
+- License split (Tessera library Apache-2.0; AgentMesh service
+  AGPL-3.0-or-later).
+- Indirect-prompt-injection threat model in `SECURITY.md`.

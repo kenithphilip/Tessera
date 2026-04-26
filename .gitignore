@@ -20,3 +20,6 @@ rust/tessera-gateway/target/
 rust/target/
 benchmarks/agentdojo_live/*.json
 rust/bench/results/
+# `make smoke` and the AgentDojo submitter write summary jsonl/json
+# files to ./runs/ at invocation time. Operator output, not source.
+runs/

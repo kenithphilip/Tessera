@@ -104,6 +104,9 @@ The Tessera team commits to:
 
 ## References
 
+- [`threat_model_vendor_selection.md`](threat_model_vendor_selection.md)
+  (lateral comparison of the three vendor candidates and the
+  current recommendation)
 - ``docs/strategy/2026-04-engineering-brief.md`` Section 5
 - ``docs/adr/0001-license-split.md``
 - ``docs/adr/0002-no-hosted-services.md``
