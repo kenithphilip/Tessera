@@ -49,10 +49,15 @@ for layout_dir in "${OCI_DIR}"/*/; do
   tag="$(basename "$layout_dir")"
   ref="${MIRROR_IMAGE}:${tag}"
   echo "pushing ${ref} ..."
-  # oras push --from-oci-layout reads the OCI image layout produced by
-  # RegistryMirror.package_oci and pushes it as a tagged reference.
+  # oras copy --from-oci-layout requires the source spec to include
+  # the tag (PATH:TAG) even when the layout has only one tagged
+  # manifest. The annotation in index.json alone is not sufficient;
+  # without the explicit tag oras errors with "no tag or digest
+  # specified". Strip the trailing slash from layout_dir before
+  # appending the tag.
+  layout_path="${layout_dir%/}"
   if ! oras copy \
-        --from-oci-layout "${layout_dir}" \
+        --from-oci-layout "${layout_path}:${tag}" \
         "${ref}" \
         $EXTRA; then
     echo "warn: push failed for ${ref}" >&2
