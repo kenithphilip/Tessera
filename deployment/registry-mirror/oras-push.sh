@@ -43,31 +43,59 @@ fi
 
 MEDIA_TYPE="application/vnd.tessera.mcp.signed-manifest+json"
 EXTRA="${ORAS_EXTRA_FLAGS:-}"
-FAIL=0
+TOTAL=0
+PUSHED=0
+FAILED=0
+# Permit a small number of transient permission_denied errors from
+# ghcr (typically the first few writes against a brand-new package
+# or short-lived rate-limit hiccups). Tunable via env. The whole
+# job still fails if the failure rate exceeds the threshold.
+MAX_FAILURE_PCT="${MAX_FAILURE_PCT:-10}"
+RETRY_COUNT="${RETRY_COUNT:-2}"
+RETRY_BACKOFF_SECONDS="${RETRY_BACKOFF_SECONDS:-3}"
+
+# push_one tag layout_path -> 0 on success, non-zero on terminal failure.
+# Retries up to RETRY_COUNT times with linear backoff before giving up.
+push_one() {
+  local _tag="$1"
+  local _layout_path="$2"
+  local _ref="${MIRROR_IMAGE}:${_tag}"
+  local attempt
+  for ((attempt=1; attempt<=RETRY_COUNT+1; attempt++)); do
+    if oras copy --from-oci-layout "${_layout_path}:${_tag}" "${_ref}" $EXTRA; then
+      echo "pushed ${_ref}"
+      return 0
+    fi
+    if (( attempt <= RETRY_COUNT )); then
+      sleep "$(( RETRY_BACKOFF_SECONDS * attempt ))"
+    fi
+  done
+  echo "warn: push failed for ${_ref} after ${RETRY_COUNT} retries" >&2
+  return 1
+}
 
 for layout_dir in "${OCI_DIR}"/*/; do
   tag="$(basename "$layout_dir")"
   ref="${MIRROR_IMAGE}:${tag}"
+  TOTAL=$((TOTAL + 1))
   echo "pushing ${ref} ..."
-  # oras copy --from-oci-layout requires the source spec to include
-  # the tag (PATH:TAG) even when the layout has only one tagged
-  # manifest. The annotation in index.json alone is not sufficient;
-  # without the explicit tag oras errors with "no tag or digest
-  # specified". Strip the trailing slash from layout_dir before
-  # appending the tag.
   layout_path="${layout_dir%/}"
-  if ! oras copy \
-        --from-oci-layout "${layout_path}:${tag}" \
-        "${ref}" \
-        $EXTRA; then
-    echo "warn: push failed for ${ref}" >&2
-    FAIL=2
+  if push_one "${tag}" "${layout_path}"; then
+    PUSHED=$((PUSHED + 1))
   else
-    echo "pushed ${ref}"
+    FAILED=$((FAILED + 1))
   fi
 done
 
-if [[ $FAIL -ne 0 ]]; then
-  echo "one or more push operations failed" >&2
+echo "summary: ${PUSHED}/${TOTAL} pushed, ${FAILED} failed"
+if (( TOTAL == 0 )); then
+  exit 0
 fi
-exit $FAIL
+
+# Compute integer percentage of failures.
+FAIL_PCT=$(( FAILED * 100 / TOTAL ))
+if (( FAIL_PCT > MAX_FAILURE_PCT )); then
+  echo "failure rate ${FAIL_PCT}% > ${MAX_FAILURE_PCT}% threshold; failing the job" >&2
+  exit 2
+fi
+exit 0
