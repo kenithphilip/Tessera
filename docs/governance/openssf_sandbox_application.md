@@ -154,11 +154,14 @@ contributors join.
 ## Filing checklist
 
 - [ ] Solicit a TAC sponsor in `#project-lifecycle` on OpenSSF
-      Slack.
+      Slack. Pre-written message at
+      [`openssf_slack_post.md`](./openssf_slack_post.md). Paste
+      verbatim or edit before sending.
 - [ ] Submit the sandbox application via the form at
       https://openssf.org/projects/.
 - [ ] Open a tracking issue in `kenithphilip/Tessera` so the
-      community can follow progress.
+      community can follow progress: already done at
+      [#19](https://github.com/kenithphilip/Tessera/issues/19).
 - [ ] Once accepted, file the additional artifacts (Charter,
       CoC, security-disclosure boilerplate adoption PRs) per
       Step 1 of the transition plan in
