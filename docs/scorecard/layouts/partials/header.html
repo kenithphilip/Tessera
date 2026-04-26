@@ -1,0 +1,19 @@
+{{/*
+  header.html -- site-wide header partial.
+
+  Renders the Tessera wordmark on the left and a small primary
+  nav on the right. Nav entries come from the [menu.main] block
+  in config.toml so they can be reordered without touching the
+  template.
+*/}}
+<header class="site-header">
+  <a href="{{ .Site.BaseURL | relURL }}" class="wordmark">
+    <span class="tessera-mark" aria-hidden="true"></span>
+    Tessera Scorecards
+  </a>
+  <nav class="site-nav" aria-label="Primary">
+    {{ range .Site.Menus.main }}
+      <a href="{{ .URL | relURL }}">{{ .Name }}</a>
+    {{ end }}
+  </nav>
+</header>

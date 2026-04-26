@@ -1,0 +1,57 @@
+{{/*
+  verification-block.html -- per-attestation verify commands.
+
+  Renders the cosign + tessera CLI commands a consumer should
+  run to verify the in-toto attestation file linked from this
+  page. Parameters come from .Params.predicate so the rendered
+  filename and attestation_id are page-specific.
+
+  Both signing modes are shown:
+    - HMAC (development / air-gapped CI default)
+    - Sigstore (production OIDC-bound, Rekor-anchored)
+
+  The HMAC verification path uses `tessera verify` because
+  cosign does not natively understand the HMAC envelope; the
+  Sigstore path uses cosign's standard verify-blob.
+*/}}
+{{ $base := printf "paired-%s" .Params.predicate.paired_model }}
+{{ $jsonl := printf "%s.intoto.jsonl" $base }}
+{{ $dsse := printf "%s.intoto.dsse.json" $base }}
+<section class="panel">
+  <h2>Verify this attestation</h2>
+  <p>
+    The attestation file is published at
+    <code>/{{ $jsonl }}</code>; the DSSE-wrapped envelope is at
+    <code>/{{ $dsse }}</code>. Pick the verification path that
+    matches the signing mode:
+  </p>
+
+  <h3>Sigstore (production)</h3>
+  <pre><code># 1. Download the attestation
+curl -fsSL {{ .Site.BaseURL | absURL }}{{ $dsse }} \
+    -o {{ $dsse }}
+
+# 2. Verify with cosign (Sigstore identity matches the publisher)
+cosign verify-blob \
+    --bundle {{ $dsse }} \
+    --certificate-identity-regexp '^https://github\.com/kenithphilip/Tessera' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --new-bundle-format \
+    {{ $jsonl }}</code></pre>
+
+  <h3>HMAC (development / air-gapped)</h3>
+  <pre><code># 1. Download the attestation
+curl -fsSL {{ .Site.BaseURL | absURL }}{{ $jsonl }} \
+    -o {{ $jsonl }}
+
+# 2. Verify with the Tessera CLI (HMAC key shared out-of-band)
+TESSERA_SCORECARD_HMAC_KEY=&lt;your-key&gt; \
+    tessera scorecard verify {{ $jsonl }}</code></pre>
+
+  <p class="meta">
+    Attestation ID:
+    <code>{{ .Params.predicate.attestation_id }}</code>
+    &middot; Generated:
+    <code>{{ .Params.predicate.generated_at }}</code>
+  </p>
+</section>

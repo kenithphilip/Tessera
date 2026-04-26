@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ .Title }} | {{ .Site.Title }}</title>
+  <link rel="stylesheet" href="{{ "css/main.css" | relURL }}">
+</head>
+<body>
+
+{{ partial "header.html" . }}
+
+<h1>{{ .Title }}</h1>
+
+{{ .Content }}
+
+<ul class="attestation-list">
+  {{ range .Pages }}
+  <li>
+    <a href="{{ .RelPermalink }}">{{ .Title }}</a>
+    {{ with .Params.predicate }}
+    <span class="summary">
+      Tessera v{{ .tessera_version }}
+      &middot; paired model
+      <code>{{ .paired_model }}</code>
+      &middot; generated
+      {{ .generated_at }}
+    </span>
+    {{ end }}
+  </li>
+  {{ end }}
+</ul>
+
+{{ partial "footer.html" . }}
+
+</body>
+</html>

@@ -1,0 +1,20 @@
+{{/*
+  footer.html -- site-wide footer partial.
+
+  Repository, license, and OpenSSF future-state link. The
+  OpenSSF link is informational: today the project is
+  pre-foundation transition, so the link points at the
+  v1.1.0-alpha roadmap rather than a hosted OpenSSF page.
+*/}}
+<footer class="site-footer">
+  <div class="footer-links">
+    <a href="https://github.com/kenithphilip/Tessera">Repository</a>
+    <a href="https://github.com/kenithphilip/Tessera/blob/main/LICENSE">License (Apache-2.0)</a>
+    <a href="https://github.com/kenithphilip/Tessera/blob/main/docs/governance/v1.1.0-alpha-roadmap.md">OpenSSF transition (v1.1)</a>
+  </div>
+  <div class="footer-meta">
+    Tessera v{{ .Site.Params.tessera_version | default "1.0.x" }}
+    &middot;
+    Site source under <code>docs/scorecard/</code>
+  </div>
+</footer>

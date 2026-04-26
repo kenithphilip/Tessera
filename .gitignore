@@ -23,3 +23,6 @@ rust/bench/results/
 # `make smoke` and the AgentDojo submitter write summary jsonl/json
 # files to ./runs/ at invocation time. Operator output, not source.
 runs/
+# Hugo build lock + caches inside docs/scorecard
+docs/scorecard/.hugo_build.lock
+docs/scorecard/resources/_gen/

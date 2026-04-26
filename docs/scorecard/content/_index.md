@@ -3,12 +3,19 @@ title: "Tessera Scorecards"
 date: 2026-04-25
 ---
 
-# Tessera Scorecards
-
 This site publishes signed security attestations for every Tessera release.
 Each attestation is an [in-toto Statement v1](https://in-toto.io/Statement/v1)
 carrying benchmark results, MCP security scores, audit chain roots, and
 compliance taxonomy coverage.
+
+The custom theme template in [`docs/scorecard/layouts/`](https://github.com/kenithphilip/Tessera/tree/main/docs/scorecard/layouts)
+renders a per-attestation detail page with an inline verification
+block (cosign for Sigstore, `tessera scorecard verify` for HMAC),
+the MCP security score table, the compliance taxonomy coverage,
+and the audit-log hash-chain root.
+
+See [Attestations](/attestations/) for the published per-model
+list.
 
 ## What is an attestation?
 
@@ -20,7 +27,7 @@ A Tessera Security Attestation records:
   MCP manifest scanner.
 - **Audit summary**: hash-chain root, event counts by kind.
 - **Compliance coverage**: which of the eight taxonomies (NIST CSF, CWE,
-  OWASP ASVS, MITRE ATLAS, EU AI Act, ISO 42001, CSA AICM, NIST AI 600-1)
+  OWASP ASI, MITRE ATLAS, EU AI Act, ISO 42001, CSA AICM, NIST AI 600-1)
   are covered.
 - **MITRE ATLAS Navigator layer**: reference URI and technique count.
 

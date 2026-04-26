@@ -1,0 +1,228 @@
+/* Tessera Scorecards: lightweight custom theme.
+ *
+ * Goals:
+ *   - System fonts; no web-font fetch.
+ *   - Single-column reading layout, max ~900px so attestation
+ *     tables don't sprawl on widescreen.
+ *   - High-contrast palette suitable for both light and dark
+ *     OS preference (uses prefers-color-scheme).
+ *   - No JS dependency; the theme is purely CSS + Hugo
+ *     templates.
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #555555;
+  --border: #dddddd;
+  --header-bg: #f5f5f5;
+  --code-bg: #f0f0f0;
+  --accent: #2a7a2a;
+  --warn: #a00000;
+  --link: #1750b3;
+  --link-hover: #0d3a8a;
+  --panel-bg: #f9f9f9;
+  --panel-border: #dddddd;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121417;
+    --fg: #e8e8e8;
+    --muted: #a8a8a8;
+    --border: #2a2e33;
+    --header-bg: #1a1d21;
+    --code-bg: #1f2227;
+    --accent: #6cd06c;
+    --warn: #ff7878;
+    --link: #6ea8ff;
+    --link-hover: #a8caff;
+    --panel-bg: #1a1d21;
+    --panel-border: #2a2e33;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1rem;
+  color: var(--fg);
+  background: var(--bg);
+  line-height: 1.5;
+}
+
+a { color: var(--link); }
+a:hover { color: var(--link-hover); }
+
+h1 {
+  font-size: 1.6rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+h2 {
+  font-size: 1.15rem;
+  margin-top: 2rem;
+  color: var(--fg);
+}
+
+h3 {
+  font-size: 1rem;
+  margin-top: 1.5rem;
+}
+
+/* ---- Header ---- */
+.site-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.site-header .wordmark {
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.site-header .wordmark .tessera-mark {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 0.4em;
+  background: linear-gradient(
+    135deg, var(--accent) 0%, var(--link) 100%);
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.site-nav {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.95rem;
+}
+
+.site-nav a {
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  padding-bottom: 2px;
+}
+
+.site-nav a:hover { border-bottom-color: var(--link-hover); }
+
+/* ---- Footer ---- */
+.site-footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.site-footer .footer-links a { margin-right: 1rem; }
+
+/* ---- Tables ---- */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+th {
+  background: var(--header-bg);
+  font-weight: 600;
+}
+
+.covered { color: var(--accent); font-weight: 600; }
+.not-covered { color: var(--warn); }
+
+/* ---- Code + meta ---- */
+code {
+  background: var(--code-bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+pre {
+  background: var(--code-bg);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.meta {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 1.5rem;
+}
+
+/* ---- Panels (badge, verification block) ---- */
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 1rem;
+  margin: 1.5rem 0;
+}
+
+.panel h2 { margin-top: 0; }
+
+.panel p { margin: 0.5rem 0; }
+
+/* ---- Attestation list (landing index) ---- */
+.attestation-list {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+}
+
+.attestation-list li {
+  padding: 0.85rem 1rem;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+}
+
+.attestation-list li a {
+  font-weight: 600;
+  text-decoration: none;
+  font-size: 1.05rem;
+}
+
+.attestation-list li .summary {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}

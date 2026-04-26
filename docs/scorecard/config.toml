@@ -1,11 +1,34 @@
 baseURL = "https://tessera-ai.github.io/scorecard/"
 languageCode = "en-us"
 title = "Tessera Scorecards"
+enableEmoji = false
 
 [params]
   description = "Security attestations for the Tessera primitives library."
   attestation_schema = "https://tessera.dev/security-attestation/v1"
   predicate_type = "https://tessera.dev/security-attestation/v1"
+  tessera_version = "1.0.x"
+
+[params.theme]
+  # Toggles consumed by partials/layouts. Kept here so a fork
+  # can rebrand without touching template files.
+  show_badge_panel = true
+  show_verification_panel = true
+  show_compliance_table = true
 
 [markup.goldmark.renderer]
   unsafe = false
+
+[menu]
+  [[menu.main]]
+    name = "Attestations"
+    url = "/attestations/"
+    weight = 10
+  [[menu.main]]
+    name = "Repository"
+    url = "https://github.com/kenithphilip/Tessera"
+    weight = 20
+  [[menu.main]]
+    name = "Threat model"
+    url = "https://github.com/kenithphilip/Tessera/blob/main/SECURITY.md"
+    weight = 30

@@ -1,0 +1,69 @@
+{{/*
+  index.html -- landing page.
+
+  Lists every published attestation, plus the sample. Each entry
+  links to the per-attestation page rendered by _default/single.html.
+*/}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ .Site.Title }}</title>
+  <link rel="stylesheet" href="{{ "css/main.css" | relURL }}">
+  <meta name="description" content="{{ .Site.Params.description }}">
+</head>
+<body>
+
+{{ partial "header.html" . }}
+
+<h1>Tessera Security Attestations</h1>
+
+<p class="meta">{{ .Site.Params.description }}</p>
+
+<p>
+  Each entry below is a signed
+  <a href="https://in-toto.io/Statement/v1">in-toto Statement v1</a>
+  carrying the benchmark numbers, MCP security scores, audit-log
+  hash-chain root, and compliance-taxonomy coverage that pin a
+  specific Tessera build to a specific paired model.
+</p>
+
+<h2>Paired attestations</h2>
+
+<ul class="attestation-list">
+  {{ range where .Site.RegularPages "Section" "attestations" }}
+  <li>
+    <a href="{{ .RelPermalink }}">{{ .Title }}</a>
+    <span class="summary">
+      Tessera v{{ .Params.predicate.tessera_version }}
+      &middot; paired model
+      <code>{{ .Params.predicate.paired_model }}</code>
+      &middot; generated
+      {{ .Params.predicate.generated_at }}
+    </span>
+  </li>
+  {{ end }}
+</ul>
+
+<h2>Embed a badge</h2>
+
+<div class="panel">
+  <p>Add to your README:</p>
+  <pre><code>![Tessera APR]({{ .Site.BaseURL | absURL }}badge.svg)</code></pre>
+</div>
+
+<h2>Reference: sample attestation</h2>
+
+<p>
+  A non-paired sample attestation is published for tooling
+  smoke-tests:
+  <a href="{{ "sample.intoto.jsonl" | relURL }}">sample.intoto.jsonl</a>.
+  It is signed with the development HMAC fallback key and is
+  not a trust anchor.
+</p>
+
+{{ partial "footer.html" . }}
+
+</body>
+</html>
