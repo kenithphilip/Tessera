@@ -34,6 +34,9 @@ dev = [
     "protobuf>=4.25",
     "jsonschema>=4.21",
     "pyyaml>=6.0",
+    # Pulled in so tests/test_prometheus_sink.py can import; matches
+    # the optional [prometheus] extra version pin.
+    "prometheus_client>=0.15",
 ]
 otel = [
     "opentelemetry-api>=1.25",
@@ -103,6 +106,41 @@ datalog = [
     # established Python equivalent (PyPI, MIT-licensed).
     "pyDatalog>=0.17",
 ]
+prometheus = [
+    # TPS-006 drift-monitor Prometheus exporter
+    # (tessera.event_sinks.prometheus_sink). The Prometheus sink is
+    # gated behind this extra so the default install stays free of
+    # observability-stack deps; consumers opt in with
+    # `pip install tessera[prometheus]`.
+    "prometheus_client>=0.15",
+]
+conformance = [
+    # TPS-005 adapter conformance suite. Pull every framework
+    # adapter Tessera supports so live-integration conformance tests
+    # under tests/conformance/ can run against real framework
+    # objects (gated by `pytest -m integration`). The fast,
+    # stub-based contract tests in the same files run without
+    # this extra installed.
+    "langchain-core>=0.2",
+    "langgraph>=0.2",
+    "crewai>=0.50",
+    "llama-index-core>=0.10",
+    "pydantic-ai>=0.0.5",
+]
+redteam = [
+    # TPS-004 community red-team corpus + reproducer
+    # (tessera.redteam.*). The default install ships every dep
+    # the loader / runner / CLI need; this extra is named for
+    # discoverability and so the auditor-quickstart can document
+    # `pip install 'tessera[redteam]'` as the canonical install.
+    "jsonschema>=4.21",
+]
+redteam-garak = [
+    # Optional Garak compatibility shim
+    # (tessera.redteam.garak_adapter). Install only if the
+    # auditor wants to drive Tessera probes through Garak's CLI.
+    "garak>=0.10",
+]
 
 [project.scripts]
 tessera = "tessera.cli:main"
@@ -115,3 +153,6 @@ exclude = ["agentmesh", "agentmesh.*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "integration: live-framework conformance tests (gated on the matching framework being installed; opt in via `pytest -m integration` or run the full suite with the `conformance` extra installed)",
+]

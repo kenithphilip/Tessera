@@ -5,6 +5,10 @@ module checks whether the tools being called are consistent with the user's
 stated intent. It uses glob-pattern matching to flag unexpected or forbidden
 tool calls and to enforce call-count limits.
 
+For deeper, LLM-judge intent-drift detection compose the
+:class:`tessera.scanners.intent_drift.IntentDriftScanner` via the
+``scanner`` parameter on :func:`verify_sequence`.
+
 Limitations:
     This is heuristic pattern matching, not formal plan verification. It
     cannot reason about argument values, ordering dependencies, or
@@ -18,6 +22,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from tessera.scanners.intent_drift import IntentDriftScanner
 
 _INTENT_PATTERNS: list[tuple[re.Pattern[str], list[str], list[str]]] = [
     (
@@ -125,6 +133,12 @@ def infer_spec_from_prompt(user_prompt: str) -> ToolSequenceSpec:
 def verify_sequence(
     spec: ToolSequenceSpec,
     proposed_calls: list[str],
+    *,
+    scanner: "IntentDriftScanner | None" = None,
+    user_intent: str | None = None,
+    proposed_args: list[object] | None = None,
+    tool_descriptions: list[str | None] | None = None,
+    trajectory_id: str = "",
 ) -> PlanVerificationResult:
     """Check a proposed tool-call list against a spec.
 
@@ -133,9 +147,28 @@ def verify_sequence(
     accumulates 0.3 per forbidden match and 0.2 for a call-count breach,
     capped at 1.0.
 
+    When ``scanner`` is provided, every call is ALSO audited by the
+    LLM-backed :class:`~tessera.scanners.intent_drift.IntentDriftScanner`.
+    A scanner DENY adds a violation entry and 0.4 to the suspicion
+    score. A scanner REQUIRE_APPROVAL adds a violation entry and 0.2.
+    Scanner ALLOW (and the fail-open paths) is silent.
+
     Args:
         spec: The expected tool-call constraints.
         proposed_calls: Ordered list of tool names the agent wants to invoke.
+        scanner: Optional ``IntentDriftScanner`` to layer on top of the
+            heuristic check. When supplied, ``user_intent`` MUST also be
+            supplied.
+        user_intent: Declared user goal (passed to the scanner). Ignored
+            when ``scanner`` is None.
+        proposed_args: Per-call argument shapes; aligned by index with
+            ``proposed_calls``. Pass dicts or whatever the agent
+            framework provides; the scanner will derive ArgShape
+            summaries without retaining raw values.
+        tool_descriptions: Per-call MCP tool description strings; aligned
+            by index with ``proposed_calls``. Used as trusted prompt
+            input when scanning.
+        trajectory_id: Correlation id for cross-scanner event grouping.
 
     Returns:
         A PlanVerificationResult summarizing violations and score.
@@ -158,6 +191,41 @@ def verify_sequence(
             f"Proposed {len(proposed_calls)} calls, limit is {spec.max_calls}"
         )
         score += 0.2
+
+    if scanner is not None and user_intent:
+        history: list[str] = []
+        for idx, tool in enumerate(proposed_calls):
+            args = (
+                proposed_args[idx]
+                if proposed_args is not None and idx < len(proposed_args)
+                else None
+            )
+            description = (
+                tool_descriptions[idx]
+                if tool_descriptions is not None and idx < len(tool_descriptions)
+                else None
+            )
+            result = scanner.scan(
+                tool_name=tool,
+                args=args,
+                trajectory_id=trajectory_id,
+                user_intent=user_intent,
+                tool_call_history=tuple(history),
+                tool_description=description,
+            )
+            if not result.allowed:
+                # Highest-severity finding leads.
+                top = max(result.findings, key=lambda f: f.severity, default=None)
+                if top is None:
+                    decision = "deny"
+                    message = "intent drift detected"
+                else:
+                    decision = top.metadata.get("decision", "deny") if top.metadata else "deny"
+                    message = f"{top.rule_id}: {top.message}"
+                violations.append(message)
+                unexpected.append(tool)
+                score += 0.4 if decision == "deny" else 0.2
+            history.append(tool)
 
     score = min(score, 1.0)
 

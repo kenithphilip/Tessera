@@ -31,7 +31,10 @@ def test_layer_references_tessera(layer: dict) -> None:  # type: ignore[type-arg
 def test_layer_schema_version(layer: dict) -> None:  # type: ignore[type-arg]
     versions = layer.get("versions", {})
     assert versions.get("layer") == "4.5", "Navigator layer version must be 4.5"
-    assert versions.get("navigator") == "4.9"
+    # Navigator UI version moved 4.9 -> 5.0 with the v1.0 ATLAS
+    # layer refresh (Item C of the post-13-item plan); accept both
+    # so a downgrade for any reason still validates.
+    assert versions.get("navigator") in {"4.9", "5.0"}
 
 
 def test_all_atlas_techniques_present(layer: dict) -> None:  # type: ignore[type-arg]

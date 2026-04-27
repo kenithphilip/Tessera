@@ -194,3 +194,30 @@ def default_dataset() -> LabeledDataset:
     strings = BENIGN_SAMPLES + MALICIOUS_SAMPLES
     labels = [0] * len(BENIGN_SAMPLES) + [1] * len(MALICIOUS_SAMPLES)
     return LabeledDataset(strings=strings, labels=labels)
+
+
+def corpus_dataset(name: str | None = None) -> LabeledDataset:
+    """Build a LabeledDataset from the Tessera community red-team corpus.
+
+    Loads probes from ``tessera.redteam.load_corpus`` (or every corpus
+    when ``name`` is None) and pairs them with the in-tree benign
+    samples so the scanner has a balanced positive/negative split.
+
+    The corpus probes are all positives (``expected_outcome`` in
+    ``refuse|block|sanitize``), so the negative examples come from the
+    in-tree ``BENIGN_SAMPLES`` list to keep the FPR meaningful. Returns
+    a LabeledDataset with ``len(BENIGN_SAMPLES)`` benigns and as many
+    positives as the corpus contains.
+
+    External auditors who want the exact same dataset CI uses run::
+
+        python3 -m tessera.redteam run --corpus <name> \\
+            --scanner tessera.scanners.heuristic.injection_score
+    """
+    from tessera.redteam import load_corpus
+
+    probes = load_corpus(name)
+    pos_strings = [p.payload for p in probes]
+    strings = BENIGN_SAMPLES + pos_strings
+    labels = [0] * len(BENIGN_SAMPLES) + [1] * len(pos_strings)
+    return LabeledDataset(strings=strings, labels=labels)
