@@ -21,7 +21,7 @@ jobs:
       - name: Install Tessera
         run: pip install -e '.[dev]'
 
-      - name: Emit scorecard attestation
+      - name: Emit sample scorecard attestation
         run: |
           python -m tessera.evaluate.cli emit-scorecard \
             --version "${RELEASE_VERSION}" \
@@ -30,6 +30,65 @@ jobs:
         env:
           TESSERA_SCORECARD_HMAC_KEY: ${{ secrets.TESSERA_SCORECARD_HMAC_KEY }}
           RELEASE_VERSION: ${{ github.ref_name }}
+
+      - name: Emit paired-model scorecards
+        # Re-emit the 3 paired attestations on every release tag so the
+        # tessera_version, generated_at, attestation_id, and atlas_navigator
+        # technique_count fields stay current. Any benchmark JSONs the
+        # release sweep produced get folded in via --benchmark-run; today
+        # there are none in CI (real numbers depend on per-provider API
+        # keys), but the wiring stands ready for the moment those keys
+        # become repo secrets.
+        run: |
+          set -euo pipefail
+          for model in claude-sonnet-4.5 gpt-5 gemini-2.5-pro; do
+            run_args=()
+            for f in runs/${model}*.json runs/results_${model}*.json; do
+              if [ -f "$f" ]; then
+                run_args+=( --benchmark-run "$f" )
+              fi
+            done
+            python -m tessera.evaluate.cli emit-scorecard \
+              --version "${RELEASE_VERSION}" \
+              --paired-model "${model}" \
+              --out "docs/scorecard/static/paired-${model}.intoto.jsonl" \
+              --sign hmac \
+              "${run_args[@]}"
+          done
+        env:
+          TESSERA_SCORECARD_HMAC_KEY: ${{ secrets.TESSERA_SCORECARD_HMAC_KEY }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+
+      - name: Commit refreshed paired scorecards back to main
+        # The static/ directory is the source-of-truth that the Hugo build
+        # consumes (next step). Pushing back to main keeps the published
+        # gh-pages site and the source repo in lockstep, which matters for
+        # auditors who verify the attestation file at the repo URL.
+        #
+        # If main has advanced past the tagged commit (rare but possible
+        # when a release is cut from a non-tip commit), the push aborts
+        # rather than force. The Hugo build below still publishes the
+        # locally-refreshed files to gh-pages, so the public site stays
+        # current even when the back-push fails.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet docs/scorecard/static/; then
+            echo "no scorecard changes to commit"
+            exit 0
+          fi
+          git config user.name "tessera-scorecard-bot"
+          git config user.email "tessera-scorecard-bot@users.noreply.github.com"
+          git add docs/scorecard/static/sample.intoto.jsonl \
+                  docs/scorecard/static/paired-*.intoto.jsonl \
+                  docs/scorecard/static/sample.intoto.dsse.json \
+                  docs/scorecard/static/paired-*.intoto.dsse.json 2>/dev/null || true
+          git commit -m "scorecard: refresh attestations for ${RELEASE_VERSION}"
+          if ! git push origin HEAD:main; then
+            echo "back-push to main failed (likely non-fast-forward); skipping but proceeding with gh-pages deploy"
+          fi
 
       - name: Setup Hugo
         uses: peaceiris/actions-hugo@v3

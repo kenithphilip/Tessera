@@ -110,20 +110,62 @@ emit_paired_scorecard(
 ## What still needs polish
 
 The dispatcher (item-2/3/4 of the post-v1.0 plan) closed the
-"submit.py doesn't dispatch" gap. Three smaller follow-ups
-remain:
+"submit.py doesn't dispatch" gap. Two smaller follow-ups
+remain.
 
-1. The emit-scorecard CLI still hardcodes `benchmarks={}`. It
-   needs a `--from-runs <results.json>` flag so scorecards pull
-   real measured numbers from a per-provider runner JSON rather
-   than inheriting the placeholder.
-2. `run_sonnet.py` is not a separate module; sonnet runs go
-   through `run_haiku.py` with `--model claude-sonnet-4-5`. If
-   sonnet ever needs sonnet-specific quirks, mirror the
-   pattern from `run_openai.py`.
-3. The Real Numbers Action ([RNA](#) ticket TBD) needs to land
-   the run from Step 2 into `paired-claude-sonnet-4.5.intoto.jsonl`
-   with the new flag, then re-sign.
+1. **Sonnet-specific runner**. `run_sonnet.py` is not a separate
+   module; sonnet runs go through `run_haiku.py` with
+   `--model claude-sonnet-4-5`. If sonnet ever needs
+   sonnet-specific quirks, mirror the pattern from
+   `run_openai.py`.
+2. **Land the real numbers**. With `ANTHROPIC_API_KEY` /
+   `OPENAI_API_KEY` / `GOOGLE_API_KEY` available in CI, the
+   Real Numbers Action runs Step 2 above and pipes the JSON
+   into the existing `--benchmark-run` flag (see below). The
+   3 paired-model scorecards in `docs/scorecard/static/` then
+   reflect measured numbers instead of v1.0.0 placeholders.
+
+### Pre-existing flag: `--benchmark-run`
+
+The CLI already accepts repeated `--benchmark-run <path>` per
+`src/tessera/evaluate/cli.py:75-84`. The emitter aggregates them
+in `_benchmark_metrics()` at
+`src/tessera/evaluate/scorecard/emitter.py:123-160`.
+
+Two input shapes are accepted:
+
+- **Per-suite shape (legacy)**: a JSON file with a top-level
+  `"suite"` key whose value is `agentdojo`, `cyberseceval`, or
+  `scanner_eval`. The emitter copies the named metric fields
+  into the matching `benchmarks.<suite>` block.
+- **Consolidated runner shape**: the JSON the per-provider
+  runners emit (top-level `model`, `suites`, `apr`, `utility`,
+  `total_injection`, `injection_blocked`, `total_benign`,
+  `benign_passed`, `errors`, `elapsed_seconds`). The emitter
+  normalises this into the `benchmarks.agentdojo` block
+  using `apr -> attack_prevention_rate` and
+  `utility -> utility_accuracy`. This shape support landed in
+  Item B of the post-13-item plan.
+
+End-to-end:
+
+```bash
+python3 -m benchmarks.agentdojo_live.run_haiku \
+    --suite travel \
+    --max-injection-pairs 2 \
+    --output benchmarks/agentdojo_live/results_haiku_smoke.json
+
+python3 -m tessera.evaluate.cli emit-scorecard \
+    --version 1.0.3-rc1 \
+    --paired-model claude-sonnet-4-5 \
+    --benchmark-run benchmarks/agentdojo_live/results_haiku_smoke.json \
+    --out docs/scorecard/static/paired-claude-sonnet-4.5.intoto.jsonl \
+    --sign hmac
+```
+
+The `publish-scorecard.yml` workflow runs an equivalent block
+on every release tag against any benchmark JSONs present in
+`runs/` at tag time.
 
 ## Cost / risk notes
 

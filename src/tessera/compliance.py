@@ -137,10 +137,22 @@ OWASP_ASI: dict[str, tuple[str, ...]] = {
 # MITRE ATLAS v5.4.0 (Feb 2026) technique mapping. Tessera defenses
 # against AI / agent attack techniques. Cited in scorecard +
 # SARIF runs so SOC teams can pivot from a Tessera event to an
-# ATLAS Navigator layer. AML.T0051.* covers the LLM Prompt
-# Injection family; AML.T0024 covers Exfiltration via Inference;
-# AML.T0043 covers Craft Adversarial Data; AML.T0072 covers
-# Reverse Shell, etc.
+# ATLAS Navigator layer.
+#
+# Confirmed ATLAS techniques used here (all listed at
+# https://atlas.mitre.org/techniques/ as of v5.4.0):
+#   AML.T0010    ML Supply Chain Compromise
+#   AML.T0024    Exfiltration via ML Inference API
+#   AML.T0029    Denial of ML Service
+#   AML.T0043    Craft Adversarial Data
+#   AML.T0050    Command and Scripting Interpreter
+#   AML.T0051    LLM Prompt Injection (with .001 Direct, .002 Indirect)
+#
+# Expansion candidates (not added until the project verifies the
+# exact ATLAS v5.4.0 ID): "Context Poisoning", "Memory Manipulation",
+# "Modify AI Agent Configuration", "Exfiltration via AI Agent Tool
+# Invocation", "Publish Poisoned AI Agent Tool" (mesh-review
+# 2026-04). Track in docs/security/atlas_navigator_expansion.md.
 MITRE_ATLAS: dict[str, tuple[str, ...]] = {
     EventKind.POLICY_DENY: ("AML.T0051.001",),  # Direct Prompt Injection
     EventKind.WORKER_SCHEMA_VIOLATION: ("AML.T0051.001",),
@@ -150,7 +162,7 @@ MITRE_ATLAS: dict[str, tuple[str, ...]] = {
     ),
     EventKind.GUARDRAIL_DECISION: ("AML.T0043",),  # Craft Adversarial Data
     EventKind.LABEL_VERIFY_FAILURE: ("AML.T0051.002",),
-    EventKind.IDENTITY_VERIFY_FAILURE: ("AML.T0024",),  # Exfiltration via Inference
+    EventKind.IDENTITY_VERIFY_FAILURE: ("AML.T0024",),  # Exfiltration via ML Inference API
     EventKind.PROOF_VERIFY_FAILURE: ("AML.T0024",),
     EventKind.PROVENANCE_VERIFY_FAILURE: ("AML.T0051.002",),
     EventKind.DELEGATION_VERIFY_FAILURE: ("AML.T0024",),
@@ -166,8 +178,13 @@ MITRE_ATLAS: dict[str, tuple[str, ...]] = {
     EventKind.MCP_MANIFEST_SIG_INVALID: ("AML.T0010",),  # ML Supply Chain
     EventKind.MCP_TOKEN_AUDIENCE_MISMATCH: ("AML.T0024",),
     EventKind.MCP_DRIFT_SHAPE: ("AML.T0010",),
+    EventKind.MCP_DRIFT_LATENCY: ("AML.T0029",),  # Denial of ML Service
+    EventKind.MCP_DRIFT_DISTRIBUTION: ("AML.T0010", "AML.T0029"),
     EventKind.CLAIM_PROVENANCE_FAIL: ("AML.T0051.002",),
     EventKind.DELEGATION_EXEC: ("AML.T0024",),
+    # v0.14 Phase 3 wave 3B-i: runtime isolation telemetry
+    EventKind.RUNTIME_EGRESS_DENY: ("AML.T0024", "AML.T0050"),  # Exfil + C2 channel
+    EventKind.RUNTIME_FS_DENY: ("AML.T0050",),  # Command and Scripting Interpreter
 }
 
 # EU AI Act (Regulation 2024/1689) Articles applicable to high-risk

@@ -136,6 +136,105 @@ def test_build_missing_benchmark_file_is_not_an_error(tmp_path):
     assert attestation["predicate"]["benchmarks"] == {}
 
 
+def test_build_with_consolidated_runner_json(tmp_path):
+    """The per-provider AgentDojo runner output (run_haiku.py et al.) must
+    populate benchmarks.agentdojo without requiring a top-level ``suite`` key.
+    """
+    run = tmp_path / "results_haiku_smoke.json"
+    run.write_text(
+        json.dumps(
+            {
+                "model": "claude-haiku-4-5",
+                "suites": ["travel"],
+                "apr": 0.85,
+                "utility": 0.92,
+                "total_injection": 40,
+                "injection_blocked": 34,
+                "total_benign": 40,
+                "benign_passed": 37,
+                "errors": 1,
+                "elapsed_seconds": 121.4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    emitter = _make_emitter(benchmark_runs=[run])
+    benchmarks = emitter.build()["predicate"]["benchmarks"]
+    agentdojo = benchmarks.get("agentdojo")
+    assert agentdojo is not None, benchmarks
+    assert agentdojo["attack_prevention_rate"] == pytest.approx(0.85)
+    assert agentdojo["attack_success_rate"] == pytest.approx(0.15)
+    assert agentdojo["utility_accuracy"] == pytest.approx(0.92)
+    assert agentdojo["model"] == "claude-haiku-4-5"
+    assert agentdojo["suites"] == ["travel"]
+    assert agentdojo["injection_blocked"] == 34
+
+
+def test_build_with_consolidated_runner_apr_outside_unit_interval(tmp_path):
+    """Defensive: if a runner emits apr > 1 (a bug, but plausible), we still
+    record attack_prevention_rate verbatim and skip the derived
+    attack_success_rate so the attestation does not embed a negative."""
+    run = tmp_path / "bogus.json"
+    run.write_text(
+        json.dumps({"apr": 1.7, "utility": 0.5, "suites": []}), encoding="utf-8",
+    )
+    emitter = _make_emitter(benchmark_runs=[run])
+    agentdojo = emitter.build()["predicate"]["benchmarks"]["agentdojo"]
+    assert agentdojo["attack_prevention_rate"] == pytest.approx(1.7)
+    assert "attack_success_rate" not in agentdojo
+
+
+def test_build_with_consolidated_and_per_suite_inputs_coexist(tmp_path):
+    """Per-suite (legacy) and consolidated shapes can coexist; later
+    consolidated runs merge into the per-suite agentdojo block."""
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(
+        json.dumps(
+            {"suite": "agentdojo", "utility_accuracy": 0.4, "run_id": "legacy-1"}
+        ),
+        encoding="utf-8",
+    )
+    consolidated = tmp_path / "consolidated.json"
+    consolidated.write_text(
+        json.dumps(
+            {
+                "model": "claude-sonnet-4-5",
+                "suites": ["banking", "travel"],
+                "apr": 0.91,
+                "utility": 0.88,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cyber = tmp_path / "cyber.json"
+    cyber.write_text(
+        json.dumps(
+            {"suite": "cyberseceval", "attack_success_rate": 0.05, "average_pass_rate": 0.93}
+        ),
+        encoding="utf-8",
+    )
+    emitter = _make_emitter(benchmark_runs=[legacy, consolidated, cyber])
+    benchmarks = emitter.build()["predicate"]["benchmarks"]
+    agentdojo = benchmarks["agentdojo"]
+    # Legacy fields preserved.
+    assert agentdojo["run_id"] == "legacy-1"
+    # Consolidated fields layered on.
+    assert agentdojo["attack_prevention_rate"] == pytest.approx(0.91)
+    assert agentdojo["model"] == "claude-sonnet-4-5"
+    # Other suite still emitted.
+    assert benchmarks["cyberseceval"]["attack_success_rate"] == pytest.approx(0.05)
+
+
+def test_build_consolidated_shape_requires_at_least_two_indicator_keys(tmp_path):
+    """A JSON with only an `apr` key is too ambiguous to be the runner shape.
+    The detector requires at least two indicator keys to avoid false positives
+    on unrelated test fixtures."""
+    weak = tmp_path / "weak.json"
+    weak.write_text(json.dumps({"apr": 0.99}), encoding="utf-8")
+    emitter = _make_emitter(benchmark_runs=[weak])
+    assert emitter.build()["predicate"]["benchmarks"] == {}
+
+
 # ---------------------------------------------------------------------------
 # emit()
 # ---------------------------------------------------------------------------

@@ -123,9 +123,25 @@ def _scanner_metrics(report_path: Path | None) -> dict[str, Any]:
 def _benchmark_metrics(run_paths: list[Path]) -> dict[str, Any]:
     """Aggregate benchmark metrics from one or more benchmark run JSON files.
 
-    Each file must contain a top-level "suite" key (value: "agentdojo",
-    "cyberseceval", or "scanner_eval") and the relevant metric keys. Unknown
-    suite values and missing files are silently skipped.
+    Two input shapes are accepted:
+
+    1. **Per-suite shape (legacy)**: a JSON file with a top-level ``suite``
+       key whose value is ``agentdojo``, ``cyberseceval``, or ``scanner_eval``.
+       The named metric fields are copied into the matching ``benchmarks.<suite>``
+       block.
+    2. **Consolidated runner shape**: the JSON the per-provider AgentDojo
+       runners (``benchmarks/agentdojo_live/run_haiku.py`` and the openai /
+       gemini / cohere mirrors) emit. Top-level keys: ``model``, ``suites``
+       (array), ``apr``, ``utility``, ``total_injection``, ``injection_blocked``,
+       ``total_benign``, ``benign_passed``, ``errors``, ``elapsed_seconds``.
+       Normalised into ``benchmarks.agentdojo`` with the standard field names
+       (``apr -> attack_prevention_rate``, ``utility -> utility_accuracy``).
+
+    Unknown shapes and missing files are silently skipped (a missing benchmark
+    run is not an error; the attestation simply lacks that section).
+
+    When multiple consolidated-shape runs are passed, later runs win on field
+    overlap. Per-suite and consolidated entries can coexist.
 
     Args:
         run_paths: List of paths to benchmark run JSON files.
@@ -157,7 +173,69 @@ def _benchmark_metrics(run_paths: list[Path]) -> dict[str, Any]:
                 if key in data:
                     entry[key] = data[key]
             benchmarks["scanner_eval"] = entry
+        elif _looks_like_consolidated_runner_shape(data):
+            entry = _normalise_consolidated_runner(data)
+            # Merge with any existing per-suite agentdojo entry rather than
+            # silently dropping prior fields.
+            existing = benchmarks.get("agentdojo", {})
+            existing.update(entry)
+            benchmarks["agentdojo"] = existing
     return benchmarks
+
+
+def _looks_like_consolidated_runner_shape(data: dict[str, Any]) -> bool:
+    """Heuristic shape detector for the per-provider runner JSON.
+
+    The runner output has no ``suite`` key but does carry ``apr``, ``utility``,
+    and ``suites`` (a list of suite-name strings). At least two of these must
+    be present to avoid false positives on unrelated JSON files passed by
+    mistake.
+    """
+    indicator_keys = ("apr", "utility", "suites", "injection_blocked", "total_injection")
+    present = sum(1 for k in indicator_keys if k in data)
+    return present >= 2
+
+
+def _normalise_consolidated_runner(data: dict[str, Any]) -> dict[str, Any]:
+    """Map consolidated-runner field names to the security-attestation schema.
+
+    Field map:
+        apr               -> attack_prevention_rate
+        utility           -> utility_accuracy
+        model             -> model
+        suites            -> suites
+        total_injection   -> total_injection
+        injection_blocked -> injection_blocked
+        total_benign      -> total_benign
+        benign_passed     -> benign_passed
+        errors            -> errors
+        elapsed_seconds   -> elapsed_seconds
+
+    Also derives ``attack_success_rate = 1.0 - attack_prevention_rate`` when
+    ``apr`` is a numeric in [0.0, 1.0]. The legacy schema field name is kept
+    for downstream compatibility.
+    """
+    entry: dict[str, Any] = {"suite": "agentdojo"}
+    if "apr" in data and isinstance(data["apr"], (int, float)):
+        apr = float(data["apr"])
+        entry["attack_prevention_rate"] = apr
+        if 0.0 <= apr <= 1.0:
+            entry["attack_success_rate"] = round(1.0 - apr, 6)
+    if "utility" in data and isinstance(data["utility"], (int, float)):
+        entry["utility_accuracy"] = float(data["utility"])
+    for key in (
+        "model",
+        "suites",
+        "total_injection",
+        "injection_blocked",
+        "total_benign",
+        "benign_passed",
+        "errors",
+        "elapsed_seconds",
+    ):
+        if key in data:
+            entry[key] = data[key]
+    return entry
 
 
 def _default_compliance() -> dict[str, Any]:

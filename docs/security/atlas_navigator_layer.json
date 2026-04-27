@@ -1,12 +1,12 @@
 {
-  "name": "Tessera v0.13 coverage",
+  "name": "Tessera v1.0 coverage",
   "versions": {
-    "attack": "14",
-    "navigator": "4.9",
+    "attack": "16",
+    "navigator": "5.0",
     "layer": "4.5"
   },
   "domain": "ATLAS",
-  "description": "Tessera v0.13 mitigation coverage mapped to MITRE ATLAS v14. Each technique score of 100 indicates at least one Tessera SecurityEvent kind detects or blocks that technique. Scores are coverage indicators, not severity ratings. Generated from tessera.compliance.MITRE_ATLAS.",
+  "description": "Tessera v1.0 mitigation coverage mapped to MITRE ATLAS v5.4.0 (February 2026). Each technique scored 100 has at least one Tessera SecurityEvent kind that detects or blocks it. Scores are coverage indicators, not severity ratings. This file is regenerated from tessera.compliance.MITRE_ATLAS by tools/regenerate_atlas_layer.py.",
   "filters": {
     "platforms": []
   },
@@ -23,15 +23,120 @@
   "hideDisabled": false,
   "techniques": [
     {
-      "techniqueID": "AML.T0051.001",
+      "techniqueID": "AML.T0010",
       "score": 100,
-      "color": "#3d85c8",
-      "comment": "Covered by: policy_deny, worker_schema_violation, content_injection_detected, critic.deny, critic.injection_suspect",
+      "color": "#cc0000",
+      "comment": "Covered by: mcp.drift.distribution, mcp.drift.shape, mcp.manifest.sig_invalid",
       "enabled": true,
       "metadata": [
         {
           "name": "tessera_events",
-          "value": "policy_deny, worker_schema_violation, content_injection_detected, critic.deny, critic.injection_suspect"
+          "value": "mcp.drift.distribution, mcp.drift.shape, mcp.manifest.sig_invalid"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "MCP manifest signature verification (Sigstore + DSSE) detects tampered server manifests. Shape-drift, latency-drift, and distribution-drift detectors flag behavioural changes between the baseline and live tool outputs."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "ML Supply Chain Compromise"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0024",
+      "score": 100,
+      "color": "#e69138",
+      "comment": "Covered by: delegation.exec, delegation_verify_failure, identity_verify_failure, label.declassify, mcp.token.audience_mismatch, proof_verify_failure, runtime.egress_deny, secret_redacted",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "delegation.exec, delegation_verify_failure, identity_verify_failure, label.declassify, mcp.token.audience_mismatch, proof_verify_failure, runtime.egress_deny, secret_redacted"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "SecretRegistry redacts credentials before context enters the LLM. Delegation tokens carry RFC 8707 audience constraints. Identity, proof, and delegation verification block impersonation attempts. Runtime egress allowlist blocks exfiltration channels patched at the HTTP layer."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Exfiltration via ML Inference API"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0029",
+      "score": 100,
+      "color": "#a64d79",
+      "comment": "Covered by: mcp.drift.distribution, mcp.drift.latency",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "mcp.drift.distribution, mcp.drift.latency"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "Latency-jump and distribution-drift detection on every MCP tool call. Sustained drift past configurable thresholds emits structured events for SIEM ingest."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Denial of ML Service"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0043",
+      "score": 100,
+      "color": "#6aa84f",
+      "comment": "Covered by: critic.approval_required, guardrail_decision, human_approval_required, human_approval_resolved",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "critic.approval_required, guardrail_decision, human_approval_required, human_approval_resolved"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "LLMGuardrail evaluates context and emits a decision event. Human-approval gates halt irreversible actions. Action Critic requires explicit approval for high-risk operations."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Craft Adversarial Data"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0050",
+      "score": 100,
+      "color": "#674ea7",
+      "comment": "Covered by: runtime.egress_deny, runtime.fs_deny",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "runtime.egress_deny, runtime.fs_deny"
+        },
+        {
+          "name": "mitigation_mechanism",
+          "value": "Tier-1 runtime isolation patches open() to deny writes outside configured prefixes and patches HTTP egress to deny calls to hosts outside the allowlist. Each denial emits a structured event for SIEM ingest."
+        },
+        {
+          "name": "atlas_technique_name",
+          "value": "Command and Scripting Interpreter"
+        }
+      ]
+    },
+    {
+      "techniqueID": "AML.T0051.001",
+      "score": 100,
+      "color": "#3d85c8",
+      "comment": "Covered by: content_injection_detected, critic.deny, critic.injection_suspect, policy_deny, worker_schema_violation",
+      "enabled": true,
+      "metadata": [
+        {
+          "name": "tessera_events",
+          "value": "content_injection_detected, critic.deny, critic.injection_suspect, policy_deny, worker_schema_violation"
         },
         {
           "name": "mitigation_mechanism",
@@ -47,12 +152,12 @@
       "techniqueID": "AML.T0051.002",
       "score": 100,
       "color": "#3d85c8",
-      "comment": "Covered by: content_injection_detected, label_verify_failure, provenance_verify_failure, critical_args.deny, critic.deny, critic.injection_suspect, claim_provenance.fail",
+      "comment": "Covered by: claim_provenance.fail, content_injection_detected, critic.deny, critic.injection_suspect, critical_args.deny, label_verify_failure, provenance_verify_failure",
       "enabled": true,
       "metadata": [
         {
           "name": "tessera_events",
-          "value": "content_injection_detected, label_verify_failure, provenance_verify_failure, critical_args.deny, critic.deny, critic.injection_suspect, claim_provenance.fail"
+          "value": "claim_provenance.fail, content_injection_detected, critic.deny, critic.injection_suspect, critical_args.deny, label_verify_failure, provenance_verify_failure"
         },
         {
           "name": "mitigation_mechanism",
@@ -63,79 +168,19 @@
           "value": "Indirect Prompt Injection"
         }
       ]
-    },
-    {
-      "techniqueID": "AML.T0043",
-      "score": 100,
-      "color": "#6aa84f",
-      "comment": "Covered by: guardrail_decision, human_approval_required, human_approval_resolved, critic.approval_required",
-      "enabled": true,
-      "metadata": [
-        {
-          "name": "tessera_events",
-          "value": "guardrail_decision, human_approval_required, human_approval_resolved, critic.approval_required"
-        },
-        {
-          "name": "mitigation_mechanism",
-          "value": "LLMGuardrail evaluates context and emits a decision event. Human-approval gates halt irreversible actions. Action Critic requires explicit approval for high-risk operations."
-        },
-        {
-          "name": "atlas_technique_name",
-          "value": "Craft Adversarial Data"
-        }
-      ]
-    },
-    {
-      "techniqueID": "AML.T0024",
-      "score": 100,
-      "color": "#e69138",
-      "comment": "Covered by: identity_verify_failure, proof_verify_failure, delegation_verify_failure, secret_redacted, label.declassify, mcp.token.audience_mismatch, delegation.exec",
-      "enabled": true,
-      "metadata": [
-        {
-          "name": "tessera_events",
-          "value": "identity_verify_failure, proof_verify_failure, delegation_verify_failure, secret_redacted, label.declassify, mcp.token.audience_mismatch, delegation.exec"
-        },
-        {
-          "name": "mitigation_mechanism",
-          "value": "SecretRegistry redacts credentials before context enters the LLM. Delegation tokens carry audience constraints (RFC 8707). Identity and proof verification block impersonation attempts."
-        },
-        {
-          "name": "atlas_technique_name",
-          "value": "Exfiltration via Inference API"
-        }
-      ]
-    },
-    {
-      "techniqueID": "AML.T0010",
-      "score": 100,
-      "color": "#cc0000",
-      "comment": "Covered by: mcp.manifest.sig_invalid, mcp.drift.shape",
-      "enabled": true,
-      "metadata": [
-        {
-          "name": "tessera_events",
-          "value": "mcp.manifest.sig_invalid, mcp.drift.shape"
-        },
-        {
-          "name": "mitigation_mechanism",
-          "value": "MCP manifest signature verification detects tampered server manifests. Shape-drift detection flags behavioural changes between baseline and live tool outputs."
-        },
-        {
-          "name": "atlas_technique_name",
-          "value": "ML Supply Chain Compromise"
-        }
-      ]
     }
   ],
   "gradient": {
-    "colors": ["#ffffff", "#3d85c8"],
+    "colors": [
+      "#ffffff",
+      "#3d85c8"
+    ],
     "minValue": 0,
     "maxValue": 100
   },
   "legendItems": [
     {
-      "label": "Tessera coverage confirmed",
+      "label": "Prompt injection (direct + indirect)",
       "color": "#3d85c8"
     },
     {
@@ -149,30 +194,42 @@
     {
       "label": "Supply chain",
       "color": "#cc0000"
+    },
+    {
+      "label": "Denial of service",
+      "color": "#a64d79"
+    },
+    {
+      "label": "Runtime isolation",
+      "color": "#674ea7"
     }
   ],
   "metadata": [
     {
       "name": "generator",
-      "value": "tessera.compliance.MITRE_ATLAS"
+      "value": "tools/regenerate_atlas_layer.py"
     },
     {
       "name": "tessera_version",
-      "value": "v0.13"
+      "value": "v1.0"
     },
     {
       "name": "generated_at",
-      "value": "2026-04-25"
+      "value": "2026-04-27"
     },
     {
       "name": "atlas_version",
-      "value": "v14"
+      "value": "v5.4.0"
     }
   ],
   "links": [
     {
       "label": "Tessera GitHub",
       "url": "https://github.com/kenithphilip/Tessera"
+    },
+    {
+      "label": "MITRE ATLAS",
+      "url": "https://atlas.mitre.org/"
     }
   ],
   "showTacticRowBackground": false,
